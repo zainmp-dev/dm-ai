@@ -8,6 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/components/ui/toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { platformLabel } from "@/lib/platform";
+import { primaryRegionLabel } from "@/lib/primary-region";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 
 export default function SettingsPage() {
@@ -40,7 +41,8 @@ export default function SettingsPage() {
         <CardHeader>
           <CardTitle className="text-base">Workspace scenario</CardTitle>
           <CardDescription>
-            Current scenario: <span className="font-medium text-zinc-800">{workspace.workspaceScenario}</span>. Reconfigure in Workspace Setup.
+            Scenario: <span className="font-medium text-zinc-800">{workspace.workspaceScenario}</span>. Primary region:{" "}
+            <span className="font-medium text-zinc-800">{primaryRegionLabel(workspace.primaryRegion)}</span>. Reconfigure in Workspace Setup.
           </CardDescription>
         </CardHeader>
       </Card>

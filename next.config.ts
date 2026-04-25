@@ -1,18 +1,10 @@
 import type { NextConfig } from "next";
 
-const backend = process.env.BACKEND_PROXY_URL ?? "http://127.0.0.1:8001";
-
 const nextConfig: NextConfig = {
   outputFileTracingRoot: process.cwd(),
   allowedDevOrigins: ["10.25.25.50"],
-  async rewrites() {
-    return [
-      {
-        source: "/api/backend/:path*",
-        destination: `${backend}/:path*`,
-      },
-    ];
-  },
+  // API calls use `app/api/backend/[[...path]]/route.ts` to proxy to FastAPI. Do not add a duplicate
+  // rewrite for `/api/backend/*` here — that can double-proxy or break HTTP methods in dev.
   async redirects() {
     return [{ source: "/calendar", destination: "/scheduling", permanent: true }];
   },

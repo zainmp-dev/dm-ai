@@ -39,10 +39,9 @@ function ProfileForm({
   const [email, setEmail] = useState(workspace.profile.email);
   const [company, setCompany] = useState(workspace.profile.company);
   const [timezone, setTimezone] = useState(workspace.profile.timezone);
-  const [loadingProfile, setLoadingProfile] = useState(false);
+  const [loadingProfile, setLoadingProfile] = useState(true);
 
   useEffect(() => {
-    setLoadingProfile(true);
     void apiGetProfile()
       .then((res) => {
         const next = normalizeProfile(res.profile);

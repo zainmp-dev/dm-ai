@@ -9,15 +9,15 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
-import { apiLogin } from "@/lib/api";
+import { apiGetWorkspace, apiLogin } from "@/lib/api";
 import { setAuthSession } from "@/lib/auth";
 import axios from "axios";
 
 export default function LoginPage() {
   const router = useRouter();
   const { push } = useToast();
-  const [email, setEmail] = useState("admin@flowpilot.app");
-  const [password, setPassword] = useState("flowpilot123");
+  const [email, setEmail] = useState("abid@m2hinfotech.com");
+  const [password, setPassword] = useState("M2h@123");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -31,7 +31,7 @@ export default function LoginPage() {
         <CardContent className="space-y-4">
           <div className="space-y-2">
             <Label>Email</Label>
-            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@flowpilot.app" />
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="abid@m2hinfotech.com" />
           </div>
           <div className="space-y-2">
             <Label>Password</Label>
@@ -40,7 +40,7 @@ export default function LoginPage() {
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="flowpilot123"
+                placeholder="M2h@123"
                 className="pr-10"
               />
               <button
@@ -54,7 +54,7 @@ export default function LoginPage() {
             </div>
           </div>
           <p className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
-            Default login: <span className="font-medium">admin@flowpilot.app</span> / <span className="font-medium">flowpilot123</span>
+            Default login: <span className="font-medium">abid@m2hinfotech.com</span> / <span className="font-medium">M2h@123</span>
           </p>
           <Button
             className="w-full rounded-2xl"
@@ -65,7 +65,13 @@ export default function LoginPage() {
                 .then((res) => {
                   setAuthSession(res.token, res.user);
                   push("Logged in");
-                  router.replace("/workspace-setup");
+                  return apiGetWorkspace()
+                    .then((workspace) => {
+                      router.replace(workspace.workspaceConfigured ? "/dashboard" : "/workspace-setup");
+                    })
+                    .catch(() => {
+                      router.replace("/workspace-setup");
+                    });
                 })
                 .catch((error: unknown) => {
                   if (axios.isAxiosError(error)) {

@@ -1,1891 +1,789 @@
-"""
-FlowPilot API — Supabase/Postgres-backed workspace backend.
-"""
-
 from __future__ import annotations
 
-import json
-import os
-import random
-import base64
+import asyncio
 import hashlib
-import re
-import time as pytime
-import urllib.error
-import urllib.parse
-import urllib.request
+import json
+import logging
+import time
 import uuid
-from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
-from threading import Lock
-from typing import Any, Literal, Optional
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException
+import requests
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-try:
-    import psycopg2
-except Exception:  # noqa: BLE001
-    psycopg2 = None
-
-# --- Static pools -----------------------------------------------------------------
-
-COMPETITOR_NAMES = [
-    "Vanguard Demand Co.",
-    "Northstar Media Group",
-    "Echo Social Labs",
-    "Meridian Performance",
-    "Silverline Creative",
-    "Harbor Growth Partners",
-    "Catalyst Field Marketing",
-    "Brightpath Digital",
-    "Signal & Story Studio",
-    "Arcadia Revenue Labs",
-]
-
-CONTENT_SNIPPETS = [
-    "Share a customer win with a measurable outcome and a clear next step for readers.",
-    "Break down one experiment from last month and what changed after optimization.",
-    "Publish a short checklist teams can apply this week to tighten campaign QA.",
-    "Highlight a behind-the-scenes look from planning through reporting handoff.",
-    "Summarize a quarterly trend with practical recommendations for busy operators.",
-    "Spotlight a partner story that shows how joint campaigns scale pipeline.",
-]
-
-LEAD_NAMES = [
-    "Alicia Gardner",
-    "Ravi Menon",
-    "Noah Brooks",
-    "Mia Chen",
-    "Daniel Ortiz",
-    "Priya Kapoor",
-    "Sofia Alvarez",
-    "Ethan Wright",
-    "Hannah Okonkwo",
-    "Marcus Bell",
-]
-
-DEFAULT_DEMO_NAME = "Jordan Reeves"
-DEFAULT_DEMO_EMAIL = "demo@flowpilot.app"
-DEFAULT_DEMO_PASSWORD = "flowpilot123"
+from agents import (
+    AgentError,
+    generate_reviewed_content,
+    generate_workspace_research,
+    run_analytics_agent,
+    suggest_master_content_post,
+)
+from config import settings
+from database import Content, create_many_content, get_all_content, get_content, get_db, init_db, increment_retry, update_status
+from emailer import content_action_email, safe_send_email
+from publisher import publish_post
+from scheduler import scheduler_loop
 
 
-def _load_local_env() -> None:
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
-    if not os.path.exists(env_path):
-        return
-    try:
-        with open(env_path, "r", encoding="utf-8") as file:
-            for line in file:
-                row = line.strip()
-                if not row or row.startswith("#") or "=" not in row:
-                    continue
-                key, value = row.split("=", 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                # Always apply local .env values so reloads pick up changes reliably.
-                if key:
-                    os.environ[key] = value
-    except Exception:
-        return
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
-_load_local_env()
-LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "").strip()
-LINKEDIN_AUTHOR_URN = os.getenv("LINKEDIN_AUTHOR_URN", "").strip()
-LINKEDIN_API_VERSION = os.getenv("LINKEDIN_API_VERSION", "202405").strip()
-META_PAGE_ACCESS_TOKEN = os.getenv("META_PAGE_ACCESS_TOKEN", "").strip()
-META_FACEBOOK_ACCESS_TOKEN = os.getenv("META_FACEBOOK_ACCESS_TOKEN", "").strip()
-META_INSTAGRAM_ACCESS_TOKEN = os.getenv("META_INSTAGRAM_ACCESS_TOKEN", "").strip()
-META_PAGE_ID = os.getenv("META_PAGE_ID", "").strip()
-META_IG_BUSINESS_ACCOUNT_ID = os.getenv("META_IG_BUSINESS_ACCOUNT_ID", "").strip()
-META_GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "v22.0").strip()
-CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
-CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
-CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
-CLOUDINARY_FOLDER = os.getenv("CLOUDINARY_FOLDER", "flowpilot").strip() or "flowpilot"
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini").strip() or "openai/gpt-4o-mini"
-OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "flowpilot").strip() or "flowpilot"
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+class GenerateRequest(BaseModel):
+    niche: str = Field(min_length=2, max_length=300)
 
 
-def _refresh_runtime_env() -> None:
-    global LINKEDIN_ACCESS_TOKEN, LINKEDIN_AUTHOR_URN, LINKEDIN_API_VERSION
-    global META_PAGE_ACCESS_TOKEN, META_FACEBOOK_ACCESS_TOKEN, META_INSTAGRAM_ACCESS_TOKEN
-    global META_PAGE_ID, META_IG_BUSINESS_ACCOUNT_ID, META_GRAPH_API_VERSION
-    global CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET, CLOUDINARY_FOLDER
-    global OPENROUTER_API_KEY, OPENROUTER_MODEL, OPENROUTER_APP_NAME, DATABASE_URL
-    _load_local_env()
-    LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "").strip()
-    LINKEDIN_AUTHOR_URN = os.getenv("LINKEDIN_AUTHOR_URN", "").strip()
-    LINKEDIN_API_VERSION = os.getenv("LINKEDIN_API_VERSION", "202405").strip()
-    META_PAGE_ACCESS_TOKEN = os.getenv("META_PAGE_ACCESS_TOKEN", "").strip()
-    META_FACEBOOK_ACCESS_TOKEN = os.getenv("META_FACEBOOK_ACCESS_TOKEN", "").strip()
-    META_INSTAGRAM_ACCESS_TOKEN = os.getenv("META_INSTAGRAM_ACCESS_TOKEN", "").strip()
-    META_PAGE_ID = os.getenv("META_PAGE_ID", "").strip()
-    META_IG_BUSINESS_ACCOUNT_ID = os.getenv("META_IG_BUSINESS_ACCOUNT_ID", "").strip()
-    META_GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "v22.0").strip()
-    CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
-    CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "").strip()
-    CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "").strip()
-    CLOUDINARY_FOLDER = os.getenv("CLOUDINARY_FOLDER", "flowpilot").strip() or "flowpilot"
-    OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-    OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini").strip() or "openai/gpt-4o-mini"
-    OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "flowpilot").strip() or "flowpilot"
-    DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+class ApproveRequest(BaseModel):
+    scheduled_time: datetime
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
+class WorkspaceApproveRequest(BaseModel):
+    content_id: str = Field(min_length=1, max_length=120)
+    platform: str | None = Field(default=None, max_length=32)
+    platforms: list[str] = Field(default_factory=list)
 
 
-def _iso(dt: datetime) -> str:
-    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+class WorkspaceContentIdRequest(BaseModel):
+    content_id: str = Field(min_length=1, max_length=120)
 
 
-def _linkedin_ready() -> bool:
-    return bool(LINKEDIN_ACCESS_TOKEN and LINKEDIN_AUTHOR_URN)
+class WorkspaceScheduleRequest(BaseModel):
+    content_id: str = Field(min_length=1, max_length=120)
+    scheduled_at: datetime
 
 
-def _meta_ready() -> bool:
-    return bool((_meta_token_usable(_meta_facebook_token()) and META_PAGE_ID) or (_meta_token_usable(_meta_instagram_token()) and META_IG_BUSINESS_ACCOUNT_ID))
+class WorkspacePublishRequest(BaseModel):
+    content_ids: list[str] = Field(default_factory=list)
 
 
-def _meta_facebook_token() -> str:
-    return META_FACEBOOK_ACCESS_TOKEN or META_PAGE_ACCESS_TOKEN
+class ProfileRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    email: str | None = Field(default=None, max_length=320)
+    company: str | None = Field(default=None, max_length=300)
+    timezone: str | None = Field(default=None, max_length=80)
 
 
-def _meta_instagram_token() -> str:
-    return META_INSTAGRAM_ACCESS_TOKEN or META_PAGE_ACCESS_TOKEN
+class PreferencesRequest(BaseModel):
+    default_platform: str | None = Field(default=None, max_length=32)
+    quiet_hours_enabled: bool | None = None
+    approval_digest: str | None = Field(default=None, max_length=20)
 
 
-def _meta_token_usable(token: str) -> bool:
-    token_l = token.strip().lower()
-    if not token_l:
-        return False
-    if "paste" in token_l or "your_" in token_l or "..." in token_l:
-        return False
-    return True
+class MediaUploadRequest(BaseModel):
+    data_url: str = Field(min_length=1)
+    file_name: str | None = Field(default=None, max_length=300)
+    media_type: str | None = Field(default="Image", max_length=20)
 
 
-def _cloudinary_ready() -> bool:
-    return bool(CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET)
+class MediaRemoveRequest(BaseModel):
+    asset_id: str = Field(min_length=1, max_length=200)
 
 
-def _openrouter_ready() -> bool:
-    return bool(OPENROUTER_API_KEY)
+class AnalyticsRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=5000)
+    likes: int = Field(default=0, ge=0)
+    comments: int = Field(default=0, ge=0)
+    reach: int = Field(default=0, ge=0)
+    ai_model: str | None = Field(default=None, max_length=200)
 
 
-def _is_cloudinary_url(url: str) -> bool:
-    return "res.cloudinary.com" in url and (not CLOUDINARY_CLOUD_NAME or f"/{CLOUDINARY_CLOUD_NAME}/" in url)
+class SignupRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=200)
 
 
-def _cloudinary_signature(params: dict[str, Any]) -> str:
-    payload = "&".join(f"{key}={params[key]}" for key in sorted(params) if params[key] not in (None, ""))
-    return hashlib.sha1(f"{payload}{CLOUDINARY_API_SECRET}".encode("utf-8")).hexdigest()
+class LoginRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=200)
 
 
-def _cloudinary_upload_media(source: str, public_id: str, resource_type: Literal["image", "video", "auto"] = "auto") -> str:
-    if not _cloudinary_ready():
-        raise ValueError("Cloudinary env is not configured")
-    upload_params: dict[str, Any] = {
-        "folder": CLOUDINARY_FOLDER,
-        "public_id": public_id,
-        "timestamp": int(pytime.time()),
-        "overwrite": "true",
+class CompetitorInput(BaseModel):
+    name: str = Field(default="", max_length=200)
+    website: str = Field(default="", max_length=500)
+    focus: str = Field(default="", max_length=500)
+
+
+class WorkspaceRequest(BaseModel):
+    company_name: str = Field(min_length=1, max_length=300)
+    website: str = Field(default="", max_length=500)
+    scenario: str = Field(default="b2b-saas", max_length=50)
+    primary_region: str = Field(default="global", max_length=32)
+    workspace_owner_name: str = Field(default="", max_length=200)
+    workspace_owner_email: str = Field(default="", max_length=320)
+    ai_model: str | None = Field(default=None, max_length=200)
+    competitors: list[CompetitorInput] = Field(default_factory=list)
+
+
+class StrategyRequest(BaseModel):
+    company_name: str = Field(default="", max_length=300)
+    website: str = Field(default="", max_length=500)
+    scenario: str = Field(default="", max_length=50)
+    ai_model: str | None = Field(default=None, max_length=200)
+    competitors: list[CompetitorInput] = Field(default_factory=list)
+
+
+class ContentLibraryRequest(BaseModel):
+    action: str = Field(default="generate", max_length=20)
+    content_id: str | None = Field(default=None, max_length=120)
+    title: str | None = Field(default=None, max_length=220)
+    content_text: str | None = Field(default=None, max_length=5000)
+    calendar_days: int | None = Field(default=14, ge=1, le=90)
+    media_type: str | None = Field(default="Image", max_length=20)
+    media_preview: str | None = Field(default=None, max_length=1000)
+    scheduled_at: datetime | None = None
+    auto_activate: bool | None = False
+    ai_model: str | None = Field(default=None, max_length=200)
+    suggest_hint: str | None = Field(default=None, max_length=500)
+
+
+class AuthUserResponse(BaseModel):
+    name: str
+    email: str
+
+
+class AuthResponse(BaseModel):
+    token: str
+    user: AuthUserResponse
+
+
+class ContentResponse(BaseModel):
+    id: uuid.UUID
+    platform: str
+    content: str
+    media_url: str | None
+    status: str
+    scheduled_time: datetime | None
+    retry_count: int
+    created_at: datetime
+
+
+class GenerateResponse(BaseModel):
+    strategy: dict[str, Any]
+    content: list[ContentResponse]
+
+
+class PublishResponse(BaseModel):
+    success: bool
+    message: str
+    content: ContentResponse
+
+
+def auth_token(user_id: str) -> str:
+    return f"flowpilot-{user_id}-{uuid.uuid4().hex}"
+
+
+def serialize_auth_user(row: dict[str, Any]) -> AuthUserResponse:
+    return AuthUserResponse(name=str(row["name"]), email=str(row["email"]))
+
+
+def default_workspace_snapshot(user: dict[str, Any] | None = None) -> dict[str, Any]:
+    profile_name = str(user["name"]) if user else ""
+    profile_email = str(user["email"]) if user else ""
+    return {
+        "company_name": "",
+        "company_website": "",
+        "workspace_scenario": "b2b-saas",
+        "primary_region": "global",
+        "workspace_configured": False,
+        "strategy": None,
+        "competitors": [],
+        "content": [],
+        "leads": [],
+        "activities": [],
+        "publishing_log": [],
+        "media_library": [],
+        "integrations": {
+            "linkedin": {"connected": False, "account_name": None, "account_handle": None},
+            "meta": {"connected": False, "account_name": None, "account_handle": None},
+        },
+        "profile": {"name": profile_name, "email": profile_email, "company": "", "timezone": "Asia/Kolkata"},
+        "preferences": {"default_platform": "linkedin", "quiet_hours_enabled": True, "approval_digest": "daily"},
+        "crm_last_bulk_status": "Pending",
+        "campaigns": [],
+        "engagement_series": [],
+        "leads_growth": [],
     }
-    body = {
-        **upload_params,
-        "file": source,
-        "api_key": CLOUDINARY_API_KEY,
-        "signature": _cloudinary_signature(upload_params),
+
+
+def _normalize_primary_region(value: str | None) -> str:
+    v = (value or "global").strip().lower()
+    if v in {"global", "uae-gcc", "india", "uae-india"}:
+        return v
+    return "global"
+
+
+def _default_timezone_for_region(region: str) -> str:
+    if region == "uae-gcc":
+        return "Asia/Dubai"
+    if region in {"india", "uae-india"}:
+        return "Asia/Kolkata"
+    return "Asia/Kolkata"
+
+
+def get_current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict[str, Any]:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token.startswith("flowpilot-"):
+        raise HTTPException(status_code=401, detail="Invalid auth token")
+
+    user_id = token.removeprefix("flowpilot-").rsplit("-", 1)[0]
+    row = db.execute(
+        text("select id, name, email from flowpilot_users where id = :id"),
+        {"id": user_id},
+    ).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=401, detail="Invalid auth token")
+
+    return dict(row)
+
+
+def workspace_snapshot(db: Session, workspace_id: str, user: dict[str, Any]) -> dict[str, Any]:
+    workspace = db.execute(
+        text("select * from flowpilot_workspace where workspace_id = :workspace_id"),
+        {"workspace_id": workspace_id},
+    ).mappings().first()
+    if workspace is None:
+        return default_workspace_snapshot(user)
+
+    snapshot = default_workspace_snapshot(user)
+    snapshot.update(
+        {
+            "company_name": workspace["company_name"],
+            "company_website": workspace["company_website"],
+            "workspace_scenario": workspace["workspace_scenario"],
+            "primary_region": _normalize_primary_region(str(workspace.get("primary_region", "global") or "global")),
+            "workspace_configured": workspace["workspace_configured"],
+            "crm_last_bulk_status": workspace["crm_last_bulk_status"],
+        }
+    )
+
+    strategy = db.execute(
+        text("select target_audience, content_themes, platform_focus, market_gaps from flowpilot_strategy where workspace_id = :workspace_id"),
+        {"workspace_id": workspace_id},
+    ).mappings().first()
+    if strategy is not None:
+        snapshot["strategy"] = dict(strategy)
+
+    for key, table, order_by in (
+        ("competitors", "flowpilot_competitors", "name"),
+        ("content", "flowpilot_content", "id"),
+        ("leads", "flowpilot_leads", "captured_at desc"),
+        ("activities", "flowpilot_activities", "created_at desc"),
+        ("publishing_log", "flowpilot_publishing_log", "timestamp desc"),
+        ("campaigns", "flowpilot_campaigns", "name"),
+    ):
+        snapshot[key] = [
+            dict(row)
+            for row in db.execute(
+                text(f"select * from {table} where workspace_id = :workspace_id order by {order_by}"),
+                {"workspace_id": workspace_id},
+            ).mappings().all()
+        ]
+
+    profile = db.execute(
+        text("select name, email, company, timezone from flowpilot_profile where workspace_id = :workspace_id"),
+        {"workspace_id": workspace_id},
+    ).mappings().first()
+    if profile is not None:
+        snapshot["profile"] = dict(profile)
+
+    preferences = db.execute(
+        text("select default_platform, quiet_hours_enabled, approval_digest from flowpilot_preferences where workspace_id = :workspace_id"),
+        {"workspace_id": workspace_id},
+    ).mappings().first()
+    if preferences is not None:
+        snapshot["preferences"] = dict(preferences)
+
+    integrations = {
+        "linkedin": {"connected": False, "account_name": None, "account_handle": None},
+        "meta": {"connected": False, "account_name": None, "account_handle": None},
     }
-    req = urllib.request.Request(
-        url=f"https://api.cloudinary.com/v1_1/{CLOUDINARY_CLOUD_NAME}/{resource_type}/upload",
-        data=urllib.parse.urlencode(body).encode("utf-8"),
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    for row in db.execute(
+        text("select platform, connected, account_name, account_handle from flowpilot_integrations where workspace_id = :workspace_id"),
+        {"workspace_id": workspace_id},
+    ).mappings().all():
+        platform = str(row["platform"])
+        if platform in integrations:
+            integrations[platform] = {
+                "connected": row["connected"],
+                "account_name": row["account_name"],
+                "account_handle": row["account_handle"],
+            }
+    snapshot["integrations"] = integrations
+
+    snapshot["engagement_series"] = [
+        dict(row)
+        for row in db.execute(
+            text("select name, engagement, reach from flowpilot_engagement_series where workspace_id = :workspace_id order by position"),
+            {"workspace_id": workspace_id},
+        ).mappings().all()
+    ]
+    snapshot["leads_growth"] = [
+        dict(row)
+        for row in db.execute(
+            text("select name, leads from flowpilot_leads_growth where workspace_id = :workspace_id order by position"),
+            {"workspace_id": workspace_id},
+        ).mappings().all()
+    ]
+
+    return snapshot
+
+
+def notify_content_action(action: str, row: Content, scheduled_time: datetime | None = None) -> None:
+    safe_send_email(
+        subject=f"FlowPilot content {action}: {row.platform.title()}",
+        html_body=content_action_email(
+            action=action,
+            platform=row.platform,
+            content=row.content,
+            scheduled_time=scheduled_time.isoformat() if scheduled_time else None,
+        ),
     )
-    with urllib.request.urlopen(req, timeout=45) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    secure_url = payload.get("secure_url")
-    if not secure_url:
-        raise ValueError("Cloudinary upload failed: missing secure_url")
-    return str(secure_url)
 
 
-def _cloudinary_upload_image(source: str, public_id: str) -> str:
-    return _cloudinary_upload_media(source, public_id, "image")
-
-
-def _cloudinary_public_id(item_id: str) -> str:
-    return re.sub(r"[^a-zA-Z0-9_-]+", "-", item_id).strip("-") or uuid.uuid4().hex[:10]
-
-
-def _upload_media_preview_to_cloudinary(item_id: str, media_preview: str, media_type: Optional[str]) -> str:
-    cleaned = media_preview.strip()
-    if not cleaned:
-        raise ValueError("media_preview is empty")
-    if cleaned.startswith(("http://", "https://")) and _is_cloudinary_url(cleaned):
-        return cleaned
-    if cleaned.startswith("data:") and not cleaned.startswith(("data:image/", "data:video/")):
-        raise ValueError("media_preview must be an image or video data URL")
-    resource_type: Literal["image", "video", "auto"] = "video" if media_type == "Video" or cleaned.startswith("data:video/") else "image"
-    return _cloudinary_upload_media(cleaned, _cloudinary_public_id(item_id), resource_type)
-
-
-def _meta_graph_post(path: str, params: dict[str, Any]) -> dict[str, Any]:
-    body = {k: str(v) for k, v in params.items() if v is not None}
-    encoded = urllib.parse.urlencode(body).encode("utf-8")
-    req = urllib.request.Request(
-        url=f"https://graph.facebook.com/{META_GRAPH_API_VERSION}{path}",
-        data=encoded,
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+def serialize_content(row: Content) -> ContentResponse:
+    return ContentResponse(
+        id=row.id,
+        platform=row.platform,
+        content=row.content,
+        media_url=row.media_url,
+        status=row.status,
+        scheduled_time=row.scheduled_time,
+        retry_count=row.retry_count,
+        created_at=row.created_at,
     )
-    with urllib.request.urlopen(req, timeout=30) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    return payload if isinstance(payload, dict) else {}
 
 
-def _meta_graph_get(path: str, params: dict[str, Any]) -> dict[str, Any]:
-    query = urllib.parse.urlencode({k: str(v) for k, v in params.items() if v is not None})
-    req = urllib.request.Request(
-        url=f"https://graph.facebook.com/{META_GRAPH_API_VERSION}{path}?{query}",
-        method="GET",
+def normalize_competitor_inputs(items: list[CompetitorInput]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for item in items:
+        name = item.name.strip()
+        website = item.website.strip()
+        focus = item.focus.strip()
+        if not name and not website and not focus:
+            continue
+        normalized.append({"name": name, "website": website, "focus": focus})
+    return normalized[:10]
+
+
+def record_activity(db: Session, workspace_id: str, text_value: str) -> None:
+    db.execute(
+        text(
+            "insert into flowpilot_activities (id, workspace_id, text, created_at) "
+            "values (:id, :workspace_id, :text, now())"
+        ),
+        {"id": f"act-{uuid.uuid4().hex[:12]}", "workspace_id": workspace_id, "text": text_value},
     )
-    with urllib.request.urlopen(req, timeout=30) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    return payload if isinstance(payload, dict) else {}
 
 
-def _meta_error_text(payload: dict[str, Any]) -> str:
-    error = payload.get("error")
-    if isinstance(error, dict):
-        message = str(error.get("message", "Unknown Meta API error"))
-        code = error.get("code")
-        subcode = error.get("error_subcode")
-        suffix: list[str] = []
-        if code is not None:
-            suffix.append(f"code={code}")
-        if subcode is not None:
-            suffix.append(f"subcode={subcode}")
-        return f"{message} ({', '.join(suffix)})" if suffix else message
-    return "Unknown Meta API error"
+@dataclass
+class WorkspacePublishPost:
+    platform: str
+    content: str
+    media_url: str | None
 
 
-def _meta_error_requires_reauth(payload: dict[str, Any]) -> bool:
-    error = payload.get("error")
-    if not isinstance(error, dict):
-        return False
-    code = error.get("code")
-    subcode = error.get("error_subcode")
+def _valid_platforms(platforms: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for platform in platforms:
+        value = platform.strip().lower()
+        if value in {"linkedin", "instagram", "facebook"} and value not in cleaned:
+            cleaned.append(value)
+    return cleaned
+
+
+def _workspace_content_row(db: Session, workspace_id: str, content_id: str) -> dict[str, Any] | None:
+    row = db.execute(
+        text("select * from flowpilot_content where workspace_id = :workspace_id and id = :content_id"),
+        {"workspace_id": workspace_id, "content_id": content_id},
+    ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def _insert_publishing_log(db: Session, workspace_id: str, content_id: str, platform: str, status: str) -> None:
+    db.execute(
+        text(
+            "insert into flowpilot_publishing_log (id, workspace_id, content_id, platform, timestamp, status) "
+            "values (:id, :workspace_id, :content_id, :platform, now(), :status)"
+        ),
+        {
+            "id": f"pub-{uuid.uuid4().hex[:12]}",
+            "workspace_id": workspace_id,
+            "content_id": content_id,
+            "platform": platform,
+            "status": status,
+        },
+    )
+
+
+def _set_integration(db: Session, workspace_id: str, platform: str, connected: bool, account_name: str, account_handle: str) -> None:
+    db.execute(
+        text(
+            "insert into flowpilot_integrations (workspace_id, platform, connected, account_name, account_handle, updated_at) "
+            "values (:workspace_id, :platform, :connected, :account_name, :account_handle, now()) "
+            "on conflict (workspace_id, platform) do update set "
+            "connected = excluded.connected, account_name = excluded.account_name, "
+            "account_handle = excluded.account_handle, updated_at = now()"
+        ),
+        {
+            "workspace_id": workspace_id,
+            "platform": platform,
+            "connected": connected,
+            "account_name": account_name,
+            "account_handle": account_handle,
+        },
+    )
+
+
+def _default_platform(db: Session, workspace_id: str) -> str:
+    row = db.execute(
+        text("select default_platform from flowpilot_preferences where workspace_id = :workspace_id"),
+        {"workspace_id": workspace_id},
+    ).mappings().first()
+    value = str(row["default_platform"]) if row else "linkedin"
+    return value if value in {"linkedin", "instagram", "facebook"} else "linkedin"
+
+
+def _seed_demo_metrics(db: Session, workspace_id: str) -> None:
+    engagement_exists = db.execute(
+        text("select 1 from flowpilot_engagement_series where workspace_id = :workspace_id limit 1"),
+        {"workspace_id": workspace_id},
+    ).first()
+    if engagement_exists is None:
+        for position, (name, engagement, reach) in enumerate(
+            [("Mon", 18, 420), ("Tue", 24, 530), ("Wed", 31, 680), ("Thu", 29, 610), ("Fri", 36, 760), ("Sat", 22, 480), ("Sun", 27, 540)]
+        ):
+            db.execute(
+                text(
+                    "insert into flowpilot_engagement_series (workspace_id, position, name, engagement, reach) "
+                    "values (:workspace_id, :position, :name, :engagement, :reach)"
+                ),
+                {"workspace_id": workspace_id, "position": position, "name": name, "engagement": engagement, "reach": reach},
+            )
+    leads_exists = db.execute(
+        text("select 1 from flowpilot_leads_growth where workspace_id = :workspace_id limit 1"),
+        {"workspace_id": workspace_id},
+    ).first()
+    if leads_exists is None:
+        for position, (name, leads) in enumerate([("Week 1", 4), ("Week 2", 7), ("Week 3", 11), ("Week 4", 16)]):
+            db.execute(
+                text("insert into flowpilot_leads_growth (workspace_id, position, name, leads) values (:workspace_id, :position, :name, :leads)"),
+                {"workspace_id": workspace_id, "position": position, "name": name, "leads": leads},
+            )
+
+
+def _upload_to_cloudinary(data_url: str, file_name: str | None) -> str:
+    if not settings.cloudinary_cloud_name or not settings.cloudinary_api_key or not settings.cloudinary_api_secret:
+        raise HTTPException(status_code=400, detail="Cloudinary credentials are not configured")
+    timestamp = str(int(time.time()))
+    params = {
+        "folder": settings.cloudinary_folder,
+        "timestamp": timestamp,
+    }
+    signature_payload = "&".join(f"{key}={params[key]}" for key in sorted(params))
+    signature = hashlib.sha1(f"{signature_payload}{settings.cloudinary_api_secret}".encode()).hexdigest()
     try:
-        code_i = int(code) if code is not None else None
-    except Exception:
-        code_i = None
-    try:
-        subcode_i = int(subcode) if subcode is not None else None
-    except Exception:
-        subcode_i = None
-    # Meta token/session invalidation patterns.
-    return code_i == 190 or subcode_i in (458, 459, 460, 463, 467)
-
-
-def _coerce_public_media_url_for_meta(
-    item_id: str,
-    title: str,
-    platform: Literal["facebook", "instagram"],
-    media_preview: Optional[str],
-    media_type: Optional[str],
-) -> tuple[Optional[str], Optional[str], bool]:
-    cleaned = (media_preview or "").strip()
-    if cleaned.startswith(("http://", "https://")):
-        return cleaned, None, False
-    if cleaned.startswith("data:video/"):
-        try:
-            uploaded_url = _upload_media_preview_to_cloudinary(item_id, cleaned, "Video")
-            return uploaded_url, f"{title}: {platform.capitalize()} publish uploaded video media_preview to Cloudinary", True
-        except Exception as e:  # noqa: BLE001
-            return None, f"{title}: {platform.capitalize()} publish failed: Cloudinary video upload failed ({e})", False
-    if cleaned.startswith("data:image/") or not cleaned:
-        if cleaned.startswith("data:image/"):
-            try:
-                uploaded_url = _upload_media_preview_to_cloudinary(item_id, cleaned, media_type)
-                return uploaded_url, f"{title}: {platform.capitalize()} publish uploaded media_preview to Cloudinary", True
-            except Exception as e:  # noqa: BLE001
-                return None, f"{title}: {platform.capitalize()} publish failed: Cloudinary upload failed ({e})", False
-        fallback_url = f"https://picsum.photos/seed/meta-{item_id}/1280/720"
-        return (
-            fallback_url,
-            f"{title}: {platform.capitalize()} publish used placeholder public image URL because media_preview was not publicly accessible",
-            False,
+        response = requests.post(
+            f"https://api.cloudinary.com/v1_1/{settings.cloudinary_cloud_name}/auto/upload",
+            data={
+                **params,
+                "api_key": settings.cloudinary_api_key,
+                "signature": signature,
+                "file": data_url,
+                "public_id": (file_name or f"flowpilot-{uuid.uuid4().hex[:10]}").rsplit(".", 1)[0],
+            },
+            timeout=settings.request_timeout_seconds,
         )
-    # Non-http schemes (blob:, file:, etc.) are invalid for Meta publishing APIs.
-    if media_type == "Video":
-        return None, f"{title}: {platform.capitalize()} publish failed: requires a public video URL", False
-    fallback_url = f"https://picsum.photos/seed/meta-{item_id}/1280/720"
-    return (
-        fallback_url,
-        f"{title}: {platform.capitalize()} publish used placeholder public image URL because media_preview was not publicly accessible",
-        False,
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        detail = exc.response.text[:300] if exc.response is not None else str(exc)
+        raise HTTPException(status_code=502, detail=f"Cloudinary upload failed: {detail}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Cloudinary returned invalid JSON") from exc
+
+    secure_url = str(payload.get("secure_url", "")).strip()
+    if not secure_url:
+        raise HTTPException(status_code=502, detail="Cloudinary upload did not return a secure URL")
+    return secure_url
+
+
+def _try_upload_remote_to_cloudinary(source_url: str, *, public_id: str) -> str | None:
+    """Re-host a remote https asset in Cloudinary. Returns secure_url or None on failure."""
+    if not settings.cloudinary_cloud_name or not settings.cloudinary_api_key or not settings.cloudinary_api_secret:
+        return None
+    if not source_url.startswith("https://") or source_url.startswith("https://res.cloudinary.com/"):
+        return None
+    timestamp = str(int(time.time()))
+    params: dict[str, str] = {
+        "folder": settings.cloudinary_folder,
+        "timestamp": timestamp,
+    }
+    signature_payload = "&".join(f"{key}={params[key]}" for key in sorted(params))
+    signature = hashlib.sha1(f"{signature_payload}{settings.cloudinary_api_secret}".encode()).hexdigest()
+    try:
+        response = requests.post(
+            f"https://api.cloudinary.com/v1_1/{settings.cloudinary_cloud_name}/auto/upload",
+            data={
+                **params,
+                "api_key": settings.cloudinary_api_key,
+                "signature": signature,
+                "file": source_url,
+                "public_id": public_id,
+            },
+            timeout=settings.request_timeout_seconds,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        detail = exc.response.text[:500] if exc.response is not None else str(exc)
+        logger.warning("Cloudinary remote upload failed: %s", detail)
+        return None
+    except ValueError as exc:
+        logger.warning("Cloudinary remote upload invalid JSON: %s", exc)
+        return None
+
+    secure_url = str(payload.get("secure_url", "")).strip()
+    if not secure_url:
+        return None
+    return secure_url
+
+
+def _suggestion_ingest_cloudinary(
+    db: Session,
+    workspace_id: str,
+    suggestion: dict[str, str],
+) -> dict[str, str]:
+    """Re-host suggest media on Cloudinary and add a media_library row (matches manual uploads)."""
+    out = dict(suggestion)
+    source = (out.get("media_preview") or "").strip()
+    if not source:
+        return out
+    if source.startswith("https://res.cloudinary.com/"):
+        return out
+    if not (settings.cloudinary_cloud_name and settings.cloudinary_api_key and settings.cloudinary_api_secret):
+        return out
+    public_stem = f"ai-suggest-{uuid.uuid4().hex[:10]}"
+    cdn: str | None = None
+    try:
+        if source.startswith("data:"):
+            cdn = _upload_to_cloudinary(source, public_stem)
+        elif source.startswith("https://"):
+            cdn = _try_upload_remote_to_cloudinary(source, public_id=public_stem)
+    except HTTPException as exc:
+        logger.warning("AI suggest Cloudinary ingest failed: %s", exc.detail)
+        return out
+    if not cdn:
+        return out
+    out["media_preview"] = cdn
+    mtype = str(out.get("media_type") or "Image")
+    if mtype not in {"Image", "Video", "Carousel"}:
+        mtype = "Image"
+    if mtype == "Carousel":
+        mtype = "Image"
+    title_label = (out.get("title") or "Post").strip()[:120]
+    db.execute(
+        text(
+            "insert into flowpilot_media_library (id, workspace_id, name, media_type, media_url, created_at) "
+            "values (:id, :workspace_id, :name, :media_type, :media_url, now())"
+        ),
+        {
+            "id": f"med-{uuid.uuid4().hex[:12]}",
+            "workspace_id": workspace_id,
+            "name": f"AI suggest: {title_label}",
+            "media_type": mtype,
+            "media_url": cdn,
+        },
+    )
+    return out
+
+
+def _column_types(db: Session, table: str) -> dict[str, str]:
+    rows = db.execute(
+        text(
+            "select column_name, data_type from information_schema.columns "
+            "where table_name = :table and table_schema not in ('pg_catalog', 'information_schema') "
+            "order by case when table_schema = current_schema() then 0 else 1 end"
+        ),
+        {"table": table},
+    ).mappings().all()
+    return {str(row["column_name"]): str(row["data_type"]) for row in rows}
+
+
+def _list_value(db: Session, table: str, column: str, values: list[str]) -> Any:
+    column_type = _column_types(db, table).get(column, "")
+    if column_type == "ARRAY":
+        return values
+    if column_type in {"json", "jsonb"}:
+        return json.dumps(values)
+    return ", ".join(values)
+
+
+def _list_expr(db: Session, table: str, column: str, param: str) -> str:
+    column_type = _column_types(db, table).get(column, "")
+    if column_type in {"json", "jsonb"}:
+        return f"cast(:{param} as {column_type})"
+    return f":{param}"
+
+
+def _workspace_context(db: Session, workspace_id: str) -> dict[str, str]:
+    row = db.execute(
+        text(
+            "select company_name, company_website, workspace_scenario, coalesce(primary_region, 'global') as primary_region "
+            "from flowpilot_workspace where workspace_id = :workspace_id"
+        ),
+        {"workspace_id": workspace_id},
+    ).mappings().first()
+    if row is None:
+        return {"company_name": "", "company_website": "", "workspace_scenario": "b2b-saas", "primary_region": "global"}
+    return {
+        "company_name": str(row["company_name"] or ""),
+        "company_website": str(row["company_website"] or ""),
+        "workspace_scenario": str(row["workspace_scenario"] or "b2b-saas"),
+        "primary_region": _normalize_primary_region(str(row.get("primary_region", "global") or "global")),
+    }
+
+
+def save_workspace_ai_flow(
+    db: Session,
+    *,
+    workspace_id: str,
+    company_name: str,
+    website: str,
+    scenario: str,
+    competitors: list[dict[str, str]],
+    ai_model: str | None,
+    replace_content: bool,
+    calendar_days: int = 7,
+    primary_region: str = "global",
+) -> dict[str, Any]:
+    research = generate_workspace_research(
+        company_name=company_name,
+        website=website,
+        scenario=scenario,
+        competitors=competitors,
+        ai_model=ai_model,
+        calendar_days=calendar_days,
+        primary_region=_normalize_primary_region(primary_region),
+    )
+    strategy = research["strategy"]
+    company_study = research.get("company_study", {})
+    discovered_website = str(company_study.get("discovered_website", "")).strip()
+    if not website and discovered_website:
+        website = discovered_website
+        db.execute(
+            text("update flowpilot_workspace set company_website = :website, updated_at = now() where workspace_id = :workspace_id"),
+            {"workspace_id": workspace_id, "website": website},
+        )
+    competitor_rows = research["competitors"]
+
+    db.execute(text("delete from flowpilot_strategy where workspace_id = :workspace_id"), {"workspace_id": workspace_id})
+    db.execute(text("delete from flowpilot_competitors where workspace_id = :workspace_id"), {"workspace_id": workspace_id})
+    strategy_columns = _column_types(db, "flowpilot_strategy")
+    updated_at_column = ", updated_at" if "updated_at" in strategy_columns else ""
+    updated_at_value = ", now()" if "updated_at" in strategy_columns else ""
+    db.execute(
+        text(
+            "insert into flowpilot_strategy "
+            f"(workspace_id, target_audience, content_themes, platform_focus, market_gaps{updated_at_column}) "
+            f"values (:workspace_id, :target_audience, {_list_expr(db, 'flowpilot_strategy', 'content_themes', 'content_themes')}, "
+            f"{_list_expr(db, 'flowpilot_strategy', 'platform_focus', 'platform_focus')}, "
+            f"{_list_expr(db, 'flowpilot_strategy', 'market_gaps', 'market_gaps')}{updated_at_value})"
+        ),
+        {
+            "workspace_id": workspace_id,
+            "target_audience": strategy["target_audience"],
+            "content_themes": _list_value(db, "flowpilot_strategy", "content_themes", strategy["content_themes"]),
+            "platform_focus": _list_value(db, "flowpilot_strategy", "platform_focus", strategy["platform_focus"]),
+            "market_gaps": _list_value(db, "flowpilot_strategy", "market_gaps", strategy["market_gaps"]),
+        },
     )
 
+    for competitor in competitor_rows[:8]:
+        db.execute(
+            text(
+                "insert into flowpilot_competitors "
+                "(id, workspace_id, name, positioning, strengths, weaknesses) "
+                f"values (:id, :workspace_id, :name, :positioning, {_list_expr(db, 'flowpilot_competitors', 'strengths', 'strengths')}, "
+                f"{_list_expr(db, 'flowpilot_competitors', 'weaknesses', 'weaknesses')})"
+            ),
+            {
+                "id": f"cmp-{uuid.uuid4().hex[:12]}",
+                "workspace_id": workspace_id,
+                "name": competitor["name"],
+                "positioning": competitor["positioning"],
+                "strengths": _list_value(db, "flowpilot_competitors", "strengths", competitor["strengths"]),
+                "weaknesses": _list_value(db, "flowpilot_competitors", "weaknesses", competitor["weaknesses"]),
+            },
+        )
 
-def _publish_to_facebook(
-    content_text: str,
-    title: str,
-    media_preview: Optional[str],
-    media_type: Optional[str],
-    _allow_refresh_retry: bool = True,
-) -> tuple[bool, str]:
-    facebook_token = _meta_facebook_token()
-    if not _meta_token_usable(facebook_token):
-        return False, "Facebook publish failed: missing META_FACEBOOK_ACCESS_TOKEN (or fallback META_PAGE_ACCESS_TOKEN) in backend env"
-    if not META_PAGE_ID:
-        return False, "Facebook publish failed: missing META_PAGE_ID in backend env"
-
-    message = f"{title}\n\n{content_text}".strip()
-    path = f"/{META_PAGE_ID}/feed"
-    params: dict[str, Any] = {
-        "access_token": facebook_token,
-        "message": message,
-    }
-    if media_preview and media_preview.startswith(("http://", "https://")):
-        if media_type == "Video":
-            path = f"/{META_PAGE_ID}/videos"
-            params = {
-                "access_token": facebook_token,
-                "file_url": media_preview,
-                "description": message,
-            }
-        else:
-            path = f"/{META_PAGE_ID}/photos"
-            params = {
-                "access_token": facebook_token,
-                "url": media_preview,
-                "caption": message,
-                "published": "true",
-            }
-    elif media_preview and media_preview.startswith("data:"):
-        return False, "Facebook publish failed: data URLs are not supported, use a public media URL"
-
-    try:
-        payload = _meta_graph_post(path, params)
-    except urllib.error.HTTPError as e:
-        detail = ""
-        detail_json: dict[str, Any] = {}
-        try:
-            detail_raw = e.read().decode("utf-8")
-            parsed = json.loads(detail_raw) if detail_raw else {}
-            detail_json = parsed if isinstance(parsed, dict) else {}
-            detail = _meta_error_text(detail_json) if isinstance(detail_json, dict) else detail_raw
-        except Exception:
-            detail = str(e)
-        if _meta_error_requires_reauth(detail_json) and _allow_refresh_retry:
-            previous = facebook_token
-            _refresh_runtime_env()
-            if _meta_facebook_token() and _meta_facebook_token() != previous:
-                return _publish_to_facebook(
-                    content_text=content_text,
-                    title=title,
-                    media_preview=media_preview,
-                    media_type=media_type,
-                    _allow_refresh_retry=False,
-                )
-        return False, f"Facebook publish failed ({e.code}): {detail[:320]}"
-    except Exception as e:  # noqa: BLE001
-        return False, f"Facebook publish failed: {e}"
-
-    if payload.get("id") or payload.get("post_id"):
-        return True, "Facebook publish succeeded"
-    return False, f"Facebook publish failed: {_meta_error_text(payload)}"
-
-
-def _publish_to_instagram(
-    content_text: str,
-    title: str,
-    media_preview: Optional[str],
-    media_type: Optional[str],
-    _allow_refresh_retry: bool = True,
-) -> tuple[bool, str]:
-    instagram_token = _meta_instagram_token()
-    if not _meta_token_usable(instagram_token):
-        return False, "Instagram publish failed: missing META_INSTAGRAM_ACCESS_TOKEN (or fallback META_PAGE_ACCESS_TOKEN) in backend env"
-    if not META_IG_BUSINESS_ACCOUNT_ID:
-        return False, "Instagram publish failed: missing META_IG_BUSINESS_ACCOUNT_ID in backend env"
-    if not media_preview or not media_preview.startswith(("http://", "https://")):
-        return False, "Instagram publish failed: requires a public image/video URL in media_preview"
-
-    caption = f"{title}\n\n{content_text}".strip()
-    media_params: dict[str, Any] = {
-        "access_token": instagram_token,
-        "caption": caption[:2200],
-    }
-    if media_type == "Video":
-        media_params["video_url"] = media_preview
-        media_params["media_type"] = "REELS"
-    else:
-        media_params["image_url"] = media_preview
-
-    def _wait_container_ready(creation_id: str, attempts: int = 10, interval_seconds: float = 2.0) -> tuple[bool, str]:
-        last = "IN_PROGRESS"
-        for _ in range(attempts):
-            status_payload = _meta_graph_get(
-                f"/{creation_id}",
+    if replace_content:
+        db.execute(text("delete from flowpilot_content where workspace_id = :workspace_id"), {"workspace_id": workspace_id})
+        for index, item in enumerate(research["content"][:12]):
+            media_preview = item["media_preview"] or f"https://picsum.photos/seed/{workspace_id}-{index}/800/450"
+            db.execute(
+                text(
+                    "insert into flowpilot_content "
+                    "(id, workspace_id, title, content_text, media_type, media_preview, status, selected_platform, scheduled_at) "
+                    "values (:id, :workspace_id, :title, :content_text, :media_type, :media_preview, 'PENDING', null, null)"
+                ),
                 {
-                    "fields": "status_code,status",
-                    "access_token": instagram_token,
+                    "id": f"cnt-{uuid.uuid4().hex[:12]}",
+                    "workspace_id": workspace_id,
+                    "title": item["title"],
+                    "content_text": item["content_text"],
+                    "media_type": item["media_type"],
+                    "media_preview": media_preview,
                 },
             )
-            status_code = str(status_payload.get("status_code", "")).upper()
-            status_value = str(status_payload.get("status", "")).upper()
-            if status_code in ("FINISHED", "PUBLISHED"):
-                return True, "ready"
-            if status_code in ("ERROR", "EXPIRED"):
-                return False, status_code
-            if status_value in ("ERROR", "EXPIRED"):
-                return False, status_value
-            if status_code:
-                last = status_code
-            elif status_value:
-                last = status_value
-            pytime.sleep(interval_seconds)
-        return False, f"timeout waiting for container readiness ({last})"
 
+    competitor_mode = "manual competitor inputs" if competitors else "automatic competitor discovery"
+    model_label = ai_model or settings.openrouter_model
+    record_activity(
+        db,
+        workspace_id,
+        f"Master workspace AI flow completed for {company_name} with {model_label}: Agent 1 finished website/domain research, competitor study, positioning, feature gaps, and strategy using {competitor_mode}; Agent 2 generated content from that strategy.",
+    )
+    scenario_summary = str(company_study.get("scenario_summary", "")).strip()
+    if scenario_summary:
+        record_activity(db, workspace_id, f"Company and scenario study: {scenario_summary}")
+    for gap in strategy["market_gaps"][:5]:
+        record_activity(db, workspace_id, f"Marketing gap issue found: {gap}")
+    return research
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    stop_event = asyncio.Event()
+    scheduler_task = asyncio.create_task(scheduler_loop(stop_event))
     try:
-        create_payload = _meta_graph_post(f"/{META_IG_BUSINESS_ACCOUNT_ID}/media", media_params)
-        creation_id = create_payload.get("id")
-        if not creation_id:
-            if _meta_error_requires_reauth(create_payload):
-                return False, f"Instagram publish failed (container): {_meta_error_text(create_payload)}"
-            return False, f"Instagram publish failed (container): {_meta_error_text(create_payload)}"
-        ready, reason = _wait_container_ready(str(creation_id))
-        if not ready:
-            return False, f"Instagram publish failed: media container not ready ({reason})"
-        publish_payload = _meta_graph_post(
-            f"/{META_IG_BUSINESS_ACCOUNT_ID}/media_publish",
-            {"access_token": instagram_token, "creation_id": creation_id},
-        )
-    except urllib.error.HTTPError as e:
-        detail = ""
-        detail_json: dict[str, Any] = {}
+        yield
+    finally:
+        stop_event.set()
+        scheduler_task.cancel()
         try:
-            detail_raw = e.read().decode("utf-8")
-            parsed = json.loads(detail_raw) if detail_raw else {}
-            detail_json = parsed if isinstance(parsed, dict) else {}
-            detail = _meta_error_text(detail_json) if isinstance(detail_json, dict) else detail_raw
-        except Exception:
-            detail = str(e)
-        if _meta_error_requires_reauth(detail_json) and _allow_refresh_retry:
-            previous = instagram_token
-            _refresh_runtime_env()
-            if _meta_instagram_token() and _meta_instagram_token() != previous:
-                return _publish_to_instagram(
-                    content_text=content_text,
-                    title=title,
-                    media_preview=media_preview,
-                    media_type=media_type,
-                    _allow_refresh_retry=False,
-                )
-        return False, f"Instagram publish failed ({e.code}): {detail[:320]}"
-    except Exception as e:  # noqa: BLE001
-        return False, f"Instagram publish failed: {e}"
-
-    if publish_payload.get("id"):
-        return True, "Instagram publish succeeded"
-    if _meta_error_requires_reauth(publish_payload):
-        return False, f"Instagram publish failed (publish): {_meta_error_text(publish_payload)}"
-    return False, f"Instagram publish failed (publish): {_meta_error_text(publish_payload)}"
-
-
-def _linkedin_ugc_payload(
-    content_text: str,
-    title: str,
-    media_preview: Optional[str],
-    media_type: Optional[str],
-    media_asset_urn: Optional[str] = None,
-    media_asset_category: Optional[Literal["IMAGE", "VIDEO"]] = None,
-) -> dict[str, Any]:
-    share_content: dict[str, Any] = {
-        "shareCommentary": {"text": content_text},
-        "shareMediaCategory": "NONE",
-    }
-    if media_asset_urn:
-        share_content = {
-            "shareCommentary": {"text": content_text},
-            "shareMediaCategory": media_asset_category or "IMAGE",
-            "media": [
-                {
-                    "status": "READY",
-                    "media": media_asset_urn,
-                    "title": {"text": title or "FlowPilot Post"},
-                }
-            ],
-        }
-        return {
-            "author": LINKEDIN_AUTHOR_URN,
-            "lifecycleState": "PUBLISHED",
-            "specificContent": {"com.linkedin.ugc.ShareContent": share_content},
-            "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
-        }
-    if media_preview and media_type in ("Image", "Video", "Carousel", "Media"):
-        # LinkedIn can unfurl a public URL as an ARTICLE preview; this avoids upload complexity for MVP.
-        share_content = {
-            "shareCommentary": {"text": content_text},
-            "shareMediaCategory": "ARTICLE",
-            "media": [
-                {
-                    "status": "READY",
-                    "originalUrl": media_preview,
-                    "title": {"text": title or "FlowPilot Post"},
-                }
-            ],
-        }
-    return {
-        "author": LINKEDIN_AUTHOR_URN,
-        "lifecycleState": "PUBLISHED",
-        "specificContent": {"com.linkedin.ugc.ShareContent": share_content},
-        "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
-    }
-
-
-def _parse_data_url(data_url: str) -> tuple[str, bytes]:
-    matched = re.match(r"^data:(?P<mime>[\w.+-]+/[\w.+-]+);base64,(?P<data>.+)$", data_url)
-    if not matched:
-        raise ValueError("Invalid data URL format")
-    mime = matched.group("mime")
-    payload = matched.group("data")
-    try:
-        blob = base64.b64decode(payload)
-    except Exception as e:  # noqa: BLE001
-        raise ValueError("Invalid base64 payload") from e
-    return mime, blob
-
-
-def _linkedin_register_image_upload() -> tuple[str, str]:
-    return _linkedin_register_upload("urn:li:digitalmediaRecipe:feedshare-image")
-
-
-def _linkedin_register_video_upload() -> tuple[str, str]:
-    return _linkedin_register_upload("urn:li:digitalmediaRecipe:feedshare-video")
-
-
-def _linkedin_register_upload(recipe: str) -> tuple[str, str]:
-    body = {
-        "registerUploadRequest": {
-            "recipes": [recipe],
-            "owner": LINKEDIN_AUTHOR_URN,
-            "serviceRelationships": [
-                {
-                    "relationshipType": "OWNER",
-                    "identifier": "urn:li:userGeneratedContent",
-                }
-            ],
-        }
-    }
-    req = urllib.request.Request(
-        url="https://api.linkedin.com/v2/assets?action=registerUpload",
-        data=json.dumps(body).encode("utf-8"),
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
-            "Content-Type": "application/json",
-            "X-Restli-Protocol-Version": "2.0.0",
-            "LinkedIn-Version": LINKEDIN_API_VERSION,
-        },
-    )
-    with urllib.request.urlopen(req, timeout=20) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    value = payload.get("value", {})
-    asset = value.get("asset")
-    upload_url = value.get("uploadMechanism", {}).get("com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest", {}).get("uploadUrl")
-    if not asset or not upload_url:
-        raise ValueError("LinkedIn register upload failed: missing asset or upload URL")
-    return str(asset), str(upload_url)
-
-
-def _linkedin_upload_image_binary(upload_url: str, blob: bytes, mime: str) -> None:
-    req = urllib.request.Request(
-        url=upload_url,
-        data=blob,
-        method="PUT",
-        headers={
-            "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
-            "Content-Type": mime,
-            "Content-Length": str(len(blob)),
-        },
-    )
-    with urllib.request.urlopen(req, timeout=30):
-        return
-
-
-def _download_remote_media(url: str) -> tuple[bytes, str]:
-    req = urllib.request.Request(
-        url=url,
-        method="GET",
-        headers={
-            "User-Agent": "FlowPilot/1.0",
-            "Accept": "*/*",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=20) as response:
-        blob = response.read()
-        mime = response.headers.get("Content-Type", "").split(";")[0].strip()
-    if not blob:
-        raise ValueError("Remote media download returned empty body")
-    return blob, (mime or "application/octet-stream")
-
-
-def _linkedin_check_asset_ready(asset_urn: str) -> tuple[bool, str]:
-    req = urllib.request.Request(
-        url=f"https://api.linkedin.com/v2/assets/{urllib.parse.quote(asset_urn, safe='')}",
-        method="GET",
-        headers={
-            "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
-            "X-Restli-Protocol-Version": "2.0.0",
-            "LinkedIn-Version": LINKEDIN_API_VERSION,
-        },
-    )
-    with urllib.request.urlopen(req, timeout=20) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    recipes = payload.get("recipes", [])
-    status = payload.get("status", "")
-    if isinstance(status, str) and status.upper() in ("ALLOWED", "AVAILABLE", "READY"):
-        return True, "ready"
-    if any(isinstance(r, str) and "feedshare-video" in r for r in recipes):
-        # For video uploads LinkedIn needs processing; presence of recipe alone is not enough.
-        # Try best effort check on processing status fields.
-        processing = payload.get("mediaArtifact", {}).get("status") or payload.get("digitalmediaAsset", {}).get("status")
-        if isinstance(processing, str) and processing.upper() in ("AVAILABLE", "READY"):
-            return True, "ready"
-        if isinstance(processing, str) and processing.upper() in ("FAILED", "CLIENT_ERROR", "SERVER_ERROR"):
-            return False, f"processing failed ({processing})"
-        return False, "processing"
-    return True, "ready"
-
-
-def _linkedin_wait_until_ready(asset_urn: str, max_attempts: int = 15, interval_seconds: float = 2.0) -> tuple[bool, str]:
-    last_reason = "processing"
-    for _ in range(max_attempts):
-        ok, reason = _linkedin_check_asset_ready(asset_urn)
-        if ok:
-            return True, "ready"
-        if "failed" in reason:
-            return False, reason
-        last_reason = reason
-        pytime.sleep(interval_seconds)
-    return False, f"timeout waiting for asset readiness ({last_reason})"
-
-
-def _publish_to_linkedin(
-    content_text: str,
-    title: str,
-    media_preview: Optional[str],
-    media_type: Optional[str],
-) -> tuple[bool, str]:
-    if not LINKEDIN_ACCESS_TOKEN:
-        return False, "LinkedIn publish failed: missing LINKEDIN_ACCESS_TOKEN in backend env"
-    if not LINKEDIN_AUTHOR_URN:
-        return False, "LinkedIn publish failed: missing LINKEDIN_AUTHOR_URN in backend env"
-    if not LINKEDIN_AUTHOR_URN.startswith("urn:li:"):
-        return False, "LinkedIn publish failed: LINKEDIN_AUTHOR_URN must start with urn:li:"
-
-    media_asset_urn: Optional[str] = None
-    media_asset_category: Optional[Literal["IMAGE", "VIDEO"]] = None
-    if media_preview and media_preview.startswith("data:image/"):
-        try:
-            mime, blob = _parse_data_url(media_preview)
-            asset, upload_url = _linkedin_register_image_upload()
-            _linkedin_upload_image_binary(upload_url, blob, mime)
-            media_asset_urn = asset
-            media_asset_category = "IMAGE"
-        except Exception as e:  # noqa: BLE001
-            return False, f"LinkedIn image upload failed: {e}"
-    elif media_preview and media_preview.startswith(("http://", "https://")) and media_type in ("Image", "Media", "Carousel"):
-        try:
-            blob, mime = _download_remote_media(media_preview)
-            if mime.startswith("image/"):
-                asset, upload_url = _linkedin_register_image_upload()
-                _linkedin_upload_image_binary(upload_url, blob, mime)
-                media_asset_urn = asset
-                media_asset_category = "IMAGE"
-            elif mime.startswith("video/"):
-                asset, upload_url = _linkedin_register_video_upload()
-                _linkedin_upload_image_binary(upload_url, blob, mime)
-                ready, reason = _linkedin_wait_until_ready(asset)
-                if not ready:
-                    return False, f"LinkedIn video upload processing failed: {reason}"
-                media_asset_urn = asset
-                media_asset_category = "VIDEO"
-        except Exception:
-            # Keep ARTICLE fallback behavior for external URLs if fetch/upload fails.
+            await scheduler_task
+        except asyncio.CancelledError:
             pass
-    elif media_preview and media_preview.startswith("data:video/"):
-        try:
-            mime, blob = _parse_data_url(media_preview)
-            asset, upload_url = _linkedin_register_video_upload()
-            _linkedin_upload_image_binary(upload_url, blob, mime)
-            ready, reason = _linkedin_wait_until_ready(asset)
-            if not ready:
-                return False, f"LinkedIn video upload processing failed: {reason}"
-            media_asset_urn = asset
-            media_asset_category = "VIDEO"
-        except Exception as e:  # noqa: BLE001
-            return False, f"LinkedIn video upload failed: {e}"
 
-    def _request(body: dict[str, Any]) -> tuple[bool, str]:
-        req = urllib.request.Request(
-            url="https://api.linkedin.com/v2/ugcPosts",
-            data=json.dumps(body).encode("utf-8"),
-            method="POST",
-            headers={
-                "Authorization": f"Bearer {LINKEDIN_ACCESS_TOKEN}",
-                "Content-Type": "application/json",
-                "X-Restli-Protocol-Version": "2.0.0",
-                "LinkedIn-Version": LINKEDIN_API_VERSION,
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=20) as response:
-                if response.status in (200, 201):
-                    return True, "LinkedIn publish succeeded"
-                return False, f"LinkedIn publish failed: unexpected status {response.status}"
-        except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = e.read().decode("utf-8")
-            except Exception:
-                detail = str(e)
-            return False, f"LinkedIn publish failed ({e.code}): {detail[:300]}"
-        except Exception as e:  # noqa: BLE001
-            return False, f"LinkedIn publish failed: {e}"
 
-    primary = _linkedin_ugc_payload(
-        content_text=content_text,
-        title=title,
-        media_preview=media_preview,
-        media_type=media_type,
-        media_asset_urn=media_asset_urn,
-        media_asset_category=media_asset_category,
-    )
-    ok, message = _request(primary)
-    if ok:
-        return True, message
-
-    # Fallback to text-only for resilience if LinkedIn rejects external media URL.
-    fallback = _linkedin_ugc_payload(content_text=content_text, title=title, media_preview=None, media_type=None)
-    ok_fallback, fallback_message = _request(fallback)
-    if ok_fallback:
-        return True, "LinkedIn published as text-only (media fallback applied)"
-    return False, fallback_message if "LinkedIn publish failed" in fallback_message else message
-
-
-class StrategyPlan(BaseModel):
-    target_audience: str
-    content_themes: list[str]
-    platform_focus: list[str]
-    market_gaps: list[str]
-
-
-class Competitor(BaseModel):
-    id: str
-    name: str
-    positioning: str
-    strengths: list[str]
-    weaknesses: list[str]
-
-
-class ContentItem(BaseModel):
-    id: str
-    title: str
-    content_text: str
-    media_type: Literal["Image", "Video", "Carousel", "Media"]
-    media_preview: str
-    status: Literal["PENDING", "APPROVED", "SCHEDULED", "PUBLISHED", "REJECTED"]
-    selected_platform: Optional[Literal["linkedin", "instagram", "facebook", "twitter"]] = None
-    scheduled_at: Optional[str] = None
-
-
-def _parse_json_object(raw_text: str) -> dict[str, Any] | None:
-    text = raw_text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
-        text = re.sub(r"\s*```$", "", text)
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-    try:
-        parsed = json.loads(text[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-    return parsed if isinstance(parsed, dict) else None
-
-
-def _openrouter_chat_json(system_prompt: str, user_prompt: str, max_tokens: int = 1400) -> dict[str, Any] | None:
-    if not _openrouter_ready():
-        return None
-
-    payload = {
-        "model": OPENROUTER_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.7,
-        "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
-    }
-    request = urllib.request.Request(
-        "https://openrouter.ai/api/v1/chat/completions",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:3000",
-            "X-Title": OPENROUTER_APP_NAME,
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=35) as response:
-            body = json.loads(response.read().decode("utf-8"))
-    except Exception:
-        return None
-
-    try:
-        content = body["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        return None
-    return _parse_json_object(str(content))
-
-
-def _string_list(value: Any, fallback: list[str], limit: int) -> list[str]:
-    if not isinstance(value, list):
-        return fallback[:limit]
-    cleaned = [str(item).strip() for item in value if str(item).strip()]
-    return (cleaned or fallback)[:limit]
-
-
-def _ai_strategy_plan(company_name: str, website: str) -> StrategyPlan | None:
-    system_prompt = (
-        "You are FlowPilot's marketing strategy assistant. Return only compact JSON for a social media strategy. "
-        "Do not include markdown or commentary."
-    )
-    user_prompt = json.dumps(
-        {
-            "company_name": company_name or "Client Brand",
-            "website": website,
-            "required_schema": {
-                "target_audience": "one specific sentence",
-                "content_themes": ["4 short themes"],
-                "platform_focus": ["3 platform-specific focus areas"],
-                "market_gaps": ["3 concise market gaps"],
-            },
-        },
-    )
-    result = _openrouter_chat_json(system_prompt, user_prompt, max_tokens=900)
-    if not result:
-        return None
-
-    fallback = StrategyPlan(
-        target_audience="Marketing leaders at B2B companies with teams of 20-200 focused on pipeline predictability.",
-        content_themes=[
-            "Pipeline acceleration",
-            "Campaign performance insights",
-            "Cross-channel coordination",
-            "Brand consistency at scale",
-        ],
-        platform_focus=["LinkedIn executive updates", "Meta proof points", "Lifecycle email touchpoints"],
-        market_gaps=[
-            "Most competitors post campaign announcements, but few publish post-mortem learning loops.",
-            "Cross-platform narrative continuity is weak, leaving conversion intent under-captured.",
-            "Educational mid-funnel assets are underused versus high-volume top-funnel posts.",
-        ],
-    )
-    return StrategyPlan(
-        target_audience=str(result.get("target_audience") or fallback.target_audience).strip()[:500],
-        content_themes=_string_list(result.get("content_themes"), fallback.content_themes, 4),
-        platform_focus=_string_list(result.get("platform_focus"), fallback.platform_focus, 3),
-        market_gaps=_string_list(result.get("market_gaps"), fallback.market_gaps, 3),
-    )
-
-
-def _ai_content_calendar(total: int) -> list[dict[str, str]] | None:
-    system_prompt = (
-        "You are FlowPilot's social content planner. Return only JSON for a review-ready social calendar. "
-        "Each item should be practical, brand-safe, and ready for LinkedIn, Facebook, or Instagram adaptation."
-    )
-    user_prompt = json.dumps(
-        {
-            "company_name": state.company_name,
-            "website": state.company_website,
-            "strategy": state.strategy.model_dump() if state.strategy else None,
-            "item_count": total,
-            "required_schema": {"items": [{"title": "short title", "content_text": "80-160 word post copy"}]},
-        },
-    )
-    result = _openrouter_chat_json(system_prompt, user_prompt, max_tokens=min(3500, 600 + total * 180))
-    if not result or not isinstance(result.get("items"), list):
-        return None
-
-    rows: list[dict[str, str]] = []
-    for item in result["items"][:total]:
-        if not isinstance(item, dict):
-            continue
-        title = str(item.get("title") or "").strip()
-        content_text = str(item.get("content_text") or "").strip()
-        if title and content_text:
-            rows.append({"title": title[:120], "content_text": content_text[:1200]})
-    return rows if rows else None
-
-
-class LeadItem(BaseModel):
-    id: str
-    name: str
-    email: str
-    source: str
-    status: Literal["New", "Contacted", "Qualified"]
-    crm_status: Literal["Pending", "Synced"]
-    captured_at: str
-
-
-class ActivityItem(BaseModel):
-    id: str
-    text: str
-    created_at: str
-
-
-class PublishingLogItem(BaseModel):
-    id: str
-    content_id: str
-    platform: str
-    timestamp: str
-    status: Literal["Success", "Failed"]
-
-
-class MediaLibraryItem(BaseModel):
-    id: str
-    name: str
-    media_type: Literal["Image", "Video", "Carousel", "Media"]
-    media_url: str
-    created_at: str
-
-
-class IntegrationState(BaseModel):
-    connected: bool = False
-    account_name: Optional[str] = None
-    account_handle: Optional[str] = None
-
-
-class ProfileState(BaseModel):
-    name: str = ""
-    email: str = ""
-    company: str = ""
-    timezone: str = "America/New_York"
-
-
-class PreferencesState(BaseModel):
-    default_platform: Literal["linkedin", "instagram", "facebook", "twitter"] = "linkedin"
-    quiet_hours_enabled: bool = True
-    approval_digest: Literal["instant", "daily"] = "daily"
-
-
-class CampaignState(BaseModel):
-    id: str
-    name: str
-    budget: int
-    status: Literal["Draft", "Active", "Paused"]
-
-
-class SetupRequest(BaseModel):
-    company_name: str = Field(min_length=2, max_length=200)
-    website: str = Field(default="", max_length=500)
-    scenario: Literal["b2b-saas", "ecommerce", "agency"]
-    workspace_owner_name: str = Field(default="", max_length=120)
-    workspace_owner_email: str = Field(default="", max_length=200)
-
-
-class AuthPayload(BaseModel):
-    email: str
-    password: str
-
-
-class SignupPayload(AuthPayload):
-    name: str
-
-
-SCENARIO_PRESETS: dict[str, dict[str, Any]] = {
-    "b2b-saas": {
-        "label": "B2B SaaS",
-        "target": "CMOs and demand generation leads at B2B SaaS companies with 20-200 employees.",
-        "themes": ["Pipeline acceleration", "Product-led proof", "Funnel conversion", "Retention playbooks"],
-        "focus": ["LinkedIn leadership posts", "Facebook retargeting updates", "Webinar nurture"],
-        "campaigns": [
-            ("Q3 Demo Pipeline Push", 24000, "Active"),
-            ("Mid-Market Webinar Series", 16500, "Active"),
-            ("Customer Expansion Playbook", 9800, "Draft"),
-            ("Retention Rescue Sequence", 7000, "Paused"),
-        ],
-        "activities": [
-            "Content approved for founder thought leadership",
-            "Webinar post published to LinkedIn",
-            "Lead captured from product tour CTA",
-        ],
-        "engagement": [3800, 4200, 4700, 5200, 5600, 3200, 3300],
-        "reach": [16200, 17100, 19400, 20500, 21800, 11600, 12200],
-        "leads_growth": [11, 15, 14, 19, 24, 29],
-    },
-    "ecommerce": {
-        "label": "Ecommerce",
-        "target": "DTC growth managers and ecommerce directors focused on repeat purchase and AOV lift.",
-        "themes": ["Product drops", "UGC proof", "Seasonal offers", "Loyalty loop content"],
-        "focus": ["Instagram product storytelling", "Facebook conversion creatives", "LinkedIn brand ops updates"],
-        "campaigns": [
-            ("Summer Product Drop", 32000, "Active"),
-            ("Creator UGC Sprint", 19000, "Active"),
-            ("Abandoned Cart Recovery", 12000, "Active"),
-            ("VIP Loyalty Refresh", 8300, "Draft"),
-        ],
-        "activities": [
-            "Carousel approved for spring collection",
-            "Instagram post published for launch day",
-            "Lead captured from giveaway landing page",
-        ],
-        "engagement": [6100, 7400, 6900, 7800, 8400, 5200, 5500],
-        "reach": [25500, 29200, 27300, 30800, 32900, 20800, 21900],
-        "leads_growth": [18, 22, 24, 30, 35, 41],
-    },
-    "agency": {
-        "label": "Marketing Agency",
-        "target": "Founders and heads of marketing looking for outsourced campaign execution and reporting.",
-        "themes": ["Case studies", "Process transparency", "Channel strategy", "Client results"],
-        "focus": ["LinkedIn case studies", "Facebook portfolio clips", "Instagram creative showcases"],
-        "campaigns": [
-            ("Client Case Study Series", 14000, "Active"),
-            ("Outbound Prospect Nurture", 9000, "Active"),
-            ("Regional Event Promo", 7600, "Draft"),
-            ("Referral Engine Relaunch", 5000, "Paused"),
-        ],
-        "activities": [
-            "Case-study content approved",
-            "Facebook client testimonial published",
-            "Lead captured from service inquiry form",
-        ],
-        "engagement": [3100, 3600, 3400, 4100, 4600, 2900, 3050],
-        "reach": [12900, 14100, 13800, 15700, 16900, 11200, 11600],
-        "leads_growth": [8, 11, 10, 13, 17, 19],
-    },
-}
-
-
-class SupabaseStateStore:
-    def __init__(self, database_url: str) -> None:
-        self.database_url = database_url
-        self.enabled = bool(database_url and psycopg2 is not None)
-        self.last_error: str = ""
-        self.table_name = "flowpilot_state"
-        self.state_key = "global"
-
-    def _connect(self):
-        if not self.enabled:
-            return None
-        return psycopg2.connect(self.database_url)  # type: ignore[union-attr]
-
-    def ensure_schema(self) -> bool:
-        if not self.enabled:
-            self.last_error = "DATABASE_URL missing or psycopg2 unavailable"
-            return False
-        try:
-            with self._connect() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"""
-                        create table if not exists {self.table_name} (
-                            key text primary key,
-                            payload jsonb not null,
-                            updated_at timestamptz not null default now()
-                        );
-                        """
-                    )
-                    cur.execute(
-                        """
-                        create table if not exists flowpilot_users (
-                            id text primary key,
-                            name text not null,
-                            email text not null unique,
-                            password text not null,
-                            created_at timestamptz not null default now()
-                        );
-
-                        create table if not exists flowpilot_workspace (
-                            workspace_id text primary key,
-                            company_name text not null default '',
-                            company_website text not null default '',
-                            workspace_scenario text not null default 'b2b-saas',
-                            workspace_configured boolean not null default false,
-                            crm_last_bulk_status text not null default 'Pending',
-                            updated_at timestamptz not null default now()
-                        );
-
-                        create table if not exists flowpilot_strategy (
-                            workspace_id text primary key references flowpilot_workspace(workspace_id) on delete cascade,
-                            target_audience text not null default '',
-                            content_themes jsonb not null default '[]'::jsonb,
-                            platform_focus jsonb not null default '[]'::jsonb,
-                            market_gaps jsonb not null default '[]'::jsonb,
-                            updated_at timestamptz not null default now()
-                        );
-
-                        create table if not exists flowpilot_competitors (
-                            id text primary key,
-                            workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
-                            name text not null,
-                            positioning text not null,
-                            strengths jsonb not null default '[]'::jsonb,
-                            weaknesses jsonb not null default '[]'::jsonb
-                        );
-
-                        create table if not exists flowpilot_content (
-                            id text primary key,
-                            workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
-                            title text not null,
-                            content_text text not null,
-                            media_type text not null,
-                            media_preview text not null,
-                            status text not null,
-                            selected_platform text,
-                            scheduled_at text
-                        );
-
-                        create table if not exists flowpilot_leads (
-                            id text primary key,
-                            workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
-                            name text not null,
-                            email text not null,
-                            source text not null,
-                            status text not null,
-                            crm_status text not null,
-                            captured_at text not null
-                        );
-
-                        create table if not exists flowpilot_activities (
-                            id text primary key,
-                            workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
-                            text text not null,
-                            created_at text not null
-                        );
-
-                        create table if not exists flowpilot_publishing_log (
-                            id text primary key,
-                            workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
-                            content_id text not null,
-                            platform text not null,
-                            timestamp text not null,
-                            status text not null
-                        );
-
-                        create table if not exists flowpilot_integrations (
-                            workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
-                            platform text not null,
-                            connected boolean not null default false,
-                            account_name text,
-                            account_handle text,
-                            primary key (workspace_id, platform)
-                        );
-
-                        create table if not exists flowpilot_profile (
-                            workspace_id text primary key references flowpilot_workspace(workspace_id) on delete cascade,
-                            name text not null default '',
-                            email text not null default '',
-                            company text not null default '',
-                            timezone text not null default 'America/New_York',
-                            updated_at timestamptz not null default now()
-                        );
-
-                        create table if not exists flowpilot_preferences (
-                            workspace_id text primary key references flowpilot_workspace(workspace_id) on delete cascade,
-                            default_platform text not null default 'linkedin',
-                            quiet_hours_enabled boolean not null default true,
-                            approval_digest text not null default 'daily',
-                            updated_at timestamptz not null default now()
-                        );
-
-                        create table if not exists flowpilot_campaigns (
-                            id text primary key,
-                            workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
-                            name text not null,
-                            budget integer not null,
-                            status text not null
-                        );
-
-                        create table if not exists flowpilot_engagement_series (
-                            workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
-                            position integer not null,
-                            name text not null,
-                            engagement integer not null default 0,
-                            reach integer not null default 0,
-                            primary key (workspace_id, position)
-                        );
-
-                        create table if not exists flowpilot_leads_growth (
-                            workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
-                            position integer not null,
-                            name text not null,
-                            leads integer not null default 0,
-                            primary key (workspace_id, position)
-                        );
-                        """
-                    )
-                    conn.commit()
-            return True
-        except Exception as exc:  # noqa: BLE001
-            self.last_error = str(exc)
-            return False
-
-    def _sync_relational_tables(self, cur, payload: dict[str, Any]) -> None:
-        workspace_id = str(payload.get("workspace_id") or f"ws-{uuid.uuid4().hex[:10]}")
-        users = payload.get("users", [])
-        competitors = payload.get("competitors", [])
-        content_rows = payload.get("content", [])
-        leads = payload.get("leads", [])
-        activities = payload.get("activities", [])
-        publishing_log = payload.get("publishing_log", [])
-        campaigns = payload.get("campaigns", [])
-        engagement_series = payload.get("engagement_series", [])
-        leads_growth = payload.get("leads_growth", [])
-        integrations = payload.get("integrations", {})
-        strategy = payload.get("strategy")
-        profile = payload.get("profile")
-        preferences = payload.get("preferences")
-
-        cur.execute("delete from flowpilot_users")
-        for user in users:
-            if not isinstance(user, dict):
-                continue
-            cur.execute(
-                """
-                insert into flowpilot_users (id, name, email, password, created_at)
-                values (%s, %s, %s, %s, now())
-                on conflict (id) do update set
-                    name = excluded.name,
-                    email = excluded.email,
-                    password = excluded.password
-                """,
-                (
-                    str(user.get("id", f"usr-{uuid.uuid4().hex[:10]}")),
-                    str(user.get("name", "")),
-                    str(user.get("email", "")).lower(),
-                    str(user.get("password", "")),
-                ),
-            )
-
-        cur.execute("delete from flowpilot_workspace")
-        cur.execute(
-            """
-            insert into flowpilot_workspace (
-                workspace_id, company_name, company_website, workspace_scenario, workspace_configured, crm_last_bulk_status, updated_at
-            ) values (%s, %s, %s, %s, %s, %s, now())
-            """,
-            (
-                workspace_id,
-                str(payload.get("company_name", "")),
-                str(payload.get("company_website", "")),
-                str(payload.get("workspace_scenario", "b2b-saas")),
-                bool(payload.get("workspace_configured", False)),
-                "Synced" if payload.get("crm_last_bulk_status") == "Synced" else "Pending",
-            ),
-        )
-
-        cur.execute("delete from flowpilot_strategy")
-        if isinstance(strategy, dict):
-            cur.execute(
-                """
-                insert into flowpilot_strategy (workspace_id, target_audience, content_themes, platform_focus, market_gaps, updated_at)
-                values (%s, %s, %s::jsonb, %s::jsonb, %s::jsonb, now())
-                """,
-                (
-                    workspace_id,
-                    str(strategy.get("target_audience", "")),
-                    json.dumps(strategy.get("content_themes", [])),
-                    json.dumps(strategy.get("platform_focus", [])),
-                    json.dumps(strategy.get("market_gaps", [])),
-                ),
-            )
-
-        for table in (
-            "flowpilot_competitors",
-            "flowpilot_content",
-            "flowpilot_leads",
-            "flowpilot_activities",
-            "flowpilot_publishing_log",
-            "flowpilot_integrations",
-            "flowpilot_profile",
-            "flowpilot_preferences",
-            "flowpilot_campaigns",
-            "flowpilot_engagement_series",
-            "flowpilot_leads_growth",
-        ):
-            cur.execute(f"delete from {table}")
-
-        for row in competitors:
-            if not isinstance(row, dict):
-                continue
-            cur.execute(
-                """
-                insert into flowpilot_competitors (id, workspace_id, name, positioning, strengths, weaknesses)
-                values (%s, %s, %s, %s, %s::jsonb, %s::jsonb)
-                """,
-                (
-                    str(row.get("id", f"comp-{uuid.uuid4().hex[:8]}")),
-                    workspace_id,
-                    str(row.get("name", "")),
-                    str(row.get("positioning", "")),
-                    json.dumps(row.get("strengths", [])),
-                    json.dumps(row.get("weaknesses", [])),
-                ),
-            )
-
-        for row in content_rows:
-            if not isinstance(row, dict):
-                continue
-            cur.execute(
-                """
-                insert into flowpilot_content (
-                    id, workspace_id, title, content_text, media_type, media_preview, status, selected_platform, scheduled_at
-                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    str(row.get("id", f"content-{uuid.uuid4().hex[:10]}")),
-                    workspace_id,
-                    str(row.get("title", "")),
-                    str(row.get("content_text", "")),
-                    str(row.get("media_type", "Image")),
-                    str(row.get("media_preview", "")),
-                    str(row.get("status", "PENDING")),
-                    row.get("selected_platform"),
-                    row.get("scheduled_at"),
-                ),
-            )
-
-        for row in leads:
-            if not isinstance(row, dict):
-                continue
-            cur.execute(
-                """
-                insert into flowpilot_leads (id, workspace_id, name, email, source, status, crm_status, captured_at)
-                values (%s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    str(row.get("id", f"lead-{uuid.uuid4().hex[:8]}")),
-                    workspace_id,
-                    str(row.get("name", "")),
-                    str(row.get("email", "")),
-                    str(row.get("source", "")),
-                    str(row.get("status", "New")),
-                    str(row.get("crm_status", "Pending")),
-                    str(row.get("captured_at", _iso(_now()))),
-                ),
-            )
-
-        for row in activities:
-            if not isinstance(row, dict):
-                continue
-            cur.execute(
-                """
-                insert into flowpilot_activities (id, workspace_id, text, created_at)
-                values (%s, %s, %s, %s)
-                """,
-                (
-                    str(row.get("id", f"act-{uuid.uuid4().hex[:8]}")),
-                    workspace_id,
-                    str(row.get("text", "")),
-                    str(row.get("created_at", _iso(_now()))),
-                ),
-            )
-
-        for row in publishing_log:
-            if not isinstance(row, dict):
-                continue
-            cur.execute(
-                """
-                insert into flowpilot_publishing_log (id, workspace_id, content_id, platform, timestamp, status)
-                values (%s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    str(row.get("id", f"log-{uuid.uuid4().hex[:8]}")),
-                    workspace_id,
-                    str(row.get("content_id", "")),
-                    str(row.get("platform", "")),
-                    str(row.get("timestamp", _iso(_now()))),
-                    str(row.get("status", "Success")),
-                ),
-            )
-
-        if isinstance(integrations, dict):
-            for platform in ("linkedin", "meta"):
-                data = integrations.get(platform, {})
-                if not isinstance(data, dict):
-                    data = {}
-                cur.execute(
-                    """
-                    insert into flowpilot_integrations (workspace_id, platform, connected, account_name, account_handle)
-                    values (%s, %s, %s, %s, %s)
-                    """,
-                    (
-                        workspace_id,
-                        platform,
-                        bool(data.get("connected", False)),
-                        data.get("account_name"),
-                        data.get("account_handle"),
-                    ),
-                )
-
-        if isinstance(profile, dict):
-            cur.execute(
-                """
-                insert into flowpilot_profile (workspace_id, name, email, company, timezone, updated_at)
-                values (%s, %s, %s, %s, %s, now())
-                """,
-                (
-                    workspace_id,
-                    str(profile.get("name", "")),
-                    str(profile.get("email", "")),
-                    str(profile.get("company", "")),
-                    str(profile.get("timezone", "America/New_York")),
-                ),
-            )
-
-        if isinstance(preferences, dict):
-            cur.execute(
-                """
-                insert into flowpilot_preferences (workspace_id, default_platform, quiet_hours_enabled, approval_digest, updated_at)
-                values (%s, %s, %s, %s, now())
-                """,
-                (
-                    workspace_id,
-                    str(preferences.get("default_platform", "linkedin")),
-                    bool(preferences.get("quiet_hours_enabled", True)),
-                    str(preferences.get("approval_digest", "daily")),
-                ),
-            )
-
-        for row in campaigns:
-            if not isinstance(row, dict):
-                continue
-            cur.execute(
-                """
-                insert into flowpilot_campaigns (id, workspace_id, name, budget, status)
-                values (%s, %s, %s, %s, %s)
-                """,
-                (
-                    str(row.get("id", f"cmp-{uuid.uuid4().hex[:8]}")),
-                    workspace_id,
-                    str(row.get("name", "")),
-                    int(row.get("budget", 0)),
-                    str(row.get("status", "Draft")),
-                ),
-            )
-
-        for idx, row in enumerate(engagement_series):
-            if not isinstance(row, dict):
-                continue
-            cur.execute(
-                """
-                insert into flowpilot_engagement_series (workspace_id, position, name, engagement, reach)
-                values (%s, %s, %s, %s, %s)
-                """,
-                (
-                    workspace_id,
-                    idx,
-                    str(row.get("name", "")),
-                    int(row.get("engagement", 0)),
-                    int(row.get("reach", 0)),
-                ),
-            )
-
-        for idx, row in enumerate(leads_growth):
-            if not isinstance(row, dict):
-                continue
-            cur.execute(
-                """
-                insert into flowpilot_leads_growth (workspace_id, position, name, leads)
-                values (%s, %s, %s, %s)
-                """,
-                (
-                    workspace_id,
-                    idx,
-                    str(row.get("name", "")),
-                    int(row.get("leads", 0)),
-                ),
-            )
-
-    def load(self) -> Optional[dict[str, Any]]:
-        if not self.enabled:
-            return None
-        if not self.ensure_schema():
-            return None
-        try:
-            with self._connect() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"select payload from {self.table_name} where key = %s",
-                        (self.state_key,),
-                    )
-                    row = cur.fetchone()
-                    if not row:
-                        return None
-                    payload = row[0]
-                    if isinstance(payload, dict):
-                        return payload
-                    if isinstance(payload, str):
-                        return json.loads(payload)
-                    return None
-        except Exception as exc:  # noqa: BLE001
-            self.last_error = str(exc)
-            return None
-
-    def save(self, payload: dict[str, Any]) -> bool:
-        if not self.enabled:
-            return False
-        if not self.ensure_schema():
-            return False
-        try:
-            with self._connect() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"""
-                        insert into {self.table_name}(key, payload, updated_at)
-                        values (%s, %s::jsonb, now())
-                        on conflict (key) do update
-                        set payload = excluded.payload,
-                            updated_at = now()
-                        """,
-                        (self.state_key, json.dumps(payload)),
-                    )
-                    self._sync_relational_tables(cur, payload)
-                    conn.commit()
-            return True
-        except Exception as exc:  # noqa: BLE001
-            self.last_error = str(exc)
-            return False
-
-
-class AppState:
-    def __init__(self) -> None:
-        self.users: list[dict[str, str]] = []
-        self.tokens: dict[str, str] = {}
-        self.workspace_id: str = ""
-        self.company_name: str = ""
-        self.company_website: str = ""
-        self.workspace_scenario: Literal["b2b-saas", "ecommerce", "agency"] = "b2b-saas"
-        self.workspace_configured: bool = False
-        self.strategy: Optional[StrategyPlan] = None
-        self.competitors: list[Competitor] = []
-        self.content: list[ContentItem] = []
-        self.leads: list[LeadItem] = []
-        self.activities: list[ActivityItem] = []
-        self.publishing_log: list[PublishingLogItem] = []
-        self.media_library: list[MediaLibraryItem] = []
-        self.campaigns: list[CampaignState] = []
-        self.engagement_series: list[dict[str, Any]] = []
-        self.leads_growth: list[dict[str, Any]] = []
-        self.linkedin = IntegrationState()
-        self.meta = IntegrationState()
-        self.profile = ProfileState()
-        self.preferences = PreferencesState()
-        self.crm_last_bulk_status: Literal["Synced", "Pending"] = "Pending"
-        self.media_registry: set[str] = set()
-
-    def _make_content(self, total: int) -> list[ContentItem]:
-        statuses_cycle: list[Literal["PENDING", "APPROVED", "SCHEDULED", "PUBLISHED", "REJECTED"]] = [
-            "PENDING",
-            "PENDING",
-            "PENDING",
-            "APPROVED",
-            "PENDING",
-        ]
-        rows: list[ContentItem] = []
-        for index in range(total):
-            st = statuses_cycle[index % len(statuses_cycle)]
-            platform = random.choice(["linkedin", "instagram", "facebook", "twitter"])
-            scheduled = None
-            media_url = f"https://picsum.photos/seed/mcc-{uuid.uuid4().hex[:8]}/640/360"
-            if st == "APPROVED":
-                scheduled = _iso(_now() + timedelta(days=index % 5 + 1))
-            rows.append(
-                ContentItem(
-                    id=f"content-{uuid.uuid4().hex[:8]}",
-                    title=f"Campaign Asset {index + 1}",
-                    content_text=CONTENT_SNIPPETS[index % len(CONTENT_SNIPPETS)],
-                    media_type=random.choice(["Image", "Carousel", "Media"]),
-                    media_preview=media_url,
-                    status=st,
-                    selected_platform=platform if st == "APPROVED" else None,
-                    scheduled_at=scheduled if st == "APPROVED" else None,
-                ),
-            )
-            self.media_registry.add(media_url)
-        return rows
-
-    def apply_setup(
-        self,
-        company_name: str,
-        website: str,
-        scenario: Literal["b2b-saas", "ecommerce", "agency"],
-        owner_name: str,
-        owner_email: str,
-        mark_configured: bool = True,
-    ) -> None:
-        preset = SCENARIO_PRESETS[scenario]
-        self.workspace_id = f"ws-{uuid.uuid4().hex[:10]}"
-        self.company_name = company_name
-        self.company_website = website
-        self.workspace_scenario = scenario
-        self.workspace_configured = mark_configured
-        self.profile = ProfileState(
-            name=owner_name.strip() or "Jordan Reeves",
-            email=owner_email.strip() or "jordan.reeves@northline.co",
-            company=company_name,
-            timezone=self.profile.timezone,
-        )
-        self.strategy = StrategyPlan(
-            target_audience=preset["target"],
-            content_themes=list(preset["themes"]),
-            platform_focus=list(preset["focus"]),
-            market_gaps=[
-                "Low-frequency founder narrative content despite high engagement potential.",
-                "Limited platform-native case-study formats with measurable proof points.",
-                "Inconsistent community follow-up sequences after campaign launches.",
-            ],
-        )
-        total_competitors = random.randint(5, 10)
-        names = random.sample(COMPETITOR_NAMES, k=total_competitors)
-        self.competitors = [
-            Competitor(
-                id=f"comp-{uuid.uuid4().hex[:8]}",
-                name=name,
-                positioning=random.choice(
-                    [
-                        "Premium performance marketing for growth teams",
-                        "SMB-friendly campaign execution with rapid testing",
-                        "Enterprise reporting and multi-channel automation",
-                    ],
-                ),
-                strengths=random.sample(
-                    ["Strong paid social execution", "Consistent brand storytelling", "Fast campaign QA", "Solid analytics"],
-                    k=3,
-                ),
-                weaknesses=random.sample(
-                    ["Limited SEO depth", "Higher retainers", "Regional focus", "Narrow partner network"],
-                    k=2,
-                ),
-            )
-            for name in names
-        ]
-        self.content = self._make_content(total=random.randint(10, 20))
-        self.leads = [
-            LeadItem(
-                id="lead-1",
-                name="Alicia Gardner",
-                email="alicia.gardner@oaklane.com",
-                source=preset["campaigns"][0][0],
-                status="Qualified",
-                crm_status="Pending",
-                captured_at=_iso(_now() - timedelta(days=2)),
-            ),
-            LeadItem(
-                id="lead-2",
-                name="Ravi Menon",
-                email="ravi.menon@northpine.io",
-                source=preset["campaigns"][1][0],
-                status="New",
-                crm_status="Pending",
-                captured_at=_iso(_now() - timedelta(days=5)),
-            ),
-        ]
-        self.activities = [
-            ActivityItem(
-                id="act-1",
-                text=preset["activities"][0],
-                created_at=_iso(_now() - timedelta(hours=6)),
-            ),
-            ActivityItem(
-                id="act-2",
-                text=preset["activities"][1],
-                created_at=_iso(_now() - timedelta(hours=18)),
-            ),
-            ActivityItem(
-                id="act-3",
-                text=preset["activities"][2],
-                created_at=_iso(_now() - timedelta(days=1)),
-            ),
-        ]
-        self.publishing_log = []
-        self.crm_last_bulk_status = "Pending"
-        self.campaigns = [
-            CampaignState(
-                id=f"cmp-{i+1}",
-                name=name,
-                budget=budget,
-                status=status,
-            )
-            for i, (name, budget, status) in enumerate(preset["campaigns"])
-        ]
-        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        self.engagement_series = [
-            {"name": days[i], "engagement": preset["engagement"][i], "reach": preset["reach"][i]}
-            for i in range(7)
-        ]
-        self.leads_growth = [{"name": f"W{i + 1}", "leads": preset["leads_growth"][i]} for i in range(6)]
-
-    def workspace(self) -> dict[str, Any]:
-        return {
-            "workspace_id": self.workspace_id,
-            "company_name": self.company_name,
-            "company_website": self.company_website,
-            "workspace_scenario": self.workspace_scenario,
-            "workspace_configured": self.workspace_configured,
-            "strategy": self.strategy.model_dump() if self.strategy else None,
-            "competitors": [c.model_dump() for c in self.competitors],
-            "content": [c.model_dump() for c in self.content],
-            "leads": [l.model_dump() for l in self.leads],
-            "activities": [a.model_dump() for a in self.activities],
-            "publishing_log": [p.model_dump() for p in self.publishing_log],
-            "media_library": [m.model_dump() for m in self.media_library],
-            "integrations": {
-                "linkedin": self.linkedin.model_dump(),
-                "meta": self.meta.model_dump(),
-            },
-            "profile": self.profile.model_dump(),
-            "preferences": self.preferences.model_dump(),
-            "crm_last_bulk_status": self.crm_last_bulk_status,
-            "campaigns": [c.model_dump() for c in self.campaigns],
-            "engagement_series": self.engagement_series,
-            "leads_growth": self.leads_growth,
-        }
-
-    def snapshot(self) -> dict[str, Any]:
-        payload = self.workspace()
-        payload["users"] = self.users
-        payload["tokens"] = self.tokens
-        return payload
-
-    def load_snapshot(self, payload: dict[str, Any]) -> None:
-        users = payload.get("users")
-        if isinstance(users, list):
-            self.users = [
-                {
-                    "id": str(user.get("id", "")),
-                    "name": str(user.get("name", "")),
-                    "email": str(user.get("email", "")).lower(),
-                    "password": str(user.get("password", "")),
-                }
-                for user in users
-                if isinstance(user, dict) and user.get("email")
-            ]
-
-        tokens = payload.get("tokens")
-        if isinstance(tokens, dict):
-            self.tokens = {str(token): str(email).lower() for token, email in tokens.items() if token and email}
-
-        self.workspace_id = str(payload.get("workspace_id", self.workspace_id))
-        self.company_name = str(payload.get("company_name", self.company_name))
-        self.company_website = str(payload.get("company_website", self.company_website))
-        scenario = payload.get("workspace_scenario", self.workspace_scenario)
-        if scenario in ("b2b-saas", "ecommerce", "agency"):
-            self.workspace_scenario = scenario
-        self.workspace_configured = bool(payload.get("workspace_configured", self.workspace_configured))
-
-        strategy_payload = payload.get("strategy")
-        self.strategy = StrategyPlan(**strategy_payload) if isinstance(strategy_payload, dict) else None
-        self.competitors = [Competitor(**row) for row in payload.get("competitors", []) if isinstance(row, dict)]
-        self.content = [ContentItem(**row) for row in payload.get("content", []) if isinstance(row, dict)]
-        self.leads = [LeadItem(**row) for row in payload.get("leads", []) if isinstance(row, dict)]
-        self.activities = [ActivityItem(**row) for row in payload.get("activities", []) if isinstance(row, dict)]
-        self.publishing_log = [PublishingLogItem(**row) for row in payload.get("publishing_log", []) if isinstance(row, dict)]
-        self.media_library = [MediaLibraryItem(**row) for row in payload.get("media_library", []) if isinstance(row, dict)]
-
-        integrations = payload.get("integrations", {})
-        if isinstance(integrations, dict):
-            linkedin_data = integrations.get("linkedin")
-            meta_data = integrations.get("meta")
-            self.linkedin = IntegrationState(**linkedin_data) if isinstance(linkedin_data, dict) else IntegrationState()
-            self.meta = IntegrationState(**meta_data) if isinstance(meta_data, dict) else IntegrationState()
-
-        profile_payload = payload.get("profile")
-        if isinstance(profile_payload, dict):
-            self.profile = ProfileState(**profile_payload)
-        preferences_payload = payload.get("preferences")
-        if isinstance(preferences_payload, dict):
-            self.preferences = PreferencesState(**preferences_payload)
-
-        crm_status = payload.get("crm_last_bulk_status")
-        self.crm_last_bulk_status = "Synced" if crm_status == "Synced" else "Pending"
-        self.campaigns = [CampaignState(**row) for row in payload.get("campaigns", []) if isinstance(row, dict)]
-        self.engagement_series = [row for row in payload.get("engagement_series", []) if isinstance(row, dict)]
-        self.leads_growth = [row for row in payload.get("leads_growth", []) if isinstance(row, dict)]
-
-
-state = AppState()
-db_state_store = SupabaseStateStore(DATABASE_URL)
-loaded_snapshot = db_state_store.load()
-if loaded_snapshot:
-    try:
-        users = loaded_snapshot.get("users", []) if isinstance(loaded_snapshot, dict) else []
-        has_seed_user = any(
-            isinstance(u, dict)
-            and (
-                str(u.get("id", "")) == "usr-seed"
-                or str(u.get("email", "")).lower() == DEFAULT_DEMO_EMAIL
-            )
-            for u in users
-        )
-        if has_seed_user:
-            db_state_store.save(state.snapshot())
-        else:
-            state.load_snapshot(loaded_snapshot)
-    except Exception as exc:  # noqa: BLE001
-        db_state_store.last_error = f"snapshot restore failed: {exc}"
-else:
-    db_state_store.save(state.snapshot())
-
-_persist_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="flowpilot-persist")
-_persist_lock = Lock()
-_persist_future: Future[None] | None = None
-_pending_snapshot: dict[str, Any] | None = None
-
-
-def _save_snapshot_chain(snapshot: dict[str, Any]) -> None:
-    global _persist_future, _pending_snapshot
-    current = snapshot
-    while True:
-        db_state_store.save(current)
-        with _persist_lock:
-            if _pending_snapshot is None:
-                _persist_future = None
-                return
-            current = _pending_snapshot
-            _pending_snapshot = None
-
-
-def _persist_state(*, sync: bool = False) -> None:
-    global _persist_future, _pending_snapshot
-    snapshot = state.snapshot()
-    if sync:
-        db_state_store.save(snapshot)
-        return
-    with _persist_lock:
-        if _persist_future and not _persist_future.done():
-            _pending_snapshot = snapshot
-            return
-        _persist_future = _persist_executor.submit(_save_snapshot_chain, snapshot)
-
-
-app = FastAPI(title="FlowPilot API", version="1.1.0")
+app = FastAPI(
+    title="AI Marketing Automation Backend",
+    version="1.0.0",
+    lifespan=lifespan,
+    redirect_slashes=False,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -1896,868 +794,696 @@ app.add_middleware(
 )
 
 
-def _auth_user(authorization: str | None) -> dict[str, str]:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing token")
-    token = authorization.replace("Bearer ", "", 1).strip()
-    email = state.tokens.get(token)
-    if not email:
-        raise HTTPException(status_code=401, detail="Invalid token")
-    user = next((u for u in state.users if u["email"] == email), None)
-    if not user:
-        raise HTTPException(status_code=401, detail="Unknown user")
-    return user
-
-
-def _remember_cloudinary_media(name: str, media_url: str, media_type: Optional[str]) -> None:
-    if not media_url or not _is_cloudinary_url(media_url):
-        return
-    existing = next((asset for asset in state.media_library if asset.media_url == media_url), None)
-    if existing:
-        existing.name = name or existing.name
-        return
-    normalized_type: Literal["Image", "Video", "Carousel", "Media"] = "Video" if media_type == "Video" else "Image"
-    state.media_library.insert(
-        0,
-        MediaLibraryItem(
-            id=f"asset-{uuid.uuid4().hex[:10]}",
-            name=name or "Cloudinary media",
-            media_type=normalized_type,
-            media_url=media_url,
-            created_at=_iso(_now()),
-        ),
-    )
-    state.media_library = state.media_library[:100]
-
-
-@app.post("/signup")
-def post_signup(body: SignupPayload) -> dict[str, Any]:
-    email = body.email.strip().lower()
-    if any(u["email"] == email for u in state.users):
-        raise HTTPException(status_code=400, detail="Email already registered")
-    user = {
-        "id": f"usr-{uuid.uuid4().hex[:10]}",
-        "name": body.name.strip() or "User",
-        "email": email,
-        "password": body.password,
+@app.get("/")
+def root() -> dict[str, Any]:
+    """Base URL: opening http://127.0.0.1:8001/ in a browser is expected to hit this, not 404."""
+    return {
+        "service": "FlowPilot API",
+        "status": "ok",
+        "docs": "/docs",
+        "health": "/health",
+        "note": "App routes are under /workspace, /content, /strategy, etc. (not /).",
     }
-    state.users.append(user)
-    _persist_state()
-    token = f"fp.{uuid.uuid4().hex}.{uuid.uuid4().hex[:10]}"
-    state.tokens[token] = user["email"]
-    return {"token": token, "user": {"name": user["name"], "email": user["email"]}}
 
 
-@app.post("/login")
-def post_login(body: AuthPayload) -> dict[str, Any]:
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/signup", response_model=AuthResponse)
+def signup(body: SignupRequest, db: Session = Depends(get_db)) -> AuthResponse:
     email = body.email.strip().lower()
-    user = next((u for u in state.users if u["email"] == email and u["password"] == body.password), None)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-    token = f"fp.{uuid.uuid4().hex}.{uuid.uuid4().hex[:10]}"
-    state.tokens[token] = user["email"]
-    return {"token": token, "user": {"name": user["name"], "email": user["email"]}}
+    name = body.name.strip()
+    password = body.password
+
+    existing = db.execute(
+        text("select id from flowpilot_users where lower(email) = :email"),
+        {"email": email},
+    ).mappings().first()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Account already exists. Please log in.")
+
+    user_id = f"usr-{uuid.uuid4().hex[:10]}"
+    db.execute(
+        text(
+            "insert into flowpilot_users (id, name, email, password, created_at) "
+            "values (:id, :name, :email, :password, now())"
+        ),
+        {"id": user_id, "name": name, "email": email, "password": password},
+    )
+    db.commit()
+
+    user = AuthUserResponse(name=name, email=email)
+    return AuthResponse(token=auth_token(user_id), user=user)
+
+
+@app.post("/login", response_model=AuthResponse)
+def login(body: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
+    row = db.execute(
+        text(
+            "select id, name, email from flowpilot_users "
+            "where lower(email) = :email and password = :password"
+        ),
+        {"email": body.email.strip().lower(), "password": body.password},
+    ).mappings().first()
+
+    if row is None:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    return AuthResponse(token=auth_token(str(row["id"])), user=serialize_auth_user(dict(row)))
 
 
 @app.get("/workspace")
-def get_workspace(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    return state.workspace()
+def get_workspace(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    return workspace_snapshot(db, str(user["id"]), user)
 
 
-@app.get("/health/db")
-def get_db_health() -> dict[str, Any]:
-    return {
-        "database_enabled": db_state_store.enabled,
-        "database_ready": db_state_store.ensure_schema() if db_state_store.enabled else False,
-        "last_error": db_state_store.last_error,
-    }
+@app.delete("/workspace")
+def delete_workspace(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    for table in (
+        "flowpilot_strategy",
+        "flowpilot_competitors",
+        "flowpilot_content",
+        "flowpilot_leads",
+        "flowpilot_activities",
+        "flowpilot_publishing_log",
+        "flowpilot_integrations",
+        "flowpilot_profile",
+        "flowpilot_preferences",
+        "flowpilot_campaigns",
+        "flowpilot_engagement_series",
+        "flowpilot_leads_growth",
+        "flowpilot_workspace",
+    ):
+        db.execute(text(f"delete from {table} where workspace_id = :workspace_id"), {"workspace_id": workspace_id})
+    db.commit()
+    return default_workspace_snapshot(user)
 
 
 @app.post("/workspace")
-def post_workspace(body: SetupRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    state.apply_setup(
-        company_name=body.company_name.strip(),
-        website=body.website.strip(),
-        scenario=body.scenario,
-        owner_name=body.workspace_owner_name.strip(),
-        owner_email=body.workspace_owner_email.strip(),
-        mark_configured=True,
-    )
-    state.activities.insert(
-        0,
-        ActivityItem(
-            id=f"act-{uuid.uuid4().hex[:8]}",
-            text=f"Workspace configured for {SCENARIO_PRESETS[body.scenario]['label']}",
-            created_at=_iso(_now()),
+def setup_workspace(
+    body: WorkspaceRequest,
+    db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    scenario = body.scenario.strip() or "b2b-saas"
+    company_name = body.company_name.strip()
+    website = body.website.strip()
+    primary_region = _normalize_primary_region(body.primary_region)
+    owner_name = body.workspace_owner_name.strip() or str(user["name"])
+    owner_email = body.workspace_owner_email.strip().lower() or str(user["email"])
+    profile_tz = _default_timezone_for_region(primary_region)
+
+    db.execute(
+        text(
+            "insert into flowpilot_workspace "
+            "(workspace_id, company_name, company_website, workspace_scenario, primary_region, workspace_configured, crm_last_bulk_status, updated_at) "
+            "values (:workspace_id, :company_name, :company_website, :workspace_scenario, :primary_region, true, 'Pending', now()) "
+            "on conflict (workspace_id) do update set "
+            "company_name = excluded.company_name, "
+            "company_website = excluded.company_website, "
+            "workspace_scenario = excluded.workspace_scenario, "
+            "primary_region = excluded.primary_region, "
+            "workspace_configured = true, "
+            "updated_at = now()"
         ),
+        {
+            "workspace_id": workspace_id,
+            "company_name": company_name,
+            "company_website": website,
+            "workspace_scenario": scenario,
+            "primary_region": primary_region,
+        },
     )
-    _persist_state()
-    return state.workspace()
+    db.execute(
+        text(
+            "insert into flowpilot_profile (workspace_id, name, email, company, timezone, updated_at) "
+            "values (:workspace_id, :name, :email, :company, :timezone, now()) "
+            "on conflict (workspace_id) do update set "
+            "name = excluded.name, email = excluded.email, company = excluded.company, "
+            "timezone = excluded.timezone, updated_at = now()"
+        ),
+        {
+            "workspace_id": workspace_id,
+            "name": owner_name,
+            "email": owner_email,
+            "company": company_name,
+            "timezone": profile_tz,
+        },
+    )
+    db.execute(
+        text(
+            "insert into flowpilot_preferences (workspace_id, default_platform, quiet_hours_enabled, approval_digest, updated_at) "
+            "values (:workspace_id, 'linkedin', true, 'daily', now()) "
+            "on conflict (workspace_id) do nothing"
+        ),
+        {"workspace_id": workspace_id},
+    )
+    _seed_demo_metrics(db, workspace_id)
+    db.commit()
 
+    competitor_inputs = normalize_competitor_inputs(body.competitors)
+    try:
+        save_workspace_ai_flow(
+            db,
+            workspace_id=workspace_id,
+            company_name=company_name,
+            website=website,
+            scenario=scenario,
+            competitors=competitor_inputs,
+            ai_model=body.ai_model,
+            replace_content=True,
+            calendar_days=7,
+            primary_region=primary_region,
+        )
+        db.commit()
+    except Exception:
+        logger.exception("Workspace AI flow failed")
+        db.rollback()
+        try:
+            record_activity(db, workspace_id, "AI flow could not complete automatically. Check AI configuration and rerun competitor research.")
+            db.commit()
+        except Exception:
+            db.rollback()
 
-@app.post("/workspace/setup")
-def post_workspace_setup(body: SetupRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    return post_workspace(body, authorization)
-
-
-class StrategyRequest(BaseModel):
-    company_name: str = Field(default="", max_length=200)
-    website: str = Field(default="", max_length=500)
+    return workspace_snapshot(db, workspace_id, user)
 
 
 @app.post("/strategy")
-def post_strategy(body: StrategyRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    _refresh_runtime_env()
-    state.company_name = body.company_name.strip() or "Client Brand"
-    state.company_website = body.website.strip()
-    total = random.randint(5, 10)
-    competitors: list[Competitor] = []
-    used = random.sample(COMPETITOR_NAMES, k=min(total, len(COMPETITOR_NAMES)))
-    for index, name in enumerate(used):
-        competitors.append(
-            Competitor(
-                id=f"comp-{uuid.uuid4().hex[:8]}",
-                name=name,
-                positioning=random.choice(
-                    [
-                        "Premium performance marketing for B2B teams",
-                        "SMB-friendly creative with fast turnaround",
-                        "Enterprise-grade automation and reporting",
-                    ]
-                ),
-                strengths=random.sample(
-                    ["Strong paid social execution", "Consistent brand storytelling", "Fast campaign QA", "Solid analytics"],
-                    k=3,
-                ),
-                weaknesses=random.sample(
-                    ["Limited SEO depth", "Higher retainers", "Regional focus", "Narrow partner network"],
-                    k=2,
-                ),
-            )
+def strategy(
+    body: StrategyRequest,
+    db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    context = _workspace_context(db, workspace_id)
+    company_name = body.company_name.strip() or context["company_name"]
+    website = body.website.strip() or context["company_website"]
+    scenario = body.scenario.strip() or context["workspace_scenario"]
+    if not company_name:
+        raise HTTPException(status_code=400, detail="Company name is required before strategy research")
+
+    try:
+        research = save_workspace_ai_flow(
+            db,
+            workspace_id=workspace_id,
+            company_name=company_name,
+            website=website,
+            scenario=scenario,
+            competitors=normalize_competitor_inputs(body.competitors),
+            ai_model=body.ai_model,
+            replace_content=False,
+            calendar_days=7,
+            primary_region=context["primary_region"],
         )
-    state.competitors = competitors
-    state.strategy = _ai_strategy_plan(state.company_name, state.company_website) or StrategyPlan(
-        target_audience="Marketing leaders at B2B companies with teams of 20-200 focused on pipeline predictability.",
-        content_themes=[
-            "Pipeline acceleration",
-            "Campaign performance insights",
-            "Cross-channel coordination",
-            "Brand consistency at scale",
-        ],
-        platform_focus=["LinkedIn executive updates", "Meta proof points", "Lifecycle email touchpoints"],
-        market_gaps=[
-            "Most competitors post campaign announcements, but few publish post-mortem learning loops.",
-            "Cross-platform narrative continuity is weak, leaving conversion intent under-captured.",
-            "Educational mid-funnel assets are underused versus high-volume top-funnel posts.",
-        ],
-    )
-    state.activities.insert(
-        0,
-        ActivityItem(
-            id=f"act-{uuid.uuid4().hex[:8]}",
-            text=f"Strategy refreshed for {state.company_name}",
-            created_at=_iso(_now()),
-        ),
-    )
-    _persist_state()
-    return {"strategy": state.strategy.model_dump(), "competitors": [c.model_dump() for c in state.competitors]}
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Strategy research failed")
+        raise HTTPException(status_code=500, detail="Strategy research failed") from exc
 
-
-class ContentRequest(BaseModel):
-    action: Literal["generate", "update", "create"] = "generate"
-    content_id: Optional[str] = None
-    title: Optional[str] = None
-    content_text: Optional[str] = None
-    calendar_days: Optional[int] = 14
-    media_type: Optional[Literal["Image", "Video", "Carousel", "Media"]] = None
-    media_preview: Optional[str] = None
-    scheduled_at: Optional[str] = None
-    auto_activate: Optional[bool] = False
+    return {"strategy": research["strategy"], "competitors": research["competitors"]}
 
 
 @app.post("/content")
-def post_content(body: ContentRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    if body.action == "create":
-        title = (body.title or "").strip() or f"Campaign Asset {len(state.content) + 1}"
-        content_text = (body.content_text or "").strip() or CONTENT_SNIPPETS[len(state.content) % len(CONTENT_SNIPPETS)]
-        media_type = body.media_type or "Image"
-        content_id = f"content-{uuid.uuid4().hex[:10]}"
-        media_preview = (body.media_preview or "").strip() or f"https://picsum.photos/seed/mcc-{uuid.uuid4().hex[:8]}/640/360"
-        if media_preview.startswith(("data:image/", "data:video/")):
-            try:
-                _refresh_runtime_env()
-                media_preview = _upload_media_preview_to_cloudinary(content_id, media_preview, media_type)
-                _remember_cloudinary_media(title, media_preview, media_type)
-            except Exception as e:  # noqa: BLE001
-                raise HTTPException(status_code=400, detail=f"Cloudinary image upload failed: {e}") from e
-        item = ContentItem(
-            id=content_id,
-            title=title,
-            content_text=content_text,
-            media_type=media_type,
-            media_preview=media_preview,
-            status="PENDING",
-            selected_platform=None,
-            scheduled_at=None,
-        )
-        if body.auto_activate:
-            item.selected_platform = state.preferences.default_platform
-            if body.scheduled_at:
-                item.status = "SCHEDULED"
-                item.scheduled_at = body.scheduled_at
-            else:
-                item.status = "APPROVED"
-        state.content.insert(0, item)
-        state.activities.insert(
-            0,
-            ActivityItem(
-                id=f"act-{uuid.uuid4().hex[:8]}",
-                text=f"Content created: {item.title}",
-                created_at=_iso(_now()),
-            ),
-        )
-        _persist_state()
-        return {"content": [c.model_dump() for c in state.content]}
-
-    if body.action == "update":
-        if not body.content_id:
-            raise HTTPException(status_code=400, detail="content_id required")
-        for item in state.content:
-            if item.id == body.content_id:
-                if body.title is not None:
-                    item.title = body.title
-                if body.content_text is not None:
-                    item.content_text = body.content_text
-                if body.media_type is not None:
-                    item.media_type = body.media_type
-                if body.media_preview is not None:
-                    media_preview = body.media_preview.strip()
-                    if media_preview.startswith(("data:image/", "data:video/")):
-                        try:
-                            _refresh_runtime_env()
-                            media_preview = _upload_media_preview_to_cloudinary(item.id, media_preview, item.media_type)
-                            _remember_cloudinary_media(item.title, media_preview, item.media_type)
-                        except Exception as e:  # noqa: BLE001
-                            raise HTTPException(status_code=400, detail=f"Cloudinary image upload failed: {e}") from e
-                    item.media_preview = media_preview
-                    _remember_cloudinary_media(item.title, item.media_preview, item.media_type)
-
-                if body.auto_activate:
-                    item.selected_platform = item.selected_platform or state.preferences.default_platform
-                    if body.scheduled_at:
-                        item.status = "SCHEDULED"
-                        item.scheduled_at = body.scheduled_at
-                    else:
-                        item.status = "APPROVED"
-                        item.scheduled_at = None
-                else:
-                    item.status = "PENDING"
-                    item.selected_platform = None
-                    item.scheduled_at = None
-                state.activities.insert(
-                    0,
-                    ActivityItem(
-                        id=f"act-{uuid.uuid4().hex[:8]}",
-                        text=f"Content updated: {item.title}",
-                        created_at=_iso(_now()),
-                    ),
-                )
-                _persist_state()
-                return {"content": [c.model_dump() for c in state.content]}
-        raise HTTPException(status_code=404, detail="Content not found")
-
-    calendar_days = max(7, min(30, body.calendar_days or 14))
-    total = calendar_days
-    _refresh_runtime_env()
-    ai_items = _ai_content_calendar(total) or []
-    new_items: list[ContentItem] = []
-    state.media_registry = set()
-    for index in range(total):
-        ai_item = ai_items[index] if index < len(ai_items) else {}
-        media_url = f"https://picsum.photos/seed/mcc-{uuid.uuid4().hex[:8]}/640/360"
-        while media_url in state.media_registry:
-            media_url = f"https://picsum.photos/seed/mcc-{uuid.uuid4().hex[:8]}/640/360"
-        content_id = f"content-{uuid.uuid4().hex[:10]}"
-        media_type: Literal["Image", "Video", "Carousel", "Media"] = random.choice(["Image", "Carousel", "Media"])
-        if _cloudinary_ready():
-            try:
-                media_url = _upload_media_preview_to_cloudinary(content_id, media_url, media_type)
-                _remember_cloudinary_media(f"Campaign Asset {index + 1}", media_url, media_type)
-            except Exception:
-                pass
-        state.media_registry.add(media_url)
-        new_items.append(
-            ContentItem(
-                id=content_id,
-                title=ai_item.get("title") or f"Campaign Asset {index + 1}",
-                content_text=ai_item.get("content_text") or CONTENT_SNIPPETS[index % len(CONTENT_SNIPPETS)],
-                media_type=media_type,
-                media_preview=media_url,
-                status="PENDING",
-                selected_platform=None,
-                scheduled_at=None,
+def workspace_content(
+    body: ContentLibraryRequest,
+    db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    if body.action == "generate":
+        context = _workspace_context(db, workspace_id)
+        try:
+            save_workspace_ai_flow(
+                db,
+                workspace_id=workspace_id,
+                company_name=context["company_name"],
+                website=context["company_website"],
+                scenario=context["workspace_scenario"],
+                competitors=[],
+                ai_model=body.ai_model,
+                replace_content=True,
+                calendar_days=body.calendar_days or 14,
+                primary_region=context["primary_region"],
             )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            logger.exception("Content generation failed")
+            raise HTTPException(status_code=500, detail="Content generation failed") from exc
+    elif body.action == "suggest":
+        context = _workspace_context(db, workspace_id)
+        if not (context.get("company_name") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Add your company name in workspace setup before using AI suggest.",
+            )
+        strategy_row = db.execute(
+            text(
+                "select target_audience, content_themes, platform_focus, market_gaps from flowpilot_strategy "
+                "where workspace_id = :workspace_id"
+            ),
+            {"workspace_id": workspace_id},
+        ).mappings().first()
+        strategy_snapshot: dict[str, Any] | None = dict(strategy_row) if strategy_row is not None else None
+        competitor_rows = db.execute(
+            text(
+                "select name, positioning from flowpilot_competitors where workspace_id = :workspace_id order by name limit 8"
+            ),
+            {"workspace_id": workspace_id},
+        ).mappings().all()
+        competitors = [
+            {"name": str(r["name"]), "website": "", "focus": str(r["positioning"] or "")} for r in competitor_rows
+        ]
+        try:
+            suggestion = suggest_master_content_post(
+                company_name=str(context["company_name"]),
+                website=str(context["company_website"] or ""),
+                scenario=str(context["workspace_scenario"] or "b2b-saas"),
+                competitors=competitors,
+                strategy_snapshot=strategy_snapshot,
+                hint=(body.suggest_hint or "").strip(),
+                ai_model=body.ai_model,
+                workspace_id=workspace_id,
+                primary_region=context["primary_region"],
+            )
+        except AgentError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        suggestion = _suggestion_ingest_cloudinary(db, workspace_id, suggestion)
+        model_label = body.ai_model or settings.openrouter_model
+        record_activity(
+            db,
+            workspace_id,
+            f"AI suggested a Master content draft using {model_label}.",
         )
-    state.content = new_items
-    state.activities.insert(
-        0,
-        ActivityItem(
-            id=f"act-{uuid.uuid4().hex[:8]}",
-            text=f"Generated {total}-day content calendar with non-repeating media",
-            created_at=_iso(_now()),
-        ),
-    )
-    _persist_state()
-    return {"content": [c.model_dump() for c in state.content]}
+        db.commit()
+        return {
+            "suggestion": suggestion,
+            "content": workspace_snapshot(db, workspace_id, user)["content"],
+        }
+    elif body.action == "create":
+        default_platform = _default_platform(db, workspace_id) if body.auto_activate else None
+        status = "SCHEDULED" if body.auto_activate and body.scheduled_at else "APPROVED" if body.auto_activate else "PENDING"
+        db.execute(
+            text(
+                "insert into flowpilot_content "
+                "(id, workspace_id, title, content_text, media_type, media_preview, status, selected_platform, scheduled_at) "
+                "values (:id, :workspace_id, :title, :content_text, :media_type, :media_preview, :status, :selected_platform, :scheduled_at)"
+            ),
+            {
+                "id": f"cnt-{uuid.uuid4().hex[:12]}",
+                "workspace_id": workspace_id,
+                "title": (body.title or "Untitled content").strip(),
+                "content_text": (body.content_text or "").strip(),
+                "media_type": body.media_type or "Image",
+                "media_preview": body.media_preview or f"https://picsum.photos/seed/{workspace_id}-{uuid.uuid4().hex[:6]}/800/450",
+                "status": status,
+                "selected_platform": default_platform,
+                "scheduled_at": body.scheduled_at,
+            },
+        )
+        record_activity(db, workspace_id, "AI flow added a new content draft to the library.")
+        db.commit()
+    elif body.action == "update":
+        if not body.content_id:
+            raise HTTPException(status_code=400, detail="content_id is required")
+        default_platform = _default_platform(db, workspace_id) if body.auto_activate else None
+        status = "SCHEDULED" if body.auto_activate and body.scheduled_at else "APPROVED" if body.auto_activate else "PENDING"
+        db.execute(
+            text(
+                "update flowpilot_content set "
+                "title = coalesce(:title, title), "
+                "content_text = coalesce(:content_text, content_text), "
+                "media_type = coalesce(:media_type, media_type), "
+                "media_preview = coalesce(:media_preview, media_preview), "
+                "scheduled_at = coalesce(:scheduled_at, scheduled_at), "
+                "selected_platform = coalesce(:selected_platform, selected_platform), "
+                "status = :status "
+                "where workspace_id = :workspace_id and id = :content_id"
+            ),
+            {
+                "workspace_id": workspace_id,
+                "content_id": body.content_id,
+                "title": body.title,
+                "content_text": body.content_text,
+                "media_type": body.media_type,
+                "media_preview": body.media_preview,
+                "scheduled_at": body.scheduled_at,
+                "selected_platform": default_platform,
+                "status": status,
+            },
+        )
+        record_activity(db, workspace_id, "Content draft updated and returned to the AI review queue.")
+        db.commit()
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported content action")
 
-
-class ApproveRequest(BaseModel):
-    content_id: str
-    platform: Optional[Literal["linkedin", "instagram", "facebook", "twitter"]] = None
-    platforms: Optional[list[Literal["linkedin", "instagram", "facebook", "twitter"]]] = None
+    return {"content": workspace_snapshot(db, workspace_id, user)["content"]}
 
 
 @app.post("/approve")
-def post_approve(body: ApproveRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    raw_platforms = list(body.platforms or [])
-    if body.platform and body.platform not in raw_platforms:
-        raw_platforms.insert(0, body.platform)
-    normalized_platforms: list[Literal["linkedin", "instagram", "facebook", "twitter"]] = []
-    seen: set[str] = set()
-    for platform in raw_platforms:
-        if platform in seen:
-            continue
-        seen.add(platform)
-        normalized_platforms.append(platform)
-    if not normalized_platforms:
-        raise HTTPException(status_code=400, detail="At least one platform is required")
+def approve_workspace_content(
+    body: WorkspaceApproveRequest,
+    db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    selected_platforms = _valid_platforms(body.platforms or ([body.platform] if body.platform else []))
+    if not selected_platforms:
+        raise HTTPException(status_code=400, detail="At least one supported platform is required")
 
-    for item in state.content:
-        if item.id == body.content_id:
-            if item.status == "REJECTED":
-                raise HTTPException(status_code=400, detail="Rejected content must be edited before approval")
-            if item.status == "PUBLISHED":
-                raise HTTPException(status_code=400, detail="Already published")
-            item.status = "APPROVED"
-            item.selected_platform = normalized_platforms[0]
-            for extra_platform in normalized_platforms[1:]:
-                state.content.insert(
-                    0,
-                    ContentItem(
-                        id=f"content-{uuid.uuid4().hex[:8]}",
-                        title=item.title,
-                        content_text=item.content_text,
-                        media_type=item.media_type,
-                        media_preview=item.media_preview,
-                        status="APPROVED",
-                        selected_platform=extra_platform,
-                        scheduled_at=item.scheduled_at,
-                    ),
-                )
-            state.activities.insert(
-                0,
-                ActivityItem(
-                    id=f"act-{uuid.uuid4().hex[:8]}",
-                    text=f"Content approved: {item.title} ({', '.join(normalized_platforms)})",
-                    created_at=_iso(_now()),
-                ),
-            )
-            _persist_state()
-            return {"content": [c.model_dump() for c in state.content]}
-    raise HTTPException(status_code=404, detail="Content not found")
+    row = _workspace_content_row(db, workspace_id, body.content_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Content not found")
 
+    first_platform = selected_platforms[0]
+    next_status = "SCHEDULED" if row.get("scheduled_at") else "APPROVED"
+    db.execute(
+        text(
+            "update flowpilot_content set status = :status, selected_platform = :platform "
+            "where workspace_id = :workspace_id and id = :content_id"
+        ),
+        {"workspace_id": workspace_id, "content_id": body.content_id, "status": next_status, "platform": first_platform},
+    )
 
-class RejectRequest(BaseModel):
-    content_id: str
+    for platform in selected_platforms[1:]:
+        clone_id = f"cnt-{uuid.uuid4().hex[:12]}"
+        db.execute(
+            text(
+                "insert into flowpilot_content "
+                "(id, workspace_id, title, content_text, media_type, media_preview, status, selected_platform, scheduled_at) "
+                "values (:id, :workspace_id, :title, :content_text, :media_type, :media_preview, :status, :platform, :scheduled_at)"
+            ),
+            {
+                "id": clone_id,
+                "workspace_id": workspace_id,
+                "title": row["title"],
+                "content_text": row["content_text"],
+                "media_type": row["media_type"],
+                "media_preview": row["media_preview"],
+                "status": next_status,
+                "platform": platform,
+                "scheduled_at": row.get("scheduled_at"),
+            },
+        )
+
+    record_activity(db, workspace_id, f"Review step approved content for {', '.join(selected_platforms)}.")
+    db.commit()
+    return {"content": workspace_snapshot(db, workspace_id, user)["content"]}
 
 
 @app.post("/reject")
-def post_reject(body: RejectRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    for item in state.content:
-        if item.id == body.content_id:
-            item.status = "REJECTED"
-            item.selected_platform = None
-            item.scheduled_at = None
-            state.activities.insert(
-                0,
-                ActivityItem(
-                    id=f"act-{uuid.uuid4().hex[:8]}",
-                    text=f"Content rejected: {item.title}",
-                    created_at=_iso(_now()),
-                ),
-            )
-            _persist_state()
-            return {"content": [c.model_dump() for c in state.content]}
-    raise HTTPException(status_code=404, detail="Content not found")
-
-
-class ScheduleRequest(BaseModel):
-    content_id: str
-    scheduled_at: str
+def reject_workspace_content(
+    body: WorkspaceContentIdRequest,
+    db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    db.execute(
+        text("update flowpilot_content set status = 'REJECTED' where workspace_id = :workspace_id and id = :content_id"),
+        {"workspace_id": workspace_id, "content_id": body.content_id},
+    )
+    record_activity(db, workspace_id, "Review step rejected a content draft.")
+    db.commit()
+    return {"content": workspace_snapshot(db, workspace_id, user)["content"]}
 
 
 @app.post("/schedule")
-def post_schedule(body: ScheduleRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    for item in state.content:
-        if item.id == body.content_id:
-            if item.status not in ("APPROVED", "SCHEDULED"):
-                raise HTTPException(status_code=400, detail="Only approved or already scheduled items can be scheduled")
-            item.status = "SCHEDULED"
-            item.scheduled_at = body.scheduled_at
-            state.activities.insert(
-                0,
-                ActivityItem(
-                    id=f"act-{uuid.uuid4().hex[:8]}",
-                    text=f"Scheduled: {item.title}",
-                    created_at=_iso(_now()),
-                ),
-            )
-            _persist_state()
-            return {"content": [c.model_dump() for c in state.content]}
-    raise HTTPException(status_code=404, detail="Content not found")
+def schedule_workspace_content(
+    body: WorkspaceScheduleRequest,
+    db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    db.execute(
+        text(
+            "update flowpilot_content set scheduled_at = :scheduled_at, "
+            "status = case when status = 'PUBLISHED' then status else 'SCHEDULED' end "
+            "where workspace_id = :workspace_id and id = :content_id"
+        ),
+        {"workspace_id": workspace_id, "content_id": body.content_id, "scheduled_at": body.scheduled_at},
+    )
+    record_activity(db, workspace_id, f"Smart scheduling set a publishing slot for {body.scheduled_at.isoformat()}.")
+    db.commit()
+    return {"content": workspace_snapshot(db, workspace_id, user)["content"]}
 
 
 @app.get("/schedule")
-def get_schedule(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    rows = []
-    for item in state.content:
-        if item.scheduled_at and item.status in ("APPROVED", "SCHEDULED", "PUBLISHED"):
-            rows.append(
-                {
-                    "content_id": item.id,
-                    "title": item.title,
-                    "scheduled_at": item.scheduled_at,
-                    "platform": item.selected_platform,
-                    "status": item.status,
-                }
-            )
-    return {"scheduled": rows}
-
-
-class PublishRequest(BaseModel):
-    content_ids: list[str]
-
-
-class CloudinaryUploadRequest(BaseModel):
-    data_url: str
-    file_name: Optional[str] = None
-    media_type: Optional[Literal["Image", "Video", "Carousel", "Media"]] = None
-
-
-class MediaLibraryRemoveRequest(BaseModel):
-    asset_id: str
-
-
-def _platform_connected(platform: str) -> bool:
-    if platform == "linkedin":
-        return state.linkedin.connected
-    if platform in ("instagram", "facebook"):
-        return state.meta.connected
-    if platform == "twitter":
-        return False
-    return False
-
-
-@app.post("/media/upload/cloudinary")
-def post_upload_media_to_cloudinary(body: CloudinaryUploadRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    _refresh_runtime_env()
-    if not _cloudinary_ready():
-        raise HTTPException(status_code=400, detail="Cloudinary env is not configured")
-    source = body.data_url.strip()
-    if not source.startswith(("data:image/", "data:video/")):
-        raise HTTPException(status_code=400, detail="Only image/video data URLs can be uploaded")
-    media_type = body.media_type or ("Video" if source.startswith("data:video/") else "Image")
-    stem = re.sub(r"[^a-zA-Z0-9_-]+", "-", (body.file_name or "media").rsplit(".", 1)[0]).strip("-")
-    public_id = f"{stem or 'media'}-{uuid.uuid4().hex[:8]}"
-    try:
-        media_url = _upload_media_preview_to_cloudinary(public_id, source, media_type)
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Cloudinary upload failed: {e}") from e
-    _remember_cloudinary_media(body.file_name or "Cloudinary media", media_url, media_type)
-    _persist_state()
-    return {"media_url": media_url, "media_type": media_type, "folder": CLOUDINARY_FOLDER}
-
-
-@app.post("/media/library/remove")
-def post_remove_media_library_item(body: MediaLibraryRemoveRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    before = len(state.media_library)
-    state.media_library = [asset for asset in state.media_library if asset.id != body.asset_id]
-    removed = before - len(state.media_library)
-    if removed:
-        _persist_state()
-    return {"removed": removed, "media_library": [m.model_dump() for m in state.media_library]}
+def get_workspace_schedule(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    scheduled = [
+        dict(row)
+        for row in db.execute(
+            text(
+                "select id as content_id, title, scheduled_at, selected_platform as platform, status "
+                "from flowpilot_content where workspace_id = :workspace_id and scheduled_at is not null order by scheduled_at"
+            ),
+            {"workspace_id": workspace_id},
+        ).mappings().all()
+    ]
+    return {"scheduled": scheduled}
 
 
 @app.post("/publish")
-def post_publish(body: PublishRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    _refresh_runtime_env()
+def publish_workspace_content(
+    body: WorkspacePublishRequest,
+    db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    published_count = 0
     warnings: list[str] = []
-    published = 0
-    for cid in body.content_ids:
-        item = next((c for c in state.content if c.id == cid), None)
-        if not item:
-            warnings.append(f"Unknown content id: {cid}")
+    for content_id in body.content_ids[:50]:
+        row = _workspace_content_row(db, workspace_id, content_id)
+        if row is None:
+            warnings.append(f"Content {content_id} was not found")
             continue
-        if item.status not in ("APPROVED", "SCHEDULED"):
-            warnings.append(f"{item.title}: not approved or scheduled")
+        platform = str(row.get("selected_platform") or "").lower()
+        if platform not in {"linkedin", "instagram", "facebook"}:
+            warnings.append(f"{row['title']} has no supported platform selected")
             continue
-        if not item.selected_platform:
-            warnings.append(f"{item.title}: platform not selected")
-            continue
-        if not _platform_connected(item.selected_platform):
-            warnings.append(f"{item.title}: platform not connected")
-            continue
-        ok = True
-        if item.selected_platform == "linkedin":
-            ok, reason = _publish_to_linkedin(
-                content_text=item.content_text,
-                title=item.title,
-                media_preview=item.media_preview,
-                media_type=item.media_type,
+        post = WorkspacePublishPost(platform=platform, content=str(row["content_text"]), media_url=str(row["media_preview"] or "") or None)
+        result = publish_post(post)  # type: ignore[arg-type]
+        if result.success:
+            published_count += 1
+            db.execute(
+                text("update flowpilot_content set status = 'PUBLISHED' where workspace_id = :workspace_id and id = :content_id"),
+                {"workspace_id": workspace_id, "content_id": content_id},
             )
-            if not ok:
-                warnings.append(f"{item.title}: {reason}")
-        elif item.selected_platform == "facebook":
-            media_preview, precheck_warning, media_uploaded = _coerce_public_media_url_for_meta(
-                item_id=item.id,
-                title=item.title,
-                platform="facebook",
-                media_preview=item.media_preview,
-                media_type=item.media_type,
-            )
-            if precheck_warning:
-                warnings.append(precheck_warning)
-            if media_preview is None:
-                ok = False
-                reason = "Facebook publish blocked: no valid public media URL available"
-                warnings.append(f"{item.title}: {reason}")
-                continue
-            if media_uploaded:
-                item.media_preview = media_preview
-            ok, reason = _publish_to_facebook(
-                content_text=item.content_text,
-                title=item.title,
-                media_preview=media_preview,
-                media_type=item.media_type,
-            )
-            if not ok:
-                warnings.append(f"{item.title}: {reason}")
-                if "code=190" in reason or "subcode=463" in reason:
-                    state.meta = IntegrationState(
-                        connected=False,
-                        account_name="Meta Reconnect Required",
-                        account_handle="refresh META_PAGE_ACCESS_TOKEN and reconnect Meta",
-                    )
-        elif item.selected_platform == "instagram":
-            media_preview, precheck_warning, media_uploaded = _coerce_public_media_url_for_meta(
-                item_id=item.id,
-                title=item.title,
-                platform="instagram",
-                media_preview=item.media_preview,
-                media_type=item.media_type,
-            )
-            if precheck_warning:
-                warnings.append(precheck_warning)
-            if media_preview is None:
-                ok = False
-                reason = "Instagram publish blocked: no valid public media URL available"
-                warnings.append(f"{item.title}: {reason}")
-                continue
-            if media_uploaded:
-                item.media_preview = media_preview
-            ok, reason = _publish_to_instagram(
-                content_text=item.content_text,
-                title=item.title,
-                media_preview=media_preview,
-                media_type=item.media_type,
-            )
-            if not ok:
-                warnings.append(f"{item.title}: {reason}")
-                if "code=190" in reason or "subcode=463" in reason:
-                    state.meta = IntegrationState(
-                        connected=False,
-                        account_name="Meta Reconnect Required",
-                        account_handle="refresh META_PAGE_ACCESS_TOKEN and reconnect Meta",
-                    )
+            _insert_publishing_log(db, workspace_id, content_id, platform, "Success")
         else:
-            ok = False
-            warnings.append(f"{item.title}: unsupported platform '{item.selected_platform}'")
-        status: Literal["Success", "Failed"] = "Success" if ok else "Failed"
-        state.publishing_log.insert(
-            0,
-            PublishingLogItem(
-                id=f"pub-{uuid.uuid4().hex[:10]}",
-                content_id=item.id,
-                platform=item.selected_platform,
-                timestamp=_iso(_now()),
-                status=status,
-            ),
-        )
-        if ok:
-            item.status = "PUBLISHED"
-            item.scheduled_at = None
-            published += 1
-            state.activities.insert(
-                0,
-                ActivityItem(
-                    id=f"act-{uuid.uuid4().hex[:8]}",
-                    text=f"Post published ({item.selected_platform})",
-                    created_at=_iso(_now()),
-                ),
-            )
-            new_leads = random.randint(1, 3)
-            for _ in range(new_leads):
-                name = random.choice(LEAD_NAMES)
-                state.leads.insert(
-                    0,
-                    LeadItem(
-                        id=f"lead-{uuid.uuid4().hex[:10]}",
-                        name=name,
-                        email=f"{name.lower().replace(' ', '.')}@businessmail.test",
-                        source=item.title,
-                        status="New",
-                        crm_status="Pending",
-                        captured_at=_iso(_now()),
-                    ),
-                )
-                state.activities.insert(
-                    0,
-                    ActivityItem(
-                        id=f"act-{uuid.uuid4().hex[:8]}",
-                        text=f"Lead captured: {name}",
-                        created_at=_iso(_now()),
-                    ),
-                )
-    _persist_state()
+            warnings.append(f"{row['title']}: {result.message}")
+            _insert_publishing_log(db, workspace_id, content_id, platform, "Failed")
+    record_activity(db, workspace_id, f"Publish step completed: {published_count} item(s) published.")
+    db.commit()
+    snapshot = workspace_snapshot(db, workspace_id, user)
     return {
-        "content": [c.model_dump() for c in state.content],
-        "leads": [l.model_dump() for l in state.leads],
-        "publishing_log": [p.model_dump() for p in state.publishing_log],
-        "published_count": published,
+        "content": snapshot["content"],
+        "leads": snapshot["leads"],
+        "publishing_log": snapshot["publishing_log"],
+        "published_count": published_count,
         "warnings": warnings,
     }
 
 
-@app.post("/media/migrate/cloudinary")
-def post_migrate_media_to_cloudinary(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    _refresh_runtime_env()
-    if not _cloudinary_ready():
-        raise HTTPException(status_code=400, detail="Cloudinary env is not configured")
-
-    migrated = 0
-    warnings: list[str] = []
-    for item in state.content:
-        media_preview = item.media_preview.strip()
-        if not media_preview:
-            continue
-        if media_preview.startswith(("http://", "https://")) and _is_cloudinary_url(media_preview):
-            continue
-        if not (media_preview.startswith(("data:image/", "data:video/")) or media_preview.startswith(("http://", "https://"))):
-            warnings.append(f"{item.title}: skipped unsupported media_preview format")
-            continue
-        try:
-            item.media_preview = _upload_media_preview_to_cloudinary(item.id, media_preview, item.media_type)
-            _remember_cloudinary_media(item.title, item.media_preview, item.media_type)
-            migrated += 1
-        except Exception as e:  # noqa: BLE001
-            warnings.append(f"{item.title}: Cloudinary upload failed ({e})")
-
-    if migrated:
-        state.activities.insert(
-            0,
-            ActivityItem(
-                id=f"act-{uuid.uuid4().hex[:8]}",
-                text=f"Media migrated to Cloudinary ({migrated} assets)",
-                created_at=_iso(_now()),
+@app.post("/cron/run")
+def run_workspace_cron(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    due_ids = [
+        str(row["id"])
+        for row in db.execute(
+            text(
+                "select id from flowpilot_content where workspace_id = :workspace_id "
+                "and status = 'SCHEDULED' and scheduled_at is not null and scheduled_at <= now() order by scheduled_at"
             ),
-        )
-    _persist_state()
-    return {"migrated_count": migrated, "warnings": warnings, "content": [c.model_dump() for c in state.content]}
-
-
-@app.get("/leads")
-def get_leads(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    return {"leads": [l.model_dump() for l in state.leads]}
+            {"workspace_id": workspace_id},
+        ).mappings().all()
+    ]
+    result = publish_workspace_content(WorkspacePublishRequest(content_ids=due_ids), db, user)
+    return {"published_count": result["published_count"], "warnings": result["warnings"]}
 
 
 @app.post("/connect/linkedin")
-def connect_linkedin(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    if _linkedin_ready():
-        state.linkedin = IntegrationState(
-            connected=True,
-            account_name="LinkedIn Real API",
-            account_handle=LINKEDIN_AUTHOR_URN,
-        )
-        _persist_state()
-        return {"integrations": {"linkedin": state.linkedin.model_dump(), "meta": state.meta.model_dump()}}
-    state.linkedin = IntegrationState(
-        connected=True,
-        account_name="LinkedIn Mock",
-        account_handle="set LINKEDIN_* env vars for real posting",
-    )
-    _persist_state()
-    return {"integrations": {"linkedin": state.linkedin.model_dump(), "meta": state.meta.model_dump()}}
+def connect_linkedin(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    connected = bool(settings.linkedin_access_token and settings.linkedin_author_urn)
+    _set_integration(db, workspace_id, "linkedin", connected, "LinkedIn Workspace", settings.linkedin_author_urn or "not-configured")
+    record_activity(db, workspace_id, "LinkedIn integration checked and saved.")
+    db.commit()
+    return {"integrations": workspace_snapshot(db, workspace_id, user)["integrations"]}
 
 
 @app.post("/connect/meta")
-def connect_meta(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    _refresh_runtime_env()
-    if _meta_ready():
-        handles: list[str] = []
-        if META_PAGE_ID:
-            handles.append(f"page:{META_PAGE_ID}")
-        if META_IG_BUSINESS_ACCOUNT_ID:
-            handles.append(f"ig:{META_IG_BUSINESS_ACCOUNT_ID}")
-        state.meta = IntegrationState(
-            connected=True,
-            account_name="Meta Graph API",
-            account_handle=", ".join(handles) if handles else "configured",
-        )
-    else:
-        state.meta = IntegrationState(
-            connected=False,
-            account_name="Meta Not Connected",
-            account_handle="set valid META_* env vars and reconnect",
-        )
-    _persist_state()
-    return {"integrations": {"linkedin": state.linkedin.model_dump(), "meta": state.meta.model_dump()}}
-
-
-class CrmSyncRequest(BaseModel):
-    lead_ids: Optional[list[str]] = None
-
-
-@app.post("/crm/sync")
-def post_crm_sync(body: CrmSyncRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    targets = body.lead_ids
-    updated = 0
-    for lead in state.leads:
-        if targets is None or lead.id in targets:
-            if lead.crm_status == "Pending":
-                lead.crm_status = "Synced"
-                updated += 1
-    state.crm_last_bulk_status = "Synced"
-    state.activities.insert(
-        0,
-        ActivityItem(
-            id=f"act-{uuid.uuid4().hex[:8]}",
-            text=f"CRM sync completed ({updated} records)",
-            created_at=_iso(_now()),
-        ),
-    )
-    _persist_state()
-    return {"leads": [l.model_dump() for l in state.leads], "crm_last_bulk_status": state.crm_last_bulk_status, "updated": updated}
-
-
-class ProfileRequest(BaseModel):
-    name: Optional[str] = None
-    email: Optional[str] = None
-    company: Optional[str] = None
-    timezone: Optional[str] = None
+def connect_meta(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    connected = bool(settings.meta_page_access_token and (settings.meta_page_id or settings.meta_ig_business_account_id))
+    handle = settings.meta_page_id or settings.meta_ig_business_account_id or "not-configured"
+    _set_integration(db, workspace_id, "meta", connected, "Meta Workspace", handle)
+    record_activity(db, workspace_id, "Meta integration checked and saved.")
+    db.commit()
+    return {"integrations": workspace_snapshot(db, workspace_id, user)["integrations"]}
 
 
 @app.get("/profile")
-def get_profile(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    user = _auth_user(authorization)
-    data = state.profile.model_dump()
-    if not data.get("email"):
-        data["email"] = user["email"]
-    if not data.get("name"):
-        data["name"] = user["name"]
-    return {"profile": data}
+def get_profile(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    return {"profile": workspace_snapshot(db, workspace_id, user)["profile"]}
 
 
 @app.post("/profile")
-def post_profile(body: ProfileRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    user = _auth_user(authorization)
-    data = state.profile.model_dump()
-    if body.name is not None:
-        data["name"] = body.name
-    if body.email is not None:
-        data["email"] = body.email.strip().lower()
-    if body.company is not None:
-        data["company"] = body.company
-    if body.timezone is not None:
-        data["timezone"] = body.timezone
-    if not data.get("email"):
-        data["email"] = user["email"]
-    if not data.get("name"):
-        data["name"] = user["name"]
-    state.profile = ProfileState(**data)
-    _persist_state()
-    return {"profile": state.profile.model_dump()}
-
-
-class PreferencesRequest(BaseModel):
-    default_platform: Optional[Literal["linkedin", "instagram", "facebook", "twitter"]] = None
-    quiet_hours_enabled: Optional[bool] = None
-    approval_digest: Optional[Literal["instant", "daily"]] = None
+def update_profile(body: ProfileRequest, db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    current = workspace_snapshot(db, workspace_id, user)["profile"]
+    db.execute(
+        text(
+            "insert into flowpilot_profile (workspace_id, name, email, company, timezone, updated_at) "
+            "values (:workspace_id, :name, :email, :company, :timezone, now()) "
+            "on conflict (workspace_id) do update set "
+            "name = excluded.name, email = excluded.email, company = excluded.company, timezone = excluded.timezone, updated_at = now()"
+        ),
+        {
+            "workspace_id": workspace_id,
+            "name": body.name if body.name is not None else current["name"],
+            "email": body.email if body.email is not None else current["email"],
+            "company": body.company if body.company is not None else current["company"],
+            "timezone": body.timezone if body.timezone is not None else current["timezone"],
+        },
+    )
+    db.commit()
+    return {"profile": workspace_snapshot(db, workspace_id, user)["profile"]}
 
 
 @app.post("/preferences")
-def post_preferences(body: PreferencesRequest, authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    data = state.preferences.model_dump()
-    if body.default_platform is not None:
-        data["default_platform"] = body.default_platform
-    if body.quiet_hours_enabled is not None:
-        data["quiet_hours_enabled"] = body.quiet_hours_enabled
-    if body.approval_digest is not None:
-        data["approval_digest"] = body.approval_digest
-    state.preferences = PreferencesState(**data)
-    _persist_state()
-    return {"preferences": state.preferences.model_dump()}
-
-
-@app.post("/cron/run")
-def post_cron_run(authorization: str | None = Header(default=None)) -> dict[str, Any]:
-    _auth_user(authorization)
-    now = _now()
-    due: list[str] = []
-    for item in state.content:
-        if item.status not in ("SCHEDULED", "APPROVED") or not item.scheduled_at:
-            continue
-        try:
-            scheduled = datetime.fromisoformat(item.scheduled_at.replace("Z", "+00:00"))
-        except Exception:
-            continue
-        if scheduled <= now:
-            due.append(item.id)
-    if not due:
-        state.activities.insert(
-            0,
-            ActivityItem(
-                id=f"act-{uuid.uuid4().hex[:8]}",
-                text="Cron cycle completed: no approved posts due",
-                created_at=_iso(_now()),
-            ),
-        )
-        _persist_state()
-        return {"published_count": 0, "warnings": []}
-    result = post_publish(PublishRequest(content_ids=due), authorization)
-    state.activities.insert(
-        0,
-        ActivityItem(
-            id=f"act-{uuid.uuid4().hex[:8]}",
-            text=f"Cron cycle auto-published {result['published_count']} post(s)",
-            created_at=_iso(_now()),
+def update_preferences(body: PreferencesRequest, db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    current = workspace_snapshot(db, workspace_id, user)["preferences"]
+    default_platform = body.default_platform if body.default_platform in {"linkedin", "instagram", "facebook"} else current["default_platform"]
+    approval_digest = body.approval_digest if body.approval_digest in {"instant", "daily"} else current["approval_digest"]
+    quiet_hours = body.quiet_hours_enabled if body.quiet_hours_enabled is not None else current["quiet_hours_enabled"]
+    db.execute(
+        text(
+            "insert into flowpilot_preferences (workspace_id, default_platform, quiet_hours_enabled, approval_digest, updated_at) "
+            "values (:workspace_id, :default_platform, :quiet_hours_enabled, :approval_digest, now()) "
+            "on conflict (workspace_id) do update set "
+            "default_platform = excluded.default_platform, quiet_hours_enabled = excluded.quiet_hours_enabled, "
+            "approval_digest = excluded.approval_digest, updated_at = now()"
         ),
+        {
+            "workspace_id": workspace_id,
+            "default_platform": default_platform,
+            "quiet_hours_enabled": quiet_hours,
+            "approval_digest": approval_digest,
+        },
     )
-    _persist_state()
-    return {"published_count": result["published_count"], "warnings": result["warnings"]}
+    db.commit()
+    return {"preferences": workspace_snapshot(db, workspace_id, user)["preferences"]}
+
+
+@app.post("/media/upload/cloudinary")
+def upload_cloudinary_media(body: MediaUploadRequest, db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    media_url = _upload_to_cloudinary(body.data_url, body.file_name)
+    media_type = body.media_type if body.media_type in {"Image", "Video", "Carousel"} else "Image"
+    db.execute(
+        text(
+            "insert into flowpilot_media_library (id, workspace_id, name, media_type, media_url, created_at) "
+            "values (:id, :workspace_id, :name, :media_type, :media_url, now())"
+        ),
+        {
+            "id": f"med-{uuid.uuid4().hex[:12]}",
+            "workspace_id": workspace_id,
+            "name": body.file_name or "Uploaded media",
+            "media_type": media_type,
+            "media_url": media_url,
+        },
+    )
+    record_activity(db, workspace_id, "Media setup uploaded an asset to Cloudinary.")
+    db.commit()
+    return {"media_url": media_url, "media_type": media_type, "folder": settings.cloudinary_folder}
+
+
+@app.post("/media/library/remove")
+def remove_media_library_item(body: MediaRemoveRequest, db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, int]:
+    workspace_id = str(user["id"])
+    result = db.execute(
+        text("delete from flowpilot_media_library where workspace_id = :workspace_id and id = :asset_id"),
+        {"workspace_id": workspace_id, "asset_id": body.asset_id},
+    )
+    db.commit()
+    return {"removed": int(result.rowcount or 0)}
+
+
+@app.post("/analytics/analyze")
+def analyze_content(body: AnalyticsRequest) -> dict[str, Any]:
+    try:
+        return run_analytics_agent(body.content, body.likes, body.comments, body.reach, body.ai_model)
+    except AgentError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/generate", response_model=GenerateResponse)
+def generate(body: GenerateRequest, db: Session = Depends(get_db)) -> GenerateResponse:
+    try:
+        strategy, posts = generate_reviewed_content(body.niche.strip())
+        rows = create_many_content(db, posts)
+    except AgentError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Content generation failed")
+        raise HTTPException(status_code=500, detail="Content generation failed") from exc
+
+    return GenerateResponse(strategy=strategy, content=[serialize_content(row) for row in rows])
+
+
+@app.get("/content", response_model=list[ContentResponse])
+def content(db: Session = Depends(get_db)) -> list[ContentResponse]:
+    return [serialize_content(row) for row in get_all_content(db)]
+
+
+@app.post("/approve/{content_id}", response_model=ContentResponse)
+def approve(content_id: uuid.UUID, body: ApproveRequest, db: Session = Depends(get_db)) -> ContentResponse:
+    row = update_status(db, content_id, "approved", scheduled_time=body.scheduled_time)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+    notify_content_action("approved", row, body.scheduled_time)
+    return serialize_content(row)
+
+
+@app.post("/reject/{content_id}", response_model=ContentResponse)
+def reject(content_id: uuid.UUID, db: Session = Depends(get_db)) -> ContentResponse:
+    row = update_status(db, content_id, "rejected")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+    notify_content_action("rejected", row)
+    return serialize_content(row)
+
+
+@app.post("/publish/{content_id}", response_model=PublishResponse)
+def publish(content_id: uuid.UUID, db: Session = Depends(get_db)) -> PublishResponse:
+    row = get_content(db, content_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+    if row.status == "published":
+        return PublishResponse(success=True, message="Content already published", content=serialize_content(row))
+
+    result = publish_post(row)
+    if result.success:
+        updated = update_status(db, row.id, "published")
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Content not found")
+        notify_content_action("published", updated)
+        return PublishResponse(success=True, message=result.message, content=serialize_content(updated))
+
+    retried = increment_retry(db, row.id)
+    if retried is None:
+        raise HTTPException(status_code=404, detail="Content not found")
+    if retried.retry_count >= settings.max_publish_retries:
+        retried = update_status(db, row.id, "failed") or retried
+
+    return PublishResponse(success=False, message=result.message, content=serialize_content(retried))

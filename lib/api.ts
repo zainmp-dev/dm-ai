@@ -34,6 +34,14 @@ function normalizeMediaTypeForApi(mediaType: MediaType | undefined): MediaType |
   return mediaType === "Media" ? "Image" : mediaType;
 }
 
+/** Avoid broken <img> / <video> when API or models send `null` as a string. */
+export function sanitizeMediaUrl(value: unknown): string {
+  if (value == null) return "";
+  const s = String(value).trim();
+  if (s === "" || s === "null" || s === "undefined" || s === "None") return "";
+  return s;
+}
+
 apiClient.interceptors.request.use((config) => {
   const token = getAuthToken();
   if (token) {
@@ -56,6 +64,20 @@ apiClient.interceptors.response.use(
   },
 );
 
+/** FastAPI/axios: surface `detail` for user-visible errors. */
+export function apiErrorMessage(error: unknown): string {
+  if (axios.isAxiosError(error)) {
+    const data = error.response?.data;
+    if (data && typeof data === "object" && "detail" in data) {
+      const d = (data as { detail: unknown }).detail;
+      if (typeof d === "string") return d;
+    }
+    if (error.message) return error.message;
+  }
+  if (error instanceof Error) return error.message;
+  return "Request failed";
+}
+
 export async function apiGetWorkspace(): Promise<WorkspaceSnapshot> {
   const { data } = await apiClient.get<Record<string, unknown>>("/workspace");
   const raw = data;
@@ -72,16 +94,32 @@ export async function apiLogin(body: { email: string; password: string }) {
   return data;
 }
 
-export async function apiPostStrategy(companyName: string, website: string) {
+export async function apiPostStrategy(
+  companyName: string,
+  website: string,
+  aiModel?: string,
+  competitors?: { name: string; website: string; focus: string }[],
+  scenario?: WorkspaceScenario,
+) {
   const { data } = await apiClient.post<{ strategy: Record<string, unknown>; competitors: Record<string, unknown>[] }>("/strategy", {
     company_name: companyName,
     website,
+    ai_model: aiModel,
+    competitors,
+    scenario,
   });
   return data;
 }
 
+export type MasterContentSuggestion = {
+  title: string;
+  content_text: string;
+  media_type: string;
+  media_preview: string;
+};
+
 export async function apiPostContent(body: {
-  action: "generate" | "update" | "create";
+  action: "generate" | "update" | "create" | "suggest";
   contentId?: string;
   title?: string;
   contentText?: string;
@@ -90,8 +128,13 @@ export async function apiPostContent(body: {
   mediaPreview?: string;
   scheduledAt?: string;
   autoActivate?: boolean;
+  aiModel?: string;
+  suggestHint?: string;
 }) {
-  const { data } = await apiClient.post<{ content: Record<string, unknown>[] }>("/content", {
+  const { data } = await apiClient.post<{
+    content: Record<string, unknown>[];
+    suggestion?: MasterContentSuggestion;
+  }>("/content", {
       action: body.action,
       content_id: body.contentId,
       title: body.title,
@@ -101,6 +144,8 @@ export async function apiPostContent(body: {
       media_preview: body.mediaPreview,
       scheduled_at: body.scheduledAt,
       auto_activate: body.autoActivate,
+      ai_model: body.aiModel,
+      suggest_hint: body.suggestHint,
   });
   return data;
 }
@@ -169,6 +214,22 @@ export async function apiRunCronCycle() {
   return data;
 }
 
+export async function apiAnalyzeContent(body: { content: string; likes: number; comments: number; reach: number; aiModel?: string }) {
+  const { data } = await apiClient.post<{
+    performance_summary: string;
+    what_worked: string[];
+    what_failed: string[];
+    improvements: string[];
+  }>("/analytics/analyze", {
+    content: body.content,
+    likes: body.likes,
+    comments: body.comments,
+    reach: body.reach,
+    ai_model: body.aiModel,
+  });
+  return data;
+}
+
 export async function apiConnectLinkedin() {
   const { data } = await apiClient.post<{ integrations: Record<string, Record<string, unknown>> }>("/connect/linkedin");
   return data;
@@ -207,18 +268,29 @@ export async function apiSetupWorkspace(body: {
   companyName: string;
   website: string;
   scenario: WorkspaceScenario;
+  primaryRegion?: string;
   workspaceOwnerName: string;
   workspaceOwnerEmail: string;
+  aiModel?: string;
+  competitors?: { name: string; website: string; focus: string }[];
 }) {
   const { data } = await apiClient.post<Record<string, unknown>>("/workspace", {
       company_name: body.companyName,
       website: body.website,
       scenario: body.scenario,
+      primary_region: body.primaryRegion ?? "global",
       workspace_owner_name: body.workspaceOwnerName,
       workspace_owner_email: body.workspaceOwnerEmail,
+      ai_model: body.aiModel,
+      competitors: body.competitors,
   });
   const raw = data;
   return normalizeWorkspace(raw);
+}
+
+export async function apiDeleteWorkspace(): Promise<WorkspaceSnapshot> {
+  const { data } = await apiClient.delete<Record<string, unknown>>("/workspace");
+  return normalizeWorkspace(data);
 }
 
 function normalizeWorkspace(raw: Record<string, unknown>): WorkspaceSnapshot {
@@ -226,6 +298,7 @@ function normalizeWorkspace(raw: Record<string, unknown>): WorkspaceSnapshot {
     companyName: String(raw.company_name ?? ""),
     companyWebsite: String(raw.company_website ?? ""),
     workspaceScenario: (raw.workspace_scenario as WorkspaceScenario) ?? "b2b-saas",
+    primaryRegion: typeof raw.primary_region === "string" && raw.primary_region ? String(raw.primary_region) : "global",
     workspaceConfigured: Boolean(raw.workspace_configured),
     strategy: raw.strategy ? normalizeStrategy(raw.strategy as Record<string, unknown>) : null,
     competitors: Array.isArray(raw.competitors) ? raw.competitors.map((c) => normalizeCompetitor(c as Record<string, unknown>)) : [],
@@ -278,7 +351,7 @@ export function normalizeContent(raw: Record<string, unknown>): ContentItem {
     title: String(raw.title ?? ""),
     contentText: String(raw.content_text ?? ""),
     mediaType: (raw.media_type as ContentItem["mediaType"]) ?? "Image",
-    mediaPreview: String(raw.media_preview ?? ""),
+    mediaPreview: sanitizeMediaUrl(raw.media_preview),
     status: (raw.status as ContentItem["status"]) ?? "PENDING",
     selectedPlatform:
       raw.selected_platform != null && raw.selected_platform !== ""
@@ -323,7 +396,7 @@ export function normalizeMediaLibraryItem(raw: Record<string, unknown>): MediaLi
     id: String(raw.id ?? ""),
     name: String(raw.name ?? ""),
     mediaType: (raw.media_type as MediaLibraryItem["mediaType"]) ?? "Image",
-    mediaUrl: String(raw.media_url ?? ""),
+    mediaUrl: sanitizeMediaUrl(raw.media_url),
     createdAt: String(raw.created_at ?? ""),
   };
 }

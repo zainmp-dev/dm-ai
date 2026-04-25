@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { Sparkles } from "lucide-react";
 import { ContentStatusBadge } from "@/components/status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,7 +11,9 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { apiUploadMediaToCloudinary } from "@/lib/api";
+import { MediaPreviewBlock } from "@/components/media-preview-block";
+import { apiUploadMediaToCloudinary, sanitizeMediaUrl } from "@/lib/api";
+import { normalizeApiMediaType } from "@/lib/media-detect";
 import { platformLabel } from "@/lib/platform";
 import type { MediaType, PublishingPlatform } from "@/lib/types";
 import { useWorkspaceStore } from "@/lib/workspace-store";
@@ -43,6 +46,7 @@ export default function ContentPage() {
   const workspace = useWorkspaceStore((s) => s.workspace);
   const loading = useWorkspaceStore((s) => s.loading);
   const generateContent = useWorkspaceStore((s) => s.generateContent);
+  const suggestMasterContent = useWorkspaceStore((s) => s.suggestMasterContent);
   const createContentItem = useWorkspaceStore((s) => s.createContentItem);
   const approve = useWorkspaceStore((s) => s.approve);
   const reject = useWorkspaceStore((s) => s.reject);
@@ -70,6 +74,10 @@ export default function ContentPage() {
   const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
   const [mediaPickerTarget, setMediaPickerTarget] = useState<"create" | "edit">("create");
   const [mediaPickerView, setMediaPickerView] = useState<"upload" | "library">("upload");
+  const [suggestHint, setSuggestHint] = useState("");
+  const [suggesting, setSuggesting] = useState(false);
+  const [newMediaType, setNewMediaType] = useState<MediaType>("Image");
+  const [draftMediaType, setDraftMediaType] = useState<MediaType>("Image");
 
   const content = useMemo(() => workspace?.content ?? [], [workspace]);
   const uniqueMedia = new Set(content.map((item) => item.mediaPreview));
@@ -98,12 +106,14 @@ export default function ContentPage() {
     return new Set(rows.map((item) => item.mediaPreview).filter(Boolean));
   }, [activeItem, content, mediaPickerTarget]);
 
-  const applySelectedMedia = (asset: { url: string }) => {
+  const applySelectedMedia = (asset: { url: string; type: MediaType }) => {
     if (mediaPickerTarget === "create") {
       setNewMediaPreview(asset.url);
+      setNewMediaType(asset.type);
       return;
     }
     setDraftMediaPreview(asset.url);
+    setDraftMediaType(asset.type);
   };
 
   const openMediaPicker = (target: "create" | "edit") => {
@@ -127,6 +137,50 @@ export default function ContentPage() {
           <CardTitle className="text-base">Master content data</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+        <p className="text-xs text-zinc-500">You can set exact time manually or choose a quick option.</p>
+          <div className="flex flex-col gap-2 rounded-2xl border border-zinc-200/80 bg-zinc-50/50 p-3 sm:flex-row sm:items-end sm:gap-3">
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <Label htmlFor="suggest-hint" className="text-zinc-700">
+                Optional focus (for AI)
+              </Label>
+              <Input
+                id="suggest-hint"
+                value={suggestHint}
+                onChange={(e) => setSuggestHint(e.target.value)}
+                placeholder="e.g. product launch, customer story, event…"
+                className="bg-white"
+              />
+            </div>
+            <Button
+              type="button"
+              variant="secondary"
+              className="w-full shrink-0 rounded-xl sm:w-auto"
+              disabled={suggesting || !workspace.companyName?.trim()}
+              onClick={() => {
+                setSuggesting(true);
+                void suggestMasterContent(suggestHint)
+                  .then((s) => {
+                    setNewTitle(s.title);
+                    setNewText(s.content_text);
+                    const media = sanitizeMediaUrl(s.media_preview);
+                    setNewMediaPreview(media);
+                    setNewMediaType(normalizeApiMediaType(s.media_type, "Image"));
+                    if (!media) {
+                      push("AI returned no media URL. Pick an image or video from the media picker.");
+                      return;
+                    }
+                    push("AI filled title, copy, and media. Adjust time, then create.");
+                  })
+                  .catch((e: Error) => {
+                    push(e.message);
+                  })
+                  .finally(() => setSuggesting(false));
+              }}
+            >
+              <Sparkles className="mr-2 h-4 w-4 opacity-80" />
+              {suggesting ? "Working…" : "AI suggest"}
+            </Button>
+          </div>
           <div className="grid gap-3 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="new-title">Title</Label>
@@ -160,26 +214,62 @@ export default function ContentPage() {
               </div>
             </div>
           </div>
-          <p className="text-xs text-zinc-500">You can set exact time manually or choose a quick option.</p>
+       
+          {!workspace.companyName?.trim() && (
+            <p className="text-xs text-amber-800">Set your company name in workspace setup to enable AI suggest.</p>
+          )}
+          <p className="text-xs text-zinc-500">
+            Uses the AI model you selected in the app (OpenRouter / workspace). Then set publish time and create.
+          </p>
           <div className="space-y-2">
             <Label htmlFor="new-text">Content</Label>
             <Textarea id="new-text" value={newText} onChange={(e) => setNewText(e.target.value)} className="min-h-24" placeholder="Write post content..." />
           </div>
           <div className="space-y-2">
             <Label>Media</Label>
-            <Button type="button" variant="secondary" className="rounded-xl" onClick={() => openMediaPicker("create")}>
-              Upload or choose media
-            </Button>
-            <p className="text-xs text-zinc-500">Uploads are stored in Cloudinary and reused from your workspace media library.</p>
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end">
+              <div className="min-w-0 sm:w-48">
+                <Label htmlFor="new-media-type" className="text-xs text-zinc-600">
+                  Type
+                </Label>
+                <select
+                  id="new-media-type"
+                  value={newMediaType}
+                  onChange={(e) => setNewMediaType(e.target.value as MediaType)}
+                  className="mt-1 h-10 w-full rounded-xl border border-zinc-200 bg-white px-3 text-sm"
+                >
+                  <option value="Image">Image</option>
+                  <option value="Video">Video</option>
+                  <option value="Carousel">Carousel (multi-slide)</option>
+                </select>
+              </div>
+              <Button type="button" variant="secondary" className="rounded-xl" onClick={() => openMediaPicker("create")}>
+                Upload or choose media
+              </Button>
+            </div>
+            <p className="text-xs text-zinc-500">Uploads go to Cloudinary. Pick Image / Video / Carousel so previews match; carousel uses a single cover URL for now.</p>
           </div>
           {newMediaPreview && (
             <div className="rounded-xl border border-zinc-200 p-2">
-              {isVideoAsset(newMediaPreview) ? (
-                <video src={newMediaPreview} controls className="h-40 w-full rounded-lg object-cover" />
-              ) : (
-                <img src={newMediaPreview} alt="" className="h-40 w-full rounded-lg object-cover" />
-              )}
-              <Button type="button" size="sm" variant="outline" className="mt-2 rounded-lg" onClick={() => setNewMediaPreview("")}>
+              <div className="h-40 w-full max-w-xl overflow-hidden">
+                <MediaPreviewBlock
+                  url={newMediaPreview}
+                  mediaType={newMediaType}
+                  className="h-full w-full"
+                  videoClassName="h-40 max-h-full"
+                  imgClassName="h-40 max-h-full"
+                />
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="mt-2 rounded-lg"
+                onClick={() => {
+                  setNewMediaPreview("");
+                  setNewMediaType("Image");
+                }}
+              >
                 Remove selected media
               </Button>
             </div>
@@ -217,7 +307,7 @@ export default function ContentPage() {
                 void createContentItem({
                   title: newTitle.trim(),
                   contentText: newText.trim(),
-                  mediaType: inferMediaType(newMediaPreview),
+                  mediaType: newMediaType,
                   mediaPreview: newMediaPreview,
                   scheduledAt: newScheduledAt ? new Date(newScheduledAt).toISOString() : undefined,
                   autoActivate: newAutoActivate,
@@ -227,6 +317,7 @@ export default function ContentPage() {
                     setNewTitle("");
                     setNewText("");
                     setNewMediaPreview("");
+                    setNewMediaType("Image");
                     setNewScheduledAt("");
                     setNewTimePreset("");
                   })
@@ -294,11 +385,15 @@ export default function ContentPage() {
             <ContentStatusBadge status={item.status} />
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-[220px_1fr_auto] md:items-center">
-            {isVideoAsset(item.mediaPreview) ? (
-              <video src={item.mediaPreview} controls className="h-28 w-full rounded-2xl object-cover shadow-sm" />
-            ) : (
-              <img src={item.mediaPreview} alt="" className="h-28 w-full rounded-2xl object-cover shadow-sm" />
-            )}
+            <div className="h-28 w-full min-w-0 max-w-[220px]">
+              <MediaPreviewBlock
+                url={item.mediaPreview}
+                mediaType={item.mediaType}
+                className="h-28 w-full"
+                videoClassName="h-28 w-full rounded-2xl object-cover shadow-sm"
+                imgClassName="h-28 w-full rounded-2xl object-cover shadow-sm"
+              />
+            </div>
             <p className="text-sm leading-relaxed text-zinc-700">{item.contentText}</p>
             <div className="flex flex-col gap-2">
               <Button
@@ -311,6 +406,7 @@ export default function ContentPage() {
                   setDraftTitle(item.title);
                   setDraftText(item.contentText);
                   setDraftMediaPreview(item.mediaPreview);
+                  setDraftMediaType(item.mediaType);
                   setDraftScheduledAt(toDateTimeLocalValue(item.scheduledAt));
                   setDraftTimePreset("");
                   setDraftAutoActivate(item.status === "APPROVED" || item.status === "SCHEDULED");
@@ -341,17 +437,47 @@ export default function ContentPage() {
             </DialogHeader>
             <Input value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} className="rounded-xl" />
             <Textarea value={draftText} onChange={(e) => setDraftText(e.target.value)} className="min-h-28 rounded-xl" />
-            <Button type="button" variant="secondary" className="rounded-xl" onClick={() => openMediaPicker("edit")}>
-              Upload or choose media
-            </Button>
+            <div className="grid gap-2 sm:grid-cols-2 sm:items-end">
+              <div>
+                <Label htmlFor="edit-media-type" className="text-xs text-zinc-600">
+                  Media type
+                </Label>
+                <select
+                  id="edit-media-type"
+                  value={draftMediaType}
+                  onChange={(e) => setDraftMediaType(e.target.value as MediaType)}
+                  className="mt-1 h-10 w-full rounded-xl border border-zinc-200 bg-white px-3 text-sm"
+                >
+                  <option value="Image">Image</option>
+                  <option value="Video">Video</option>
+                  <option value="Carousel">Carousel</option>
+                </select>
+              </div>
+              <Button type="button" variant="secondary" className="rounded-xl" onClick={() => openMediaPicker("edit")}>
+                Upload or choose media
+              </Button>
+            </div>
             {draftMediaPreview && (
               <div className="rounded-xl border border-zinc-200 p-2">
-                {isVideoAsset(draftMediaPreview) ? (
-                  <video src={draftMediaPreview} controls className="h-40 w-full rounded-lg object-cover" />
-                ) : (
-                  <img src={draftMediaPreview} alt="" className="h-40 w-full rounded-lg object-cover" />
-                )}
-                <Button type="button" size="sm" variant="outline" className="mt-2 rounded-lg" onClick={() => setDraftMediaPreview("")}>
+                <div className="h-40 w-full max-w-xl">
+                  <MediaPreviewBlock
+                    url={draftMediaPreview}
+                    mediaType={draftMediaType}
+                    className="h-full w-full"
+                    videoClassName="h-40"
+                    imgClassName="h-40"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="mt-2 rounded-lg"
+                  onClick={() => {
+                    setDraftMediaPreview("");
+                    setDraftMediaType("Image");
+                  }}
+                >
                   Remove selected media
                 </Button>
               </div>
@@ -411,7 +537,7 @@ export default function ContentPage() {
                       contentId: activeItem.id,
                       title: draftTitle,
                       contentText: draftText,
-                      mediaType: inferMediaType(draftMediaPreview),
+                      mediaType: draftMediaType,
                       mediaPreview: draftMediaPreview,
                       scheduledAt: draftScheduledAt ? new Date(draftScheduledAt).toISOString() : undefined,
                       autoActivate: draftAutoActivate,
@@ -587,11 +713,15 @@ export default function ContentPage() {
                                 setMediaPickerOpen(false);
                               }}
                             >
-                              {isVideoAsset(asset.url) ? (
-                                <video src={asset.url} className="aspect-video w-full rounded-lg object-cover" muted playsInline />
-                              ) : (
-                                <img src={asset.url} alt="" className="aspect-video w-full rounded-lg object-cover" />
-                              )}
+                              <div className="aspect-video w-full">
+                                <MediaPreviewBlock
+                                  url={asset.url}
+                                  mediaType={asset.type}
+                                  className="h-full w-full"
+                                  videoClassName="h-full w-full rounded-lg object-cover"
+                                  imgClassName="h-full w-full rounded-lg object-cover"
+                                />
+                              </div>
                               <p className="mt-1 truncate text-xs text-zinc-600">{asset.name}</p>
                               {locked && <p className="mt-1 text-[11px] font-medium text-amber-700">Already used in content</p>}
                             </button>
@@ -646,13 +776,3 @@ function applyTimePreset(preset: string) {
   return now.toISOString();
 }
 
-function isVideoAsset(src: string) {
-  return src.startsWith("data:video/") || src.includes("/video/upload/") || /\.(mp4|mov|webm)(\?|$)/i.test(src);
-}
-
-function inferMediaType(src: string): MediaType {
-  if (!src) return "Image";
-  if (isVideoAsset(src)) return "Video";
-  if (src.startsWith("data:image/")) return "Image";
-  return "Image";
-}

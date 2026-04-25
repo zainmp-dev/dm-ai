@@ -2,28 +2,23 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import {
-  BarChart3,
   Bell,
-  CalendarRange,
   Check,
-  CheckSquare,
   ChevronLeft,
   ChevronRight,
   ChevronsUpDown,
   Command,
-  Images,
   FileText,
+  Images,
   LayoutDashboard,
   LineChart,
   Plug,
-  Sparkles,
   Rocket,
-  Search,
+  Calendar,
   Settings,
-  Wrench,
-  UserRound,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkspaceStore } from "@/lib/workspace-store";
@@ -36,10 +31,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
+import { NotificationEntry } from "@/components/notification-entry";
 import { clearAuthSession } from "@/lib/auth";
+import { AI_MODEL_OPTIONS } from "@/lib/ai-models";
 
 const PAGE_TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
@@ -49,52 +44,36 @@ const PAGE_TITLES: Record<string, string> = {
   "/approval": "Approval",
   "/scheduling": "Scheduling",
   "/publishing": "Publishing",
-  "/analytics": "Analytics",
   "/notifications": "Notifications",
   "/profile": "Profile",
   "/settings": "Settings",
+  "/media": "Media Setup",
   "/workspace-setup": "Workspace Setup",
-  "/media": "Media",
 };
 
-const navMain = [
+const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/command-center", label: "Command Center", icon: Command },
-  { href: "/strategy", label: "Strategy", icon: BarChart3 },
+  { href: "/command-center", label: "AI Workflow", icon: Command },
   { href: "/content", label: "Content", icon: FileText },
+  { href: "/approval", label: "Approval", icon: Check },
+  { href: "/scheduling", label: "Scheduling", icon: Calendar },
   { href: "/publishing", label: "Publishing", icon: Rocket },
-];
-
-const navMarketing = [{ href: "/settings", label: "Settings", icon: Settings }];
-
-const navSales = [{ href: "/profile", label: "Profile", icon: UserRound }];
-
-const navSystem = [
   { href: "/analytics", label: "Analytics", icon: LineChart },
-  { href: "/notifications", label: "Notifications", icon: Bell },
-];
-
-const navUser = [
-  { href: "/workspace-setup", label: "Workspace Setup", icon: Wrench },
-  { href: "/media", label: "Media", icon: Images },
-  { href: "/approval", label: "Approval Queue", icon: CheckSquare },
-  { href: "/scheduling", label: "Scheduling", icon: CalendarRange },
+  { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/media", label: "Media Setup", icon: Images },
 ];
 
 function NavSection({
-  title,
   items,
   collapsed,
   pathname,
 }: {
-  title: string;
   items: { href: string; label: string; icon: typeof LayoutDashboard }[];
   collapsed: boolean;
   pathname: string;
 }) {
   return (
     <div className="space-y-1">
-      {!collapsed && <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">{title}</p>}
       {items.map((item) => {
         const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
         const Icon = item.icon;
@@ -127,14 +106,21 @@ export function AppShell({ children }: { children: ReactNode }) {
   const workspaceSetups = useWorkspaceStore((s) => s.workspaceSetups);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
+  const selectedAiModel = useWorkspaceStore((s) => s.selectedAiModel);
+  const setSelectedAiModel = useWorkspaceStore((s) => s.setSelectedAiModel);
   const loading = useWorkspaceStore((s) => s.loading);
   const error = useWorkspaceStore((s) => s.error);
   const refreshWorkspace = useWorkspaceStore((s) => s.refreshWorkspace);
 
   const title = PAGE_TITLES[pathname] ?? "Workspace";
-  const profile = workspace?.profile;
-  const workspaceName = workspace?.companyName || profile?.company || "FlowPilot Workspace";
-  const workspaceWebsite = workspace?.companyWebsite || "No website configured";
+  const hasSavedWorkspaceSetup = Boolean(activeWorkspaceId) || workspaceSetups.length > 0;
+  const visibleWorkspace = hasSavedWorkspaceSetup ? workspace : null;
+  const profile = visibleWorkspace?.profile;
+  const workspaceName = visibleWorkspace?.companyName || profile?.company || "FlowPilot Workspace";
+  const workspaceWebsite = visibleWorkspace?.companyWebsite || "No website configured";
+  const pendingContentCount = visibleWorkspace?.content.filter((item) => item.status === "PENDING").length ?? 0;
+  const recentActivities = visibleWorkspace?.activities.slice(0, 5) ?? [];
+  const notificationCount = pendingContentCount + recentActivities.length;
   const initials =
     profile?.name
       ?.split(" ")
@@ -142,63 +128,62 @@ export function AppShell({ children }: { children: ReactNode }) {
       .join("")
       .slice(0, 2)
       .toUpperCase() ?? "U";
+  const setupRequired = visibleWorkspace ? !visibleWorkspace.workspaceConfigured : true;
+  const showSetupOnly = setupRequired && pathname === "/workspace-setup";
+
+  useEffect(() => {
+    if (setupRequired && pathname !== "/workspace-setup") {
+      router.replace("/workspace-setup");
+    }
+  }, [pathname, router, setupRequired]);
 
   return (
     <div className="flex min-h-screen bg-zinc-50">
-      <aside
-        className={cn(
-          "sticky top-0 flex h-screen flex-col border-r border-zinc-200 bg-gradient-to-b from-white to-slate-50 transition-[width] duration-200 ease-out",
-          collapsed ? "w-[72px]" : "w-64",
-        )}
-      >
-        <div className={cn("flex items-center gap-2 border-b border-zinc-100 p-3", collapsed && "justify-center")}>
+      {!showSetupOnly && (
+        <aside
+          className={cn(
+            "sticky top-0 flex h-screen flex-col border-r border-zinc-200 bg-gradient-to-b from-white to-slate-50 transition-[width] duration-200 ease-out",
+            collapsed ? "w-[72px]" : "w-64",
+          )}
+        >
+          <div className={cn("flex items-center gap-2 border-b border-zinc-100 p-3", collapsed && "justify-center")}>
+            {!collapsed && (
+              <div className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">FlowPilot</p>
+                <p className="truncate text-sm font-semibold text-slate-900">{workspaceName}</p>
+                <p className="truncate text-xs text-slate-500">{workspaceWebsite}</p>
+              </div>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="size-9 shrink-0 rounded-xl border-slate-200 bg-white p-0"
+              onClick={() => setSidebarCollapsed(!collapsed)}
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              {collapsed ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
+            </Button>
+          </div>
+          <nav className="flex flex-1 flex-col gap-3 overflow-y-auto p-3">
+            {!collapsed && (
+              <p className="px-3 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Workflow</p>
+            )}
+            <NavSection items={navItems} collapsed={collapsed} pathname={pathname} />
+          </nav>
           {!collapsed && (
-            <div className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">FlowPilot</p>
-              <p className="truncate text-sm font-semibold text-slate-900">{workspaceName}</p>
-              <p className="truncate text-xs text-slate-500">{workspaceWebsite}</p>
+            <div className="border-t border-zinc-100 p-3">
+              <Link
+                href="/settings"
+                className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 transition hover:bg-slate-50"
+              >
+                <Plug className="size-3.5" />
+                Connect accounts in Settings
+              </Link>
             </div>
           )}
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="size-9 shrink-0 rounded-xl border-slate-200 bg-white p-0"
-            onClick={() => setSidebarCollapsed(!collapsed)}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
-            {collapsed ? <ChevronRight className="size-4" /> : <ChevronLeft className="size-4" />}
-          </Button>
-        </div>
-        <nav className="flex flex-1 flex-col gap-4 overflow-y-auto p-3">
-          {/* {!collapsed && (
-            <div className="rounded-xl border border-blue-100 bg-blue-50/80 p-3">
-              <p className="flex items-center gap-2 text-xs font-semibold text-blue-700">
-                <Sparkles className="size-3.5" />
-                Atlassian-style workspace
-              </p>
-              <p className="mt-1 text-xs text-blue-700/80">Structured navigation with setup-first workflow.</p>
-            </div>
-          )} */}
-          <NavSection title="Main" items={navMain} collapsed={collapsed} pathname={pathname} />
-          <NavSection title="Marketing" items={navMarketing} collapsed={collapsed} pathname={pathname} />
-          <NavSection title="Sales" items={navSales} collapsed={collapsed} pathname={pathname} />
-          <NavSection title="System" items={navSystem} collapsed={collapsed} pathname={pathname} />
-          <Separator className="my-1" />
-          <NavSection title="User" items={navUser} collapsed={collapsed} pathname={pathname} />
-        </nav>
-        {!collapsed && (
-          <div className="border-t border-zinc-100 p-3">
-            <Link
-              href="/settings"
-              className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 transition hover:bg-slate-50"
-            >
-              <Plug className="size-3.5" />
-              Integrations live in Settings
-            </Link>
-          </div>
-        )}
-      </aside>
+        </aside>
+      )}
 
       <div className="flex min-h-screen flex-1 flex-col">
         <header className="sticky top-0 z-20 border-b border-zinc-200 bg-white/95 px-4 py-3 backdrop-blur md:px-6">
@@ -229,7 +214,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                       ))}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem asChild>
-                        <Link href="/workspace-setup">Manage workspace setup</Link>
+                        <Link href="/workspace-setup">Open setup</Link>
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
@@ -246,16 +231,69 @@ export function AppShell({ children }: { children: ReactNode }) {
               )}
             </div>
             <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:justify-end md:max-w-xl">
-              <div className="relative flex-1">
+              {/* <div className="relative flex-1">
                 <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-400" />
-                <Input readOnly placeholder="Search workspace…" className="h-10 rounded-2xl border-zinc-200 bg-zinc-50 pl-9" />
-              </div>
+                <Input readOnly placeholder="Search workspace..." className="h-10 rounded-2xl border-zinc-200 bg-zinc-50 pl-9" />
+              </div> */}
+              <label className="flex h-10 min-w-[190px] items-center gap-2 rounded-2xl border border-zinc-200 bg-white px-3 text-xs text-zinc-500">
+                <Sparkles className="size-4 text-blue-600" />
+                <select
+                  value={selectedAiModel}
+                  onChange={(event) => setSelectedAiModel(event.target.value)}
+                  className="w-full bg-transparent text-sm font-medium text-zinc-800 outline-none"
+                  aria-label="Select AI model"
+                >
+                  {AI_MODEL_OPTIONS.map((model) => (
+                    <option key={model.value} value={model.value}>
+                      {model.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <div className="flex items-center gap-1">
-                <Button type="button" variant="ghost" size="sm" className="size-10 rounded-xl" asChild>
-                  <Link href="/notifications" aria-label="Notifications">
-                    <Bell className="size-5 text-zinc-600" />
-                  </Link>
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button type="button" variant="ghost" size="sm" className="relative size-10 rounded-xl" aria-label="Notifications">
+                      <Bell className="size-5 text-zinc-600" />
+                      {notificationCount > 0 && (
+                        <span className="absolute right-1.5 top-1.5 flex size-4 items-center justify-center rounded-full bg-blue-600 text-[10px] font-semibold text-white">
+                          {notificationCount > 9 ? "9+" : notificationCount}
+                        </span>
+                      )}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-80 rounded-xl p-2">
+                    <div className="px-2 py-1.5">
+                      <p className="text-sm font-semibold text-zinc-900">Notifications</p>
+                      <p className="text-xs text-zinc-500">Recent workspace updates and approvals.</p>
+                    </div>
+                    <DropdownMenuSeparator />
+                    <div className="max-h-80 space-y-2 overflow-y-auto p-1">
+                      {pendingContentCount > 0 && (
+                        <Link
+                          href="/content"
+                          className="block rounded-xl border border-amber-200/90 bg-amber-50 px-3 py-2.5 text-sm text-amber-900 transition-colors hover:border-amber-300 hover:bg-amber-50/80"
+                        >
+                          <span className="font-medium text-amber-950">Approval required</span>
+                          <span className="mt-0.5 block text-xs text-amber-900/85">
+                            {pendingContentCount} post{pendingContentCount === 1 ? "" : "s"} pending — open Content
+                          </span>
+                        </Link>
+                      )}
+                      {recentActivities.length === 0 && pendingContentCount === 0 ? (
+                        <div className="rounded-xl border border-dashed border-zinc-200 px-3 py-6 text-center text-sm text-zinc-500">
+                          You are all caught up.
+                        </div>
+                      ) : (
+                        recentActivities.map((item) => <NotificationEntry key={item.id} text={item.text} createdAt={item.createdAt} variant="dropdown" />)
+                      )}
+                    </div>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem asChild>
+                      <Link href="/notifications">View all notifications</Link>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button type="button" variant="ghost" className="h-10 gap-2 rounded-2xl px-2">
@@ -277,6 +315,9 @@ export function AppShell({ children }: { children: ReactNode }) {
                   <DropdownMenuContent align="end" className="w-56 rounded-xl">
                     <DropdownMenuLabel>Account</DropdownMenuLabel>
                     <DropdownMenuSeparator />
+                    <DropdownMenuItem asChild>
+                      <Link href="/workspace-setup">{visibleWorkspace?.workspaceConfigured ? "Change workspace setup" : "Set up workspace"}</Link>
+                    </DropdownMenuItem>
                     <DropdownMenuItem asChild>
                       <Link href="/profile">Profile</Link>
                     </DropdownMenuItem>

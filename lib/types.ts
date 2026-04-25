@@ -1,6 +1,6 @@
 export type ContentStatus = "PENDING" | "APPROVED" | "SCHEDULED" | "PUBLISHED" | "REJECTED";
 export type PublishingPlatform = "linkedin" | "instagram" | "facebook" | "twitter";
-export type WorkspaceScenario = "b2b-saas" | "ecommerce" | "agency";
+export type WorkspaceScenario = string;
 export type MediaType = "Image" | "Video" | "Carousel" | "Media";
 export type PublishStatus = "Success" | "Failed";
 export type LeadStatus = "New" | "Contacted" | "Qualified";
@@ -105,6 +105,8 @@ export interface WorkspaceSnapshot {
   companyName: string;
   companyWebsite: string;
   workspaceScenario: WorkspaceScenario;
+  /** AI region focus: global | uae-gcc | india | uae-india */
+  primaryRegion: string;
   workspaceConfigured: boolean;
   strategy: StrategyPlan | null;
   competitors: Competitor[];
