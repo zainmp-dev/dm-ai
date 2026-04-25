@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Marketing Automation System",
-  description: "Internal marketing operations workspace",
+  title: "FlowPilot - Marketing Command Center",
+  description: "Marketing command center SaaS MVP",
 };
 
 export default function RootLayout({
@@ -27,9 +27,10 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col bg-zinc-50 text-zinc-900">
+      <body suppressHydrationWarning className="min-h-full flex flex-col bg-zinc-50 text-zinc-900">
         <ToastProvider>{children}</ToastProvider>
       </body>
     </html>

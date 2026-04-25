@@ -1,36 +1,427 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# FlowPilot - Marketing Command Center
 
-## Getting Started
+## Complete Technical Documentation (MVP -> Production Ready Architecture)
 
-First, run the development server:
+---
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## 1. System Overview
+
+FlowPilot is a workspace-based marketing automation platform designed to automate:
+
+- Strategy generation
+- Content creation
+- Approval workflows
+- Scheduling and publishing
+- Lead generation
+- Notifications and reporting
+
+The system operates with minimal manual intervention and is structured around a multi-agent architecture.
+
+---
+
+## 2. Core Architecture
+
+### High-Level Flow
+
+User -> Frontend (Next.js) -> Backend API (FastAPI) -> AI Agents -> Data Layer -> Background Jobs -> Notifications
+
+---
+
+## 3. Technology Stack
+
+### Frontend
+
+- Next.js (App Router)
+- Tailwind CSS
+- shadcn/ui
+- Zustand (state management)
+- Recharts (analytics)
+
+### Backend
+
+- FastAPI (Python)
+- In-memory database (MVP)
+
+### AI Layer
+
+- Primary LLM (strategy + content)
+- Lightweight model (validation + formatting)
+
+### Infrastructure (Future Ready)
+
+- PostgreSQL
+- Redis
+- Celery / Background workers
+
+---
+
+## 4. Authentication System
+
+### Features
+
+- User Signup
+- User Login
+- JWT Token Management
+- Protected Routes
+
+### Flow
+
+1. User signs up
+2. User logs in
+3. Token stored (client-side)
+4. API requests include token
+5. Logout clears session
+
+---
+
+## 5. Workspace System
+
+### Purpose
+
+Each workspace represents a company/project.
+
+### Data
+
+- workspace_id
+- company_name
+- website
+- industry
+
+### Rules
+
+- All system data must be linked to workspace_id
+
+---
+
+## 6. AI Multi-Agent System
+
+### Agent 1: Strategy Engine
+
+Input:
+
+- Company name or URL
+
+Process:
+
+- Competitor discovery
+- Market analysis
+- Gap identification
+
+Output:
+
+- Target audience
+- Content pillars
+- Platform strategy
+
+---
+
+### Agent 2: Content Engine
+
+Input:
+
+- Strategy output
+
+Process:
+
+- Generate content calendar (7-30 days)
+- Create posts
+- Assign media
+
+Output:
+
+- Content items with:
+  - text
+  - platform
+  - media
+  - schedule
+
+---
+
+### Agent 3: Publishing Engine
+
+Process:
+
+- Validate content
+- Manage approval
+- Schedule publishing
+
+---
+
+## 7. Content Lifecycle
+
+DRAFT -> PENDING -> APPROVED -> SCHEDULED -> PUBLISHED -> FAILED -> REJECTED
+
+---
+
+## 8. Calendar & Scheduling System
+
+### Placement
+
+- Command Center (quick view)
+- Dedicated Scheduling Page
+
+### Functionality
+
+- Assign publish date/time
+- Modify schedules
+- Track upcoming posts
+
+### Backend Logic
+
+- Scheduled timestamp stored per content
+- Background worker checks and triggers publishing
+
+---
+
+## 9. Media Management System
+
+### Features
+
+- Media storage (image/video)
+- Usage tracking
+- Duplicate prevention
+
+### Data Structure
+
+- media_id
+- url
+- type
+- used_in
+
+---
+
+## 10. Social Media Integration
+
+### Platforms
+
+- LinkedIn
+- Facebook
+- Instagram
+- Twitter
+
+### Features
+
+- Connect / Disconnect
+- Platform selection per content
+- Preview before publish
+
+---
+
+## 11. Approval System
+
+### Features
+
+- Approve
+- Reject
+- Edit
+
+### Rules
+
+- Only approved content can be scheduled
+- Only scheduled content can be published
+
+---
+
+## 12. Background Processing
+
+### Responsibilities
+
+- Publish scheduled posts
+- Retry failed posts
+- Generate leads
+
+### Implementation (MVP)
+
+- Interval-based simulation
+
+### Production Upgrade
+
+- Redis + Celery
+
+---
+
+## 13. Lead Management System
+
+### Data
+
+- name
+- email
+- source
+- status
+
+### Behavior
+
+- Leads generated after publishing events
+
+---
+
+## 14. Notification System
+
+### Types
+
+- In-app notifications
+- Email notifications
+
+### Events
+
+- Content ready
+- Approval updates
+- Publishing status
+- New leads
+
+---
+
+## 15. Email Notification System
+
+### Implementation
+
+- SMTP (Gmail)
+
+### Triggers
+
+- Content generation
+- Approval actions
+- Publishing success/failure
+- Lead generation
+
+---
+
+## 16. Logging System
+
+### Purpose
+
+Track all system actions.
+
+### Events
+
+- Content approval
+- Publishing
+- Errors
+
+---
+
+## 17. API Design
+
+### Standard Response Format
+
+```json
+{
+  "success": true,
+  "data": {},
+  "message": ""
+}
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Core Endpoints
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Auth:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- POST /signup
+- POST /login
 
-## Learn More
+Workspace:
 
-To learn more about Next.js, take a look at the following resources:
+- POST /workspace
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Strategy:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- POST /strategy
 
-## Deploy on Vercel
+Content:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- POST /content
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Approval:
+
+- POST /approve
+
+Scheduling:
+
+- POST /schedule
+
+Publishing:
+
+- POST /publish
+
+Leads:
+
+- GET /leads
+
+Notifications:
+
+- GET /notifications
+
+---
+
+## 18. UI System
+
+### Layout
+
+- Sidebar navigation
+- Top navbar
+- Dashboard content area
+
+### Pages
+
+- Dashboard
+- Command Center
+- Strategy
+- Content
+- Scheduling
+- Publishing
+- Leads
+- Settings
+- Profile
+
+---
+
+## 19. UX Requirements
+
+- Clean SaaS UI
+- Minimal design
+- Smooth transitions
+- Loading states
+- Toast notifications
+- Empty states
+
+---
+
+## 20. Security (MVP)
+
+- Token-based auth
+- Route protection
+- Basic validation
+
+---
+
+## 21. Deployment (MVP)
+
+Frontend:
+
+- Vercel
+
+Backend:
+
+- Railway / Render
+
+---
+
+## 22. Production Upgrade Path
+
+- PostgreSQL database
+- Redis queue system
+- Celery workers
+- OAuth integrations
+- Multi-user system
+
+---
+
+## 23. Final System Flow
+
+Login -> Workspace -> Strategy -> Content -> Approval -> Scheduling -> Publishing -> Leads -> Notifications -> Email -> Logout
+
+---
+
+## 24. Conclusion
+
+FlowPilot is designed as a scalable marketing automation system with modular architecture, enabling transition from MVP to production-ready SaaS.
