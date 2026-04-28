@@ -1,7 +1,7 @@
 "use client";
 
 import { Bookmark, Heart, MessageCircle, Send } from "lucide-react";
-import Image from "next/image";
+import { MediaPreviewBlock } from "@/components/media-preview-block";
 import { integrationForPlatform } from "@/lib/platform";
 import type { ContentItem, WorkspaceSnapshot } from "@/lib/types";
 
@@ -26,7 +26,13 @@ export function InstagramPostPreview({
         </div>
       </div>
       <div className="relative aspect-square w-full bg-zinc-100">
-        <Image src={item.mediaPreview} alt="" fill className="object-cover" sizes="384px" unoptimized />
+        <MediaPreviewBlock
+          url={item.mediaPreview}
+          mediaType={item.mediaType}
+          className="absolute inset-0 h-full w-full"
+          imgClassName="h-full w-full object-cover"
+          videoClassName="h-full w-full object-cover"
+        />
       </div>
       <div className="space-y-2 px-3 py-3">
         <div className="flex items-center justify-between text-zinc-800">

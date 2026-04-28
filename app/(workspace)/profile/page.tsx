@@ -16,7 +16,7 @@ export default function ProfilePage() {
   const saveProfile = useWorkspaceStore((s) => s.saveProfile);
   const { push } = useToast();
   if (!workspace && loading) {
-    return <Skeleton className="h-80 w-full max-w-xl rounded-2xl" />;
+    return <Skeleton className="h-80 w-full rounded-2xl" />;
   }
 
   if (!workspace) {
@@ -54,7 +54,7 @@ function ProfileForm({
   }, []);
 
   return (
-    <Card className="max-w-xl rounded-2xl border-zinc-200 shadow-sm">
+    <Card className="w-full rounded-2xl border-zinc-200 shadow-sm">
       <CardHeader>
         <CardTitle className="text-base">Profile</CardTitle>
       </CardHeader>

@@ -21,11 +21,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
     void deleteCurrentWorkspace();
   }, [activeWorkspaceId, deleteCurrentWorkspace, workspace?.workspaceConfigured, workspaceSetups.length]);
+  // Wait until the initial GET /workspace has populated `workspace` before syncing
+  // the active local setup. Otherwise `setActiveWorkspace` sees `workspace === null`,
+  // skips the "already active" short-circuit, and fires a redundant POST + GET on every load.
   useEffect(() => {
-    if (!activeWorkspaceId || workspaceSetups.length === 0) {
+    if (!workspace || !activeWorkspaceId || workspaceSetups.length === 0) {
       return;
     }
     void setActiveWorkspace(activeWorkspaceId);
-  }, [activeWorkspaceId, setActiveWorkspace, workspaceSetups.length]);
+  }, [activeWorkspaceId, setActiveWorkspace, workspace, workspaceSetups.length]);
   return children;
 }

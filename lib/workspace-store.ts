@@ -9,6 +9,7 @@ import {
   apiErrorMessage,
   apiGetWorkspace,
   type MasterContentSuggestion,
+  apiPostClearAiOutputs,
   apiPostContent,
   apiPostStrategy,
   apiPublish,
@@ -19,8 +20,9 @@ import {
   apiUpdatePreferences,
   apiUpdateProfile,
 } from "@/lib/api";
-import { DEFAULT_AI_MODEL } from "@/lib/ai-models";
+import { DEFAULT_AI_MODEL, normalizeStoredAiModel } from "@/lib/ai-models";
 import { getAuthUser } from "@/lib/auth";
+import { normalizePrimaryRegionCode } from "@/lib/primary-region";
 import type { MediaType, PostingPreferences, PublishingPlatform, UserProfile, WorkspaceScenario, WorkspaceSnapshot } from "@/lib/types";
 
 const AI_MODEL_STORAGE_KEY = "flowpilot.aiModel";
@@ -34,7 +36,7 @@ function userScopedStorageKey(key: string) {
 
 function loadSelectedAiModel() {
   if (typeof window === "undefined") return DEFAULT_AI_MODEL;
-  return window.localStorage.getItem(AI_MODEL_STORAGE_KEY) || DEFAULT_AI_MODEL;
+  return normalizeStoredAiModel(window.localStorage.getItem(AI_MODEL_STORAGE_KEY));
 }
 
 function isWorkspaceScenario(value: unknown): value is WorkspaceScenario {
@@ -63,10 +65,10 @@ function readStoredWorkspaceSetups(): { setups: WorkspaceSetupConfig[]; activeWo
               companyName,
               website: String(record.website ?? ""),
               scenario,
-              primaryRegion: typeof record.primaryRegion === "string" ? record.primaryRegion : "global",
+              primaryRegion: normalizePrimaryRegionCode(typeof record.primaryRegion === "string" ? record.primaryRegion : undefined),
               workspaceOwnerName: String(record.workspaceOwnerName ?? ""),
               workspaceOwnerEmail: String(record.workspaceOwnerEmail ?? ""),
-              aiModel: String(record.aiModel ?? DEFAULT_AI_MODEL),
+              aiModel: normalizeStoredAiModel(String(record.aiModel ?? DEFAULT_AI_MODEL)),
               competitors: Array.isArray(record.competitors)
                 ? record.competitors
                     .map((competitor): CompetitorSetupInput | null => {
@@ -141,6 +143,7 @@ interface WorkspaceStore {
   refreshWorkspace: (options?: { soft?: boolean }) => Promise<void>;
   generateStrategy: (companyName: string, website: string, competitors?: CompetitorSetupInput[]) => Promise<void>;
   generateContent: (calendarDays?: number) => Promise<void>;
+  clearAiOutputs: () => Promise<void>;
   suggestMasterContent: (suggestHint?: string) => Promise<MasterContentSuggestion>;
   createContentItem: (payload: {
     title: string;
@@ -149,23 +152,27 @@ interface WorkspaceStore {
     mediaPreview: string;
     scheduledAt?: string;
     autoActivate?: boolean;
-  }) => Promise<void>;
+    selectedPlatform?: PublishingPlatform;
+  }) => Promise<string | null>;
   updateContentItem: (payload: {
     contentId: string;
     title: string;
     contentText: string;
     mediaType?: MediaType;
     mediaPreview?: string;
-    scheduledAt?: string;
+    /** Omit to leave unchanged; ISO UTC string to set; null to clear */
+    scheduledAt?: string | null;
     autoActivate?: boolean;
+    selectedPlatform?: PublishingPlatform;
   }) => Promise<void>;
+  deleteContentItem: (contentId: string) => Promise<void>;
   approve: (contentId: string, platformOrPlatforms: PublishingPlatform | PublishingPlatform[]) => Promise<void>;
   reject: (contentId: string) => Promise<void>;
   schedule: (contentId: string, scheduledAt: string) => Promise<void>;
   publish: (contentIds: string[]) => Promise<{ published: number; warnings: string[] }>;
   runCron: () => Promise<{ published: number; warnings: string[] }>;
-  connectLinkedin: () => Promise<void>;
-  connectMeta: () => Promise<void>;
+  connectLinkedin: () => Promise<boolean>;
+  connectMeta: () => Promise<boolean>;
   saveProfile: (patch: Partial<UserProfile>) => Promise<void>;
   savePreferences: (patch: Partial<PostingPreferences>) => Promise<void>;
   setupWorkspace: (payload: {
@@ -190,17 +197,18 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   selectedAiModel: loadSelectedAiModel(),
   sidebarCollapsed: false,
   setSelectedAiModel: (model) => {
+    const m = normalizeStoredAiModel(model);
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(AI_MODEL_STORAGE_KEY, model);
+      window.localStorage.setItem(AI_MODEL_STORAGE_KEY, m);
     }
     const activeWorkspaceId = get().activeWorkspaceId;
     const workspaceSetups = activeWorkspaceId
-      ? get().workspaceSetups.map((setup) => (setup.id === activeWorkspaceId ? { ...setup, aiModel: model } : setup))
+      ? get().workspaceSetups.map((setup) => (setup.id === activeWorkspaceId ? { ...setup, aiModel: m } : setup))
       : get().workspaceSetups;
     if (activeWorkspaceId) {
       writeStoredWorkspaceSetups(workspaceSetups, activeWorkspaceId);
     }
-    set({ selectedAiModel: model, workspaceSetups });
+    set({ selectedAiModel: m, workspaceSetups });
   },
   setSidebarCollapsed: (value) => set({ sidebarCollapsed: value }),
   loadWorkspaceSetups: () => {
@@ -231,7 +239,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
         primaryRegion: setup.primaryRegion,
         workspaceOwnerName: setup.workspaceOwnerName,
         workspaceOwnerEmail: setup.workspaceOwnerEmail,
-        aiModel: setup.aiModel,
+        aiModel: normalizeStoredAiModel(setup.aiModel),
         competitors: setup.competitors,
       });
       get().setSelectedAiModel(setup.aiModel);
@@ -265,6 +273,16 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     writeStoredWorkspaceSetups([], null);
     set({ workspace, workspaceSetups: [], activeWorkspaceId: null, loading: false, error: null });
   },
+  clearAiOutputs: async () => {
+    try {
+      const snapshot = await apiPostClearAiOutputs();
+      set({ workspace: snapshot, error: null });
+    } catch (e) {
+      const message = apiErrorMessage(e);
+      set({ error: message });
+      throw new Error(message);
+    }
+  },
   refreshWorkspace: async (options) => {
     const soft = options?.soft;
     if (!soft) {
@@ -282,7 +300,17 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   },
   generateStrategy: async (companyName, website, competitors) => {
     try {
-      await apiPostStrategy(companyName, website, get().selectedAiModel, competitors, get().workspace?.workspaceScenario);
+      const data = await apiPostStrategy(
+        companyName,
+        website,
+        get().selectedAiModel,
+        competitors,
+        get().workspace?.workspaceScenario,
+      );
+      const used = data.ai_model_used?.trim();
+      if (used && used !== get().selectedAiModel) {
+        get().setSelectedAiModel(used);
+      }
       await get().refreshWorkspace({ soft: true });
     } catch (e) {
       const message = apiErrorMessage(e);
@@ -292,10 +320,14 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   },
   generateContent: async (calendarDays) => {
     try {
-      await apiPostContent({ action: "generate", calendarDays, aiModel: get().selectedAiModel });
+      const data = await apiPostContent({ action: "generate", calendarDays, aiModel: get().selectedAiModel });
+      const used = data.ai_model_used?.trim();
+      if (used && used !== get().selectedAiModel) {
+        get().setSelectedAiModel(used);
+      }
       await get().refreshWorkspace({ soft: true });
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Content generation failed";
+      const message = apiErrorMessage(e);
       set({
         error: message,
       });
@@ -322,7 +354,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   },
   createContentItem: async (payload) => {
     try {
-      await apiPostContent({
+      const data = await apiPostContent({
         action: "create",
         title: payload.title,
         contentText: payload.contentText,
@@ -330,12 +362,16 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
         mediaPreview: payload.mediaPreview,
         scheduledAt: payload.scheduledAt,
         autoActivate: payload.autoActivate,
+        selectedPlatform: payload.selectedPlatform,
       });
       await get().refreshWorkspace({ soft: true });
+      return typeof data.created_content_id === "string" ? data.created_content_id : null;
     } catch (e) {
+      const message = apiErrorMessage(e);
       set({
-        error: e instanceof Error ? e.message : "Create content failed",
+        error: message,
       });
+      throw new Error(message);
     }
   },
   updateContentItem: async (payload) => {
@@ -349,12 +385,25 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
         mediaPreview: payload.mediaPreview,
         scheduledAt: payload.scheduledAt,
         autoActivate: payload.autoActivate,
+        selectedPlatform: payload.selectedPlatform,
       });
       await get().refreshWorkspace({ soft: true });
     } catch (e) {
+      const message = apiErrorMessage(e);
       set({
-        error: e instanceof Error ? e.message : "Update failed",
+        error: message,
       });
+      throw new Error(message);
+    }
+  },
+  deleteContentItem: async (contentId) => {
+    try {
+      await apiPostContent({ action: "delete", contentId });
+      await get().refreshWorkspace({ soft: true });
+    } catch (e) {
+      const message = apiErrorMessage(e);
+      set({ error: message });
+      throw new Error(message);
     }
   },
   approve: async (contentId, platformOrPlatforms) => {
@@ -399,10 +448,12 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   connectLinkedin: async () => {
     await apiConnectLinkedin();
     await get().refreshWorkspace({ soft: true });
+    return get().workspace?.integrations.linkedin.connected ?? false;
   },
   connectMeta: async () => {
     await apiConnectMeta();
     await get().refreshWorkspace({ soft: true });
+    return get().workspace?.integrations.meta.connected ?? false;
   },
   saveProfile: async (patch) => {
     await apiUpdateProfile(patch);
@@ -413,7 +464,8 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     await get().refreshWorkspace({ soft: true });
   },
   setupWorkspace: async (payload) => {
-    await apiSetupWorkspace(payload);
+    const payloadNorm = { ...payload, aiModel: normalizeStoredAiModel(payload.aiModel) };
+    await apiSetupWorkspace(payloadNorm);
     const existingSetups = get().workspaceSetups;
     const matched = payload.workspaceId
       ? existingSetups.find((item) => item.id === payload.workspaceId)
@@ -424,18 +476,19 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
       companyName: payload.companyName,
       website: payload.website,
       scenario: payload.scenario,
-      primaryRegion: payload.primaryRegion ?? "global",
+      primaryRegion: normalizePrimaryRegionCode(payload.primaryRegion),
       workspaceOwnerName: payload.workspaceOwnerName,
       workspaceOwnerEmail: payload.workspaceOwnerEmail,
-      aiModel: payload.aiModel,
+      aiModel: payloadNorm.aiModel,
       competitors: payload.competitors,
       createdAt: matched?.createdAt ?? new Date().toISOString(),
     };
     const nextSetups = matched ? existingSetups.map((item) => (item.id === matched.id ? nextSetup : item)) : [nextSetup, ...existingSetups];
+    const resolvedModel = nextSetup.aiModel;
     writeStoredWorkspaceSetups(nextSetups, setupId);
-    set({ workspaceSetups: nextSetups, activeWorkspaceId: setupId, selectedAiModel: payload.aiModel });
+    set({ workspaceSetups: nextSetups, activeWorkspaceId: setupId, selectedAiModel: resolvedModel });
     if (typeof window !== "undefined") {
-      window.localStorage.setItem(AI_MODEL_STORAGE_KEY, payload.aiModel);
+      window.localStorage.setItem(AI_MODEL_STORAGE_KEY, resolvedModel);
     }
     await get().refreshWorkspace({ soft: true });
   },

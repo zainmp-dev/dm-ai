@@ -20,6 +20,9 @@
 # production
 /build
 
+# local user media (FlowPilot disk uploads)
+/backend/data/user_media/
+
 # misc
 .DS_Store
 *.pem

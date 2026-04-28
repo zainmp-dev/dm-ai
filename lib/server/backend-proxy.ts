@@ -11,13 +11,13 @@ const SKIP_IN_HEADERS = new Set([
 ]);
 
 function getBackendBase(): string {
-  return (process.env.BACKEND_PROXY_URL ?? "http://127.0.0.1:8001").replace(/\/$/, "");
+  return (process.env.BACKEND_PROXY_URL ?? "http://127.0.0.1:8011").replace(/\/$/, "");
 }
 
 /**
  * If BACKEND_PROXY_URL points at this same Next dev server, server-side fetch would call
  * e.g. POST http://localhost:3000/content (a page), which only allows GET → 405 Method Not Allowed.
- * FastAPI must be on a different port (default 8001).
+ * FastAPI must be on a different port (default 8011).
  */
 function proxyTargetWouldHitNextItself(request: NextRequest, backendBase: string): boolean {
   let backend: URL;
@@ -70,7 +70,7 @@ export async function proxyToFastapi(request: NextRequest, pathSegments: string[
         detail:
           "BACKEND_PROXY_URL is set to this Next.js server (same host/port as the page). " +
           "The proxy would POST to a page route and get 405. " +
-          "Remove BACKEND_PROXY_URL from `.env.local` or set it to the FastAPI URL (e.g. http://127.0.0.1:8001) and run `npm run backend:dev`.",
+          "Remove BACKEND_PROXY_URL from `.env.local` or set it to the FastAPI URL (e.g. http://127.0.0.1:8011) and run `npm run backend:dev`.",
       },
       { status: 502 },
     );

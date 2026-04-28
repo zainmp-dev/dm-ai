@@ -8,8 +8,16 @@ export type CrmStatus = "Pending" | "Synced";
 
 export interface Competitor {
   id: string;
+  /** Primary site host or URL root from research */
+  domain: string;
   name: string;
   positioning: string;
+  /** Qualitative tier (e.g. category leader, challenger) */
+  marketRank: string;
+  /** Exploitable gap vs this competitor */
+  marketGap: string;
+  /** Their apparent GTM / communications objective */
+  marketingPurpose: string;
   strengths: string[];
   weaknesses: string[];
 }
@@ -30,6 +38,9 @@ export interface ContentItem {
   status: ContentStatus;
   selectedPlatform: PublishingPlatform | null;
   scheduledAt: string | null;
+  /** ISO timestamp from workspace content row (optional on older snapshots). */
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Campaign {
@@ -105,10 +116,16 @@ export interface WorkspaceSnapshot {
   companyName: string;
   companyWebsite: string;
   workspaceScenario: WorkspaceScenario;
-  /** AI region focus: global | uae-gcc | india | uae-india */
+  /** AI region focus: uae-gcc | india | uae-india (legacy global is normalized to uae-india) */
   primaryRegion: string;
   workspaceConfigured: boolean;
+  /** Backend has CLOUDINARY_* env set; Media setup can upload to Cloudinary instead of local disk. */
+  cloudinaryUploadsReady: boolean;
   strategy: StrategyPlan | null;
+  /** Last Agent 1 save time (flowpilot_strategy.updated_at), ISO string. */
+  strategyUpdatedAt?: string;
+  /** Monotonic version counter incremented on each full Agent 1 persistence. */
+  strategyVersion?: number;
   competitors: Competitor[];
   content: ContentItem[];
   leads: LeadItem[];

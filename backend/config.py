@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -17,43 +17,120 @@ def _load_local_env() -> None:
         key, value = row.split("=", 1)
         key = key.strip()
         value = value.strip().strip('"').strip("'")
-        if key and key not in os.environ:
+        # `.env` is the source of truth for local dev: override stale vars from the shell/IDE/OS.
+        if key:
             os.environ[key] = value
 
 
 _load_local_env()
 
 
+def _str_env(name: str, default: str = "") -> str:
+    return os.getenv(name, default).strip()
+
+
+def _str_env_first(*names: str) -> str:
+    for n in names:
+        v = os.getenv(n, "").strip()
+        if v:
+            return v
+    return ""
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if not raw or not str(raw).strip():
+        return default
+    return int(str(raw).strip())
+
+
+_DEFAULT_OPENROUTER_MODEL = "openai/gpt-5-mini"
+# Replaced with _DEFAULT_OPENROUTER_MODEL when the env still points at removed or invalid slugs.
+_LEGACY_OPENROUTER_MODELS: frozenset[str] = frozenset(
+    {
+        "mistralai/mixtral-8x7b",
+    }
+)
+
+
+def _openrouter_model_from_env() -> str:
+    raw = (_str_env("OPENROUTER_MODEL", _DEFAULT_OPENROUTER_MODEL) or _DEFAULT_OPENROUTER_MODEL).strip()
+    if not raw or raw in _LEGACY_OPENROUTER_MODELS:
+        return _DEFAULT_OPENROUTER_MODEL
+    return raw
+
+
 @dataclass(frozen=True)
 class Settings:
-    database_url: str = os.getenv("DATABASE_URL", "").strip()
-    openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "").strip()
-    openrouter_model: str = os.getenv("OPENROUTER_MODEL", "mistralai/mixtral-8x7b").strip() or "mistralai/mixtral-8x7b"
-    openrouter_timeout_seconds: int = int(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "45"))
+    # default_factory: each new Settings() re-reads os.environ (so .env edits apply without stale class-level defaults)
+    database_url: str = field(default_factory=lambda: _str_env("DATABASE_URL"))
+    openrouter_api_key: str = field(default_factory=lambda: _str_env("OPENROUTER_API_KEY"))
+    openrouter_model: str = field(default_factory=_openrouter_model_from_env)
+    openrouter_timeout_seconds: int = field(default_factory=lambda: _int_env("OPENROUTER_TIMEOUT_SECONDS", 45))
+    # Cap completion length so OpenRouter does not reserve a huge budget on each call (causes 402 when balance is small).
+    # Lower OPENROUTER_MAX_TOKENS in .env only when credits are constrained. Agent 1/2 JSON needs room (512 truncates badly).
+    openrouter_max_tokens: int = field(default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS", 8192))
+    # Comma-separated OpenRouter model ids tried after the requested model and OPENROUTER_MODEL (quota/model errors only).
+    openrouter_model_fallbacks: str = field(default_factory=lambda: _str_env("OPENROUTER_MODEL_FALLBACKS"))
 
-    meta_page_access_token: str = os.getenv("META_PAGE_ACCESS_TOKEN", "").strip()
-    meta_page_id: str = os.getenv("META_PAGE_ID", "").strip()
-    meta_ig_business_account_id: str = os.getenv("META_IG_BUSINESS_ACCOUNT_ID", "").strip()
-    meta_graph_api_version: str = os.getenv("META_GRAPH_API_VERSION", "v22.0").strip() or "v22.0"
+    # Primary: META_PAGE_ACCESS_TOKEN. Aliases for .env.example and common copy-paste from Meta tools.
+    meta_page_access_token: str = field(
+        default_factory=lambda: _str_env_first(
+            "META_PAGE_ACCESS_TOKEN",
+            "META_FACEBOOK_ACCESS_TOKEN",
+            "META_INSTAGRAM_ACCESS_TOKEN",
+        )
+    )
+    meta_page_id: str = field(default_factory=lambda: _str_env("META_PAGE_ID"))
+    meta_ig_business_account_id: str = field(default_factory=lambda: _str_env("META_IG_BUSINESS_ACCOUNT_ID"))
+    meta_graph_api_version: str = field(
+        default_factory=lambda: _str_env("META_GRAPH_API_VERSION", "v22.0") or "v22.0"
+    )
 
-    linkedin_access_token: str = os.getenv("LINKEDIN_ACCESS_TOKEN", "").strip()
-    linkedin_author_urn: str = os.getenv("LINKEDIN_AUTHOR_URN", "").strip()
-    linkedin_api_version: str = os.getenv("LINKEDIN_API_VERSION", "202405").strip() or "202405"
+    linkedin_access_token: str = field(
+        default_factory=lambda: _str_env_first("LINKEDIN_ACCESS_TOKEN", "LINKEDIN_TOKEN")
+    )
+    linkedin_author_urn: str = field(default_factory=lambda: _str_env("LINKEDIN_AUTHOR_URN"))
+    linkedin_api_version: str = field(
+        default_factory=lambda: _str_env("LINKEDIN_API_VERSION", "202405") or "202405"
+    )
 
-    scheduler_interval_seconds: int = int(os.getenv("SCHEDULER_INTERVAL_SECONDS", "60"))
-    weekly_update_interval_days: int = int(os.getenv("WEEKLY_UPDATE_INTERVAL_DAYS", "7"))
-    weekly_study_niche: str = os.getenv("WEEKLY_STUDY_NICHE", "AI marketing automation").strip() or "AI marketing automation"
-    max_publish_retries: int = int(os.getenv("MAX_PUBLISH_RETRIES", "3"))
-    request_timeout_seconds: int = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
+    scheduler_interval_seconds: int = field(default_factory=lambda: _int_env("SCHEDULER_INTERVAL_SECONDS", 60))
+    weekly_update_interval_days: int = field(default_factory=lambda: _int_env("WEEKLY_UPDATE_INTERVAL_DAYS", 7))
+    weekly_study_niche: str = field(
+        default_factory=lambda: _str_env("WEEKLY_STUDY_NICHE", "AI marketing automation") or "AI marketing automation"
+    )
+    max_publish_retries: int = field(default_factory=lambda: _int_env("MAX_PUBLISH_RETRIES", 3))
+    request_timeout_seconds: int = field(default_factory=lambda: _int_env("REQUEST_TIMEOUT_SECONDS", 30))
 
-    resend_api_key: str = os.getenv("RESEND_API_KEY", "").strip()
-    resend_from_email: str = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev").strip() or "onboarding@resend.dev"
-    notification_to_email: str = os.getenv("NOTIFICATION_TO_EMAIL", "").strip()
+    resend_api_key: str = field(default_factory=lambda: _str_env("RESEND_API_KEY"))
+    resend_from_email: str = field(
+        default_factory=lambda: _str_env("RESEND_FROM_EMAIL", "onboarding@resend.dev") or "onboarding@resend.dev"
+    )
+    notification_to_email: str = field(default_factory=lambda: _str_env("NOTIFICATION_TO_EMAIL"))
 
-    cloudinary_cloud_name: str = os.getenv("CLOUDINARY_CLOUD_NAME", "").strip()
-    cloudinary_api_key: str = os.getenv("CLOUDINARY_API_KEY", "").strip()
-    cloudinary_api_secret: str = os.getenv("CLOUDINARY_API_SECRET", "").strip()
-    cloudinary_folder: str = os.getenv("CLOUDINARY_FOLDER", "flowpilot").strip() or "flowpilot"
+    cloudinary_cloud_name: str = field(default_factory=lambda: _str_env("CLOUDINARY_CLOUD_NAME"))
+    cloudinary_api_key: str = field(default_factory=lambda: _str_env("CLOUDINARY_API_KEY"))
+    cloudinary_api_secret: str = field(default_factory=lambda: _str_env("CLOUDINARY_API_SECRET"))
+    cloudinary_folder: str = field(default_factory=lambda: _str_env("CLOUDINARY_FOLDER", "flowpilot") or "flowpilot")
+
+    # On-disk user uploads (served at GET /media-assets/...; URLs stored as /api/backend/media-assets/...)
+    media_storage_path: str = field(default_factory=lambda: _str_env("MEDIA_STORAGE_PATH"))
+    # Public origin of the Next.js app (no trailing slash). When set, local upload JSON includes
+    # media_url_absolute for curl/external clients, e.g. http://localhost:3000 or https://app.example.com
+    public_app_origin: str = field(default_factory=lambda: _str_env("FLOWPILOT_PUBLIC_ORIGIN"))
+
+
+def fresh_settings() -> Settings:
+    """Re-load `backend/.env` into os.environ and return a new Settings (tokens, URLs, etc.)."""
+    _load_local_env()
+    return Settings()
 
 
 settings = Settings()
+
+
+def user_media_dir() -> Path:
+    if settings.media_storage_path:
+        return Path(settings.media_storage_path).resolve()
+    return (Path(__file__).resolve().parent / "data" / "user_media").resolve()

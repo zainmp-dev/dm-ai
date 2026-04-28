@@ -1,8 +1,15 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #fafafa;
   --foreground: #18181b;
+}
+
+.dark {
+  --background: #0a0a0a;
+  --foreground: #fafafa;
 }
 
 @theme inline {
@@ -64,4 +71,55 @@ button:disabled,
   50% {
     box-shadow: 0 0 24px 2px rgba(59, 130, 246, 0.2);
   }
+}
+
+@keyframes cc-ai-glow-emerald {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.22);
+  }
+  50% {
+    box-shadow: 0 0 24px 2px rgba(16, 185, 129, 0.18);
+  }
+}
+
+@keyframes cc-ai-glow-zinc {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(113, 113, 122, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 20px 2px rgba(113, 113, 122, 0.14);
+  }
+}
+
+/* Global API overlay — top progress strip */
+@keyframes flow-gemini-progress-shimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}
+
+.flow-gemini-bar-shimmer {
+  background-size: 200% 100%;
+  animation: flow-gemini-progress-shimmer 2.5s linear infinite;
+}
+
+/* Dashboard charts — subtle mount animation */
+@keyframes dashboard-chart-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.dashboard-chart-reveal {
+  animation: dashboard-chart-reveal 0.5s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }

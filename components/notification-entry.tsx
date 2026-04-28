@@ -1,5 +1,6 @@
 "use client";
 
+import { createElement } from "react";
 import Link from "next/link";
 import { format, formatDistanceToNow } from "date-fns";
 import { ChevronRight } from "lucide-react";
@@ -15,7 +16,6 @@ type Props = {
 
 export function NotificationEntry({ text, createdAt, variant = "page" }: Props) {
   const { href, label, kind } = resolveNotificationLink(text);
-  const Icon = notificationIcon(kind);
   const at = new Date(createdAt);
   const absolute = format(at, "MMM d, yyyy · h:mm a");
   const relative = formatDistanceToNow(at, { addSuffix: true });
@@ -24,23 +24,33 @@ export function NotificationEntry({ text, createdAt, variant = "page" }: Props) 
     <Link
       href={href}
       className={cn(
-        "group flex gap-3 rounded-2xl border bg-white transition-colors",
+        "group flex gap-3 rounded-2xl border bg-white transition-colors dark:bg-zinc-900/40",
         variant === "page"
-          ? "border-zinc-200 p-4 shadow-sm hover:border-zinc-300 hover:bg-zinc-50/80"
-          : "border-zinc-100 px-3 py-2.5 hover:border-zinc-200 hover:bg-zinc-50",
+          ? "border-zinc-200 p-4 shadow-sm hover:border-zinc-300 hover:bg-zinc-50/80 dark:border-zinc-700 dark:hover:border-zinc-600 dark:hover:bg-zinc-800/50"
+          : "border-zinc-100 px-3 py-2.5 hover:border-zinc-200 hover:bg-zinc-50 dark:border-zinc-800 dark:hover:border-zinc-700 dark:hover:bg-zinc-800/40",
       )}
     >
       <div
         className={cn(
-          "flex shrink-0 items-center justify-center rounded-xl border border-zinc-100 bg-zinc-50 text-zinc-600",
+          "flex shrink-0 items-center justify-center rounded-xl border border-zinc-100 bg-zinc-50 text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800/80 dark:text-zinc-300",
           variant === "page" ? "size-10" : "size-8",
         )}
       >
-        <Icon className={variant === "page" ? "size-5" : "size-4"} aria-hidden />
+        {createElement(notificationIcon(kind), {
+          className: variant === "page" ? "size-5" : "size-4",
+          "aria-hidden": true,
+        })}
       </div>
       <div className="min-w-0 flex-1">
-        <p className={cn("text-zinc-800", variant === "page" ? "text-sm leading-relaxed" : "text-sm leading-snug")}>{text}</p>
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 text-xs text-zinc-500">
+        <p
+          className={cn(
+            "text-zinc-800 dark:text-zinc-100",
+            variant === "page" ? "text-sm leading-relaxed" : "text-sm leading-snug",
+          )}
+        >
+          {text}
+        </p>
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 text-xs text-zinc-500 dark:text-zinc-400">
           <time dateTime={createdAt} title={absolute}>
             {absolute}
           </time>
@@ -49,7 +59,7 @@ export function NotificationEntry({ text, createdAt, variant = "page" }: Props) 
           </span>
           <span>{relative}</span>
         </div>
-        <div className="mt-2 flex items-center gap-1 text-xs font-medium text-blue-700 group-hover:text-blue-800">
+        <div className="mt-2 flex items-center gap-1 text-xs font-medium text-blue-700 group-hover:text-blue-800 dark:text-blue-400 dark:group-hover:text-blue-300">
           <span>{label}</span>
           <ChevronRight className="size-3.5 transition-transform group-hover:translate-x-0.5" aria-hidden />
         </div>

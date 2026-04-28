@@ -1,7 +1,7 @@
 "use client";
 
 import { Heart, MessageCircle, Repeat2, Send, ThumbsUp } from "lucide-react";
-import Image from "next/image";
+import { MediaPreviewBlock } from "@/components/media-preview-block";
 import { integrationForPlatform } from "@/lib/platform";
 import type { ContentItem, WorkspaceSnapshot } from "@/lib/types";
 
@@ -32,7 +32,13 @@ export function LinkedInPostPreview({
       <div className="space-y-3 p-4">
         <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-800">{item.contentText}</p>
         <div className="relative aspect-[16/9] overflow-hidden rounded-xl bg-zinc-100">
-          <Image src={item.mediaPreview} alt="" fill className="object-cover" sizes="400px" unoptimized />
+          <MediaPreviewBlock
+            url={item.mediaPreview}
+            mediaType={item.mediaType}
+            className="absolute inset-0 h-full w-full"
+            imgClassName="h-full w-full object-cover"
+            videoClassName="h-full w-full object-cover"
+          />
         </div>
       </div>
       <div className="flex items-center justify-between border-t border-zinc-100 px-2 py-2 text-zinc-500">

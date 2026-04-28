@@ -72,7 +72,7 @@ function CallbackShell({
             <Link href="/settings">Back to Settings</Link>
           </Button>
           <Button type="button" className="rounded-xl" asChild>
-            <Link href="/publishing">Go to Publishing</Link>
+            <Link href="/pipeline?tab=publishing">Go to Publishing</Link>
           </Button>
         </div>
       </CardContent>

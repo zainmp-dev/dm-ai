@@ -3,7 +3,7 @@ import { API_PREFIX, proxyToFastapi } from "@/lib/server/backend-proxy";
 
 /**
  * Explicit route for /api/backend/content so POST is never lost to a catch-all or mis-proxy.
- * Proxies to FastAPI POST/GET /content (port 8001 by default).
+ * Proxies to FastAPI POST/GET /content (port 8011 by default).
  */
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";

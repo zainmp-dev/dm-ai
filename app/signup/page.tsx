@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
+import { HeaderThemeControl } from "@/components/header-theme-control";
 import { apiSignup } from "@/lib/api";
 import { setAuthSession } from "@/lib/auth";
 
@@ -20,7 +21,10 @@ export default function SignupPage() {
   const [loading, setLoading] = useState(false);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 p-4">
+    <div className="relative flex min-h-screen items-center justify-center bg-zinc-50 p-4 dark:bg-zinc-950">
+      <div className="absolute right-4 top-4 z-10">
+        <HeaderThemeControl />
+      </div>
       <Card className="w-full max-w-md rounded-2xl shadow-sm">
         <CardHeader>
           <CardTitle>Create your account</CardTitle>

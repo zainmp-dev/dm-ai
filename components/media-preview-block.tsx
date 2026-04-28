@@ -22,6 +22,8 @@ export function MediaPreviewBlock({ url, mediaType = "Image", className, videoCl
   const [broken, setBroken] = useState(false);
   const useVideo = shouldUseVideoElement(safe, mediaType);
   const isCarousel = mediaType === "Carousel";
+  /** e.g. AI set Video but URL is still an image placeholder — show still + label */
+  const videoPlaceholder = mediaType === "Video" && !useVideo;
 
   useEffect(() => {
     setBroken(false);
@@ -47,12 +49,18 @@ export function MediaPreviewBlock({ url, mediaType = "Image", className, videoCl
           Carousel
         </span>
       )}
+      {videoPlaceholder && (
+        <span className="absolute left-2 top-2 z-10 rounded-md bg-violet-900/85 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white">
+          Video
+        </span>
+      )}
       {useVideo ? (
         <video
           key={safe}
           src={safe}
           controls
           playsInline
+          preload="metadata"
           className={cn("w-full rounded-lg object-cover", videoClassName)}
           onError={() => setBroken(true)}
         />

@@ -9,7 +9,7 @@ export function resolveNotificationLink(text: string): { href: string; label: st
   if (/linkedin integration|meta integration/.test(t)) {
     return { href: "/settings", label: "Open settings", kind: "settings" };
   }
-  if (/cloudinary|media setup uploaded/.test(t)) {
+  if (/cloudinary|local media library|media setup uploaded/.test(t)) {
     return { href: "/media", label: "Media library", kind: "media" };
   }
   if (/company and scenario|master workspace ai flow completed|workspace setup|ai flow could not complete/.test(t)) {
@@ -19,16 +19,16 @@ export function resolveNotificationLink(text: string): { href: string; label: st
     return { href: "/strategy", label: "Strategy", kind: "strategy" };
   }
   if (/smart scheduling|publishing slot|scheduling set/.test(t)) {
-    return { href: "/scheduling", label: "Scheduling", kind: "scheduling" };
+    return { href: "/pipeline?tab=scheduling", label: "Scheduling", kind: "scheduling" };
   }
   if (/publish step|published|publishing/.test(t)) {
-    return { href: "/publishing", label: "Publishing", kind: "publishing" };
+    return { href: "/pipeline?tab=publishing", label: "Publishing", kind: "publishing" };
   }
   if (/content|draft|approve|reject|ai flow added|ai suggest|suggested a master|review queue|review step|content draft/.test(t)) {
-    return { href: "/content", label: "Content", kind: "content" };
+    return { href: "/pipeline?tab=content", label: "Content", kind: "content" };
   }
 
-  return { href: "/command-center", label: "Command center", kind: "general" };
+  return { href: "/pipeline?tab=command", label: "Command", kind: "general" };
 }
 
 const KIND_ICONS: Record<NotificationKind, LucideIcon> = {

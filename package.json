@@ -4,11 +4,14 @@
   "private": true,
   "scripts": {
     "dev": "next dev --webpack",
-    "dev:all": "concurrently -k -n web,api -c cyan,magenta \"npm run dev\" \"npm run backend:dev\"",
+    "dev:all": "npm run backend:free-port && concurrently -k -n api,web -c magenta,cyan \"npm run backend:dev\" \"npx --yes wait-on -t 120000 -i 200 http-get://127.0.0.1:8011/health && npm run dev\"",
+    "dev:all:stable": "npm run backend:free-port && concurrently -k -n api,web -c magenta,cyan \"npm run backend:dev:stable\" \"npx --yes wait-on -t 120000 -i 200 http-get://127.0.0.1:8011/health && npm run dev\"",
+    "backend:free-port": "node scripts/backend-free-port.mjs",
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "backend:dev": "python -m uvicorn main:app --app-dir backend --reload --port 8001"
+    "backend:dev": "python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --reload --reload-dir backend --reload-delay 2 --port 8011",
+    "backend:dev:stable": "python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8011 --http h11"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
@@ -21,6 +24,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",
+    "lottie-react": "^2.4.1",
     "lucide-react": "^0.511.0",
     "next": "^16.2.4",
     "react": "19.2.4",

@@ -1,7 +1,7 @@
 "use client";
 
 import { Globe, MessageCircle, Share2, ThumbsUp } from "lucide-react";
-import Image from "next/image";
+import { MediaPreviewBlock } from "@/components/media-preview-block";
 import { integrationForPlatform } from "@/lib/platform";
 import type { ContentItem, WorkspaceSnapshot } from "@/lib/types";
 
@@ -31,7 +31,13 @@ export function FacebookPostPreview({
       </div>
       <p className="px-3 pb-3 text-sm text-zinc-800">{item.contentText}</p>
       <div className="relative aspect-video w-full bg-zinc-100">
-        <Image src={item.mediaPreview} alt="" fill className="object-cover" sizes="512px" unoptimized />
+        <MediaPreviewBlock
+          url={item.mediaPreview}
+          mediaType={item.mediaType}
+          className="absolute inset-0 h-full w-full"
+          imgClassName="h-full w-full object-cover"
+          videoClassName="h-full w-full object-cover"
+        />
       </div>
       <div className="flex items-center justify-between border-y border-zinc-100 px-3 py-2 text-xs text-zinc-500">
         <span>128 reactions</span>

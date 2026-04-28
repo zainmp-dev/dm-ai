@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
+import { HeaderThemeControl } from "@/components/header-theme-control";
 import { apiGetWorkspace, apiLogin } from "@/lib/api";
 import { setAuthSession } from "@/lib/auth";
 import axios from "axios";
@@ -22,7 +23,10 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 p-4">
+    <div className="relative flex min-h-screen items-center justify-center bg-zinc-50 p-4 dark:bg-zinc-950">
+      <div className="absolute right-4 top-4 z-10">
+        <HeaderThemeControl />
+      </div>
       <Card className="w-full max-w-md rounded-2xl shadow-sm">
         <CardHeader>
           <CardTitle>FlowPilot</CardTitle>
@@ -53,7 +57,7 @@ export default function LoginPage() {
               </button>
             </div>
           </div>
-          <p className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+          <p className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:border-zinc-700 dark:bg-zinc-800/50 dark:text-zinc-300">
             Default login: <span className="font-medium">abid@m2hinfotech.com</span> / <span className="font-medium">M2h@123</span>
           </p>
           <Button

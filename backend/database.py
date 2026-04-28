@@ -72,6 +72,7 @@ def init_db() -> None:
 
 
 def _init_workspace_tables(connection: object) -> None:
+    """FlowPilot: every flowpilot_* table is keyed by workspace_id — no shared strategy across businesses."""
     statements = [
         """
         create table if not exists flowpilot_users (
@@ -88,13 +89,16 @@ def _init_workspace_tables(connection: object) -> None:
             company_name text not null default '',
             company_website text not null default '',
             workspace_scenario text not null default 'b2b-saas',
-            primary_region text not null default 'global',
+            primary_region text not null default 'uae-india',
             workspace_configured boolean not null default false,
             crm_last_bulk_status text not null default 'Pending',
             updated_at timestamptz not null default now()
         )
         """,
-        "alter table flowpilot_workspace add column if not exists primary_region text not null default 'global'",
+        "alter table flowpilot_workspace add column if not exists primary_region text not null default 'uae-india'",
+        "update flowpilot_workspace set primary_region = 'uae-india' where coalesce(lower(trim(primary_region)), '') = 'global'",
+        "alter table flowpilot_workspace alter column primary_region set default 'uae-india'",
+        "alter table flowpilot_workspace add column if not exists master_setup_json text not null default ''",
         """
         create table if not exists flowpilot_profile (
             workspace_id text primary key references flowpilot_workspace(workspace_id) on delete cascade,
@@ -124,6 +128,9 @@ def _init_workspace_tables(connection: object) -> None:
             updated_at timestamptz not null default now()
         )
         """,
+        "alter table flowpilot_strategy add column if not exists strategy_version integer not null default 1",
+        "alter table flowpilot_strategy add column if not exists strategy_locked boolean not null default false",
+        "alter table flowpilot_strategy add column if not exists data_json text not null default ''",
         """
         create table if not exists flowpilot_competitors (
             id text primary key,
@@ -134,6 +141,10 @@ def _init_workspace_tables(connection: object) -> None:
             weaknesses text[] not null default '{}'
         )
         """,
+        "alter table flowpilot_competitors add column if not exists domain text not null default ''",
+        "alter table flowpilot_competitors add column if not exists market_rank text not null default ''",
+        "alter table flowpilot_competitors add column if not exists market_gap text not null default ''",
+        "alter table flowpilot_competitors add column if not exists marketing_purpose text not null default ''",
         """
         create table if not exists flowpilot_content (
             id text primary key,
@@ -148,6 +159,16 @@ def _init_workspace_tables(connection: object) -> None:
             created_at timestamptz not null default now()
         )
         """,
+        # Legacy DBs may have flowpilot_content without created_at; backfill before updated_at uses it.
+        "alter table flowpilot_content add column if not exists created_at timestamptz",
+        "update flowpilot_content set created_at = now() where created_at is null",
+        "alter table flowpilot_content alter column created_at set default now()",
+        "alter table flowpilot_content alter column created_at set not null",
+        "alter table flowpilot_content add column if not exists updated_at timestamptz",
+        "update flowpilot_content set updated_at = coalesce(created_at, now()) where updated_at is null",
+        "alter table flowpilot_content alter column updated_at set default now()",
+        "alter table flowpilot_content alter column updated_at set not null",
+        "alter table flowpilot_content add column if not exists strategy_version integer not null default 1",
         """
         create table if not exists flowpilot_activities (
             id text primary key,
@@ -167,6 +188,8 @@ def _init_workspace_tables(connection: object) -> None:
             primary key (workspace_id, platform)
         )
         """,
+        # Older DBs may have been created before updated_at existed; CREATE TABLE IF NOT EXISTS does not add columns.
+        "alter table flowpilot_integrations add column if not exists updated_at timestamptz not null default now()",
         """
         create table if not exists flowpilot_publishing_log (
             id text primary key,
@@ -230,6 +253,15 @@ def _init_workspace_tables(connection: object) -> None:
         "create index if not exists idx_flowpilot_content_workspace_status on flowpilot_content(workspace_id, status)",
         "create index if not exists idx_flowpilot_content_workspace_schedule on flowpilot_content(workspace_id, scheduled_at)",
         "create index if not exists idx_flowpilot_publishing_log_workspace_time on flowpilot_publishing_log(workspace_id, timestamp desc)",
+        """
+        create table if not exists flowpilot_post_analytics (
+            workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
+            content_id text not null,
+            performance_json text not null default '{}',
+            updated_at timestamptz not null default now(),
+            primary key (workspace_id, content_id)
+        )
+        """,
     ]
     for statement in statements:
         connection.execute(text(statement))

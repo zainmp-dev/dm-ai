@@ -2,14 +2,29 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { Building2, Check, ChevronsUpDown, Globe2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
-import { AI_MODEL_OPTIONS } from "@/lib/ai-models";
-import { PRIMARY_REGION_OPTIONS, primaryRegionLabel, type PrimaryRegionCode } from "@/lib/primary-region";
+import { AI_MODEL_GROUPS, labelForAiModel } from "@/lib/ai-models";
+import {
+  PRIMARY_REGION_OPTIONS,
+  normalizePrimaryRegionCode,
+  primaryRegionLabel,
+  type PrimaryRegionCode,
+} from "@/lib/primary-region";
 import type { WorkspaceScenario } from "@/lib/types";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 
@@ -49,6 +64,384 @@ function competitorsToText(competitors: { name: string; website: string; focus: 
     .join("\n");
 }
 
+type SetupFormState = {
+  companyName: string;
+  setCompanyName: (v: string) => void;
+  website: string;
+  setWebsite: (v: string) => void;
+  scenario: WorkspaceScenario;
+  selectScenario: (value: WorkspaceScenario) => void;
+  customScenario: string;
+  setCustomScenario: (v: string) => void;
+  primaryRegion: PrimaryRegionCode;
+  setPrimaryRegion: (v: PrimaryRegionCode) => void;
+  aiModel: string;
+  setAiModel: (v: string) => void;
+  competitors: string;
+  setCompetitors: (v: string) => void;
+  idPrefix: string;
+};
+
+function WorkspaceSetupFields({
+  idPrefix,
+  companyName,
+  setCompanyName,
+  website,
+  setWebsite,
+  scenario,
+  selectScenario,
+  customScenario,
+  setCustomScenario,
+  primaryRegion,
+  setPrimaryRegion,
+  aiModel,
+  setAiModel,
+  competitors,
+  setCompetitors,
+}: SetupFormState) {
+  return (
+    <>
+      <section className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+        <div className="flex items-center gap-2 text-slate-700">
+          <Building2 className="size-4 shrink-0 text-slate-500" aria-hidden />
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Organization</p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}companyName`}>Company</Label>
+            <Input
+              id={`${idPrefix}companyName`}
+              value={companyName}
+              onChange={(e) => setCompanyName(e.target.value)}
+              placeholder="Your company"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={`${idPrefix}website`}>Website</Label>
+            <Input
+              id={`${idPrefix}website`}
+              value={website}
+              onChange={(e) => setWebsite(e.target.value)}
+              placeholder="https://company.com"
+            />
+            <p className="text-xs text-slate-500">
+              Optional. If empty, the setup agent will try to infer the company website from the company name and scenario.
+            </p>
+          </div>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`${idPrefix}scenario`}>Workspace scenario</Label>
+          <select
+            id={`${idPrefix}scenario`}
+            value={scenario}
+            onChange={(event) => selectScenario(event.target.value as WorkspaceScenario)}
+            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
+          >
+            {WORKSPACE_SCENARIOS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          {scenario === CUSTOM_SCENARIO_VALUE && (
+            <Input
+              value={customScenario}
+              onChange={(event) => setCustomScenario(event.target.value)}
+              placeholder="Type your workspace scenario"
+              maxLength={50}
+            />
+          )}
+        </div>
+        <div className="space-y-3 rounded-2xl border-2 border-blue-200/80 bg-gradient-to-b from-blue-50/90 to-white p-4 shadow-sm ring-1 ring-blue-100/60">
+          <div className="flex items-start gap-3">
+            <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm">
+              <Globe2 className="size-5" aria-hidden />
+            </div>
+            <div className="min-w-0 space-y-2 pt-0.5">
+              <Label htmlFor={`${idPrefix}primary-region`} className="text-base font-semibold text-slate-900">
+                Primary market
+              </Label>
+              <p className="text-xs text-slate-600">AI research and content are scoped to this market (UAE and India only).</p>
+              <select
+                id={`${idPrefix}primary-region`}
+                value={primaryRegion}
+                onChange={(e) => setPrimaryRegion(e.target.value as PrimaryRegionCode)}
+                className="h-11 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm font-medium text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200"
+              >
+                {PRIMARY_REGION_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <p className="text-xs text-slate-500">
+                Default timezone: UAE &amp; GCC → Dubai; India / UAE+India → India (override in Profile if needed).
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="space-y-2">
+          <p className="text-sm font-medium text-slate-900">AI model</p>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 w-full justify-between gap-2 rounded-xl border-slate-200 bg-white text-left text-sm font-normal text-slate-900 shadow-sm"
+                aria-label="Select AI model"
+                id={`${idPrefix}aiModel`}
+              >
+                <span className="truncate">{labelForAiModel(aiModel)}</span>
+                <ChevronsUpDown className="size-4 shrink-0 opacity-50" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="max-h-[min(20rem,70vh)] w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto rounded-xl p-0"
+            >
+              {AI_MODEL_GROUPS.map((group, gi) => (
+                <div key={group.label} className="py-1">
+                  <DropdownMenuLabel className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    {group.label}
+                  </DropdownMenuLabel>
+                  {group.options.map((model) => (
+                    <DropdownMenuItem
+                      key={model.value}
+                      className="cursor-pointer rounded-none px-3 py-2"
+                      onSelect={() => setAiModel(model.value)}
+                    >
+                      <span className="flex w-full items-center justify-between gap-2">
+                        <span className="truncate text-sm">{model.label}</span>
+                        {model.value === aiModel && <Check className="size-4 shrink-0 text-blue-600" />}
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                  {gi < AI_MODEL_GROUPS.length - 1 ? <DropdownMenuSeparator className="my-0" /> : null}
+                </div>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <p className="text-xs text-slate-500">Saved with the workspace. Used for research, content, and analytics.</p>
+        </div>
+      </section>
+
+      <section className="space-y-3 rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">Automatic AI flow</p>
+          <p className="mt-1 text-sm text-blue-900">
+            After setup, FlowPilot creates the master workspace automatically: Agent 1 finds or studies the domain, researches competitors,
+            positioning, feature gaps, and marketing gap issues. Agent 2 uses that strategy output to draft content.
+          </p>
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`${idPrefix}competitors`}>Competitor setup inputs (optional)</Label>
+          <Textarea
+            id={`${idPrefix}competitors`}
+            value={competitors}
+            onChange={(event) => setCompetitors(event.target.value)}
+            placeholder={
+              "One competitor per line: name, website, focus\nIf you add competitors, AI compares against them. If empty, AI discovers competitor categories automatically."
+            }
+            className="min-h-28 rounded-xl bg-white"
+          />
+        </div>
+      </section>
+    </>
+  );
+}
+
+type SetupModalFormSnapshot = {
+  companyName: string;
+  website: string;
+  scenario: WorkspaceScenario;
+  customScenario: string;
+  competitors: string;
+  primaryRegion: PrimaryRegionCode;
+  aiModel: string;
+};
+
+function buildSetupModalFormSnapshot(
+  mode: "new" | "edit",
+  editSetup: ReturnType<typeof useWorkspaceStore.getState>["workspaceSetups"][number] | undefined,
+  selectedAiModel: string,
+): SetupModalFormSnapshot {
+  if (mode === "new") {
+    return {
+      companyName: "",
+      website: "",
+      scenario: "b2b-saas",
+      customScenario: "",
+      competitors: "",
+      primaryRegion: normalizePrimaryRegionCode(undefined),
+      aiModel: selectedAiModel,
+    };
+  }
+  if (editSetup) {
+    return {
+      companyName: editSetup.companyName,
+      website: editSetup.website,
+      scenario: (isPresetScenario(editSetup.scenario) ? editSetup.scenario : CUSTOM_SCENARIO_VALUE) as WorkspaceScenario,
+      customScenario: isPresetScenario(editSetup.scenario) ? "" : editSetup.scenario,
+      competitors: competitorsToText(editSetup.competitors),
+      primaryRegion: normalizePrimaryRegionCode(editSetup.primaryRegion),
+      aiModel: editSetup.aiModel,
+    };
+  }
+  return buildSetupModalFormSnapshot("new", undefined, selectedAiModel);
+}
+
+function SetupWorkspaceModalFormInner({
+  mode,
+  snapshot,
+  editSetup,
+  workspace,
+  setupWorkspace,
+  push,
+  onClose,
+  onRequestClose,
+}: {
+  mode: "new" | "edit";
+  snapshot: SetupModalFormSnapshot;
+  editSetup?: ReturnType<typeof useWorkspaceStore.getState>["workspaceSetups"][number];
+  workspace: NonNullable<ReturnType<typeof useWorkspaceStore.getState>["workspace"]>;
+  setupWorkspace: ReturnType<typeof useWorkspaceStore.getState>["setupWorkspace"];
+  push: (message: string) => void;
+  onClose: () => void;
+  onRequestClose: () => void;
+}) {
+  const router = useRouter();
+  const [companyName, setCompanyName] = useState(snapshot.companyName);
+  const [website, setWebsite] = useState(snapshot.website);
+  const [scenario, setScenario] = useState<WorkspaceScenario>(snapshot.scenario);
+  const [customScenario, setCustomScenario] = useState(snapshot.customScenario);
+  const [competitors, setCompetitors] = useState(snapshot.competitors);
+  const [primaryRegion, setPrimaryRegion] = useState<PrimaryRegionCode>(snapshot.primaryRegion);
+  const [aiModel, setAiModel] = useState(snapshot.aiModel);
+  const [saving, setSaving] = useState(false);
+  const selectedScenario = scenario === CUSTOM_SCENARIO_VALUE ? customScenario.trim() : scenario;
+  const idPrefix = mode === "new" ? "new-" : "edit-";
+
+  const selectScenario = (value: WorkspaceScenario) => {
+    setScenario(value);
+    if (value !== CUSTOM_SCENARIO_VALUE) {
+      setCustomScenario("");
+    }
+  };
+
+  return (
+    <>
+      <WorkspaceSetupFields
+        idPrefix={idPrefix}
+        companyName={companyName}
+        setCompanyName={setCompanyName}
+        website={website}
+        setWebsite={setWebsite}
+        scenario={scenario}
+        selectScenario={selectScenario}
+        customScenario={customScenario}
+        setCustomScenario={setCustomScenario}
+        primaryRegion={primaryRegion}
+        setPrimaryRegion={setPrimaryRegion}
+        aiModel={aiModel}
+        setAiModel={setAiModel}
+        competitors={competitors}
+        setCompetitors={setCompetitors}
+      />
+      <div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end">
+        <Button type="button" variant="outline" className="rounded-xl" onClick={onRequestClose}>
+          Cancel
+        </Button>
+        <Button
+          className="rounded-xl bg-blue-600 text-white hover:bg-blue-700"
+          disabled={saving || !companyName.trim() || !selectedScenario || (mode === "edit" && !editSetup)}
+          onClick={() => {
+            setSaving(true);
+            void setupWorkspace({
+              workspaceId: mode === "edit" ? editSetup?.id : undefined,
+              companyName: companyName.trim(),
+              website: website.trim(),
+              scenario: selectedScenario,
+              primaryRegion,
+              workspaceOwnerName: workspace.profile.name,
+              workspaceOwnerEmail: workspace.profile.email,
+              aiModel,
+              competitors: parseCompetitors(competitors),
+            })
+              .then(() => {
+                push(
+                  mode === "edit" ? "Workspace updated. AI flow reran setup research." : "Workspace saved. AI flow completed initial research.",
+                );
+                onClose();
+                router.replace("/pipeline?tab=command");
+              })
+              .finally(() => setSaving(false));
+          }}
+        >
+          {saving ? "Starting AI flow..." : "Save setup and start AI flow"}
+        </Button>
+      </div>
+    </>
+  );
+}
+
+function SetupWorkspaceModal({
+  open,
+  onOpenChange,
+  mode,
+  formResetKey,
+  workspace,
+  selectedAiModel,
+  setupWorkspace,
+  push,
+  editSetup,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  mode: "new" | "edit";
+  formResetKey: number;
+  workspace: NonNullable<ReturnType<typeof useWorkspaceStore.getState>["workspace"]>;
+  selectedAiModel: string;
+  setupWorkspace: ReturnType<typeof useWorkspaceStore.getState>["setupWorkspace"];
+  push: (message: string) => void;
+  editSetup?: ReturnType<typeof useWorkspaceStore.getState>["workspaceSetups"][number];
+}) {
+  const snapshot = buildSetupModalFormSnapshot(mode, editSetup, selectedAiModel);
+
+  const title = mode === "new" ? "New workspace" : "Update setup";
+  const description =
+    mode === "new"
+      ? "Add a company, market, and options below. Switch the active workspace from the list after saving."
+      : "Changes apply to this saved setup. Save to rerun the AI research flow for these details.";
+
+  const canShowForm = mode === "new" || Boolean(editSetup);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[min(90vh,880px)] max-w-2xl overflow-y-auto rounded-2xl border-slate-200 p-0 shadow-lg sm:max-w-2xl">
+        <DialogHeader className="space-y-1 border-b border-slate-100 px-6 pb-4 pt-6 text-left sm:px-8 sm:pt-8">
+          <DialogTitle className="text-lg font-semibold tracking-tight text-slate-900">{title}</DialogTitle>
+          <DialogDescription className="text-sm leading-relaxed text-slate-600">{description}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-6 px-6 pb-6 sm:px-8 sm:pb-8">
+          {open && canShowForm ? (
+            <SetupWorkspaceModalFormInner
+              key={formResetKey}
+              mode={mode}
+              snapshot={snapshot}
+              editSetup={editSetup}
+              workspace={workspace}
+              setupWorkspace={setupWorkspace}
+              push={push}
+              onClose={() => onOpenChange(false)}
+              onRequestClose={() => onOpenChange(false)}
+            />
+          ) : null}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 export default function WorkspaceSetupPage() {
   const workspace = useWorkspaceStore((s) => s.workspace);
   const workspaceSetups = useWorkspaceStore((s) => s.workspaceSetups);
@@ -58,6 +451,7 @@ export default function WorkspaceSetupPage() {
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
   const removeWorkspaceSetup = useWorkspaceStore((s) => s.removeWorkspaceSetup);
   const deleteCurrentWorkspace = useWorkspaceStore((s) => s.deleteCurrentWorkspace);
+  const clearAiOutputs = useWorkspaceStore((s) => s.clearAiOutputs);
   const { push } = useToast();
 
   if (!workspace) {
@@ -74,6 +468,7 @@ export default function WorkspaceSetupPage() {
       setActiveWorkspace={setActiveWorkspace}
       removeWorkspaceSetup={removeWorkspaceSetup}
       deleteCurrentWorkspace={deleteCurrentWorkspace}
+      clearAiOutputs={clearAiOutputs}
       push={push}
     />
   );
@@ -88,6 +483,7 @@ function WorkspaceSetupForm({
   setActiveWorkspace,
   removeWorkspaceSetup,
   deleteCurrentWorkspace,
+  clearAiOutputs,
   push,
 }: {
   workspace: NonNullable<ReturnType<typeof useWorkspaceStore.getState>["workspace"]>;
@@ -98,252 +494,182 @@ function WorkspaceSetupForm({
   setActiveWorkspace: ReturnType<typeof useWorkspaceStore.getState>["setActiveWorkspace"];
   removeWorkspaceSetup: ReturnType<typeof useWorkspaceStore.getState>["removeWorkspaceSetup"];
   deleteCurrentWorkspace: ReturnType<typeof useWorkspaceStore.getState>["deleteCurrentWorkspace"];
+  clearAiOutputs: ReturnType<typeof useWorkspaceStore.getState>["clearAiOutputs"];
   push: (message: string) => void;
 }) {
-  const router = useRouter();
-  const activeSetup = workspaceSetups.find((setup) => setup.id === activeWorkspaceId);
-  const [editingWorkspaceId, setEditingWorkspaceId] = useState<string | undefined>(activeWorkspaceId ?? undefined);
-  const initialScenario = activeSetup?.scenario ?? workspace.workspaceScenario;
-  const [companyName, setCompanyName] = useState(activeSetup?.companyName || workspace.companyName || workspace.profile.company);
-  const [website, setWebsite] = useState(activeSetup?.website ?? workspace.companyWebsite);
-  const [scenario, setScenario] = useState<WorkspaceScenario>(isPresetScenario(initialScenario) ? initialScenario : CUSTOM_SCENARIO_VALUE);
-  const [customScenario, setCustomScenario] = useState(isPresetScenario(initialScenario) ? "" : initialScenario);
-  const [competitors, setCompetitors] = useState(competitorsToText(activeSetup?.competitors));
-  const validRegion = (v: string | undefined): PrimaryRegionCode =>
-    PRIMARY_REGION_OPTIONS.some((o) => o.value === v) ? (v as PrimaryRegionCode) : "global";
-  const [primaryRegion, setPrimaryRegion] = useState<PrimaryRegionCode>(
-    validRegion(activeSetup?.primaryRegion ?? workspace.primaryRegion),
+  const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
+  const [newWorkspaceFormKey, setNewWorkspaceFormKey] = useState(0);
+  const [editWorkspaceOpen, setEditWorkspaceOpen] = useState(false);
+  const [editWorkspaceFormKey, setEditWorkspaceFormKey] = useState(0);
+  const [clearAiLoading, setClearAiLoading] = useState(false);
+  const [setupBeingEdited, setSetupBeingEdited] = useState<ReturnType<typeof useWorkspaceStore.getState>["workspaceSetups"][number] | null>(
+    null,
   );
-  const [aiModel, setAiModel] = useState(activeSetup?.aiModel ?? selectedAiModel);
-  const [saving, setSaving] = useState(false);
-  const selectedScenario = scenario === CUSTOM_SCENARIO_VALUE ? customScenario.trim() : scenario;
 
-  const resetForm = () => {
-    setEditingWorkspaceId(undefined);
-    setCompanyName("");
-    setWebsite("");
-    setScenario("b2b-saas");
-    setCustomScenario("");
-    setCompetitors("");
-    setPrimaryRegion("global");
-    setAiModel(selectedAiModel);
+  const openNewWorkspaceModal = () => {
+    setNewWorkspaceFormKey((k) => k + 1);
+    setNewWorkspaceOpen(true);
   };
 
-  const editSetup = (setup: (typeof workspaceSetups)[number]) => {
-    setEditingWorkspaceId(setup.id);
-    setCompanyName(setup.companyName);
-    setWebsite(setup.website);
-    setScenario(isPresetScenario(setup.scenario) ? setup.scenario : CUSTOM_SCENARIO_VALUE);
-    setCustomScenario(isPresetScenario(setup.scenario) ? "" : setup.scenario);
-    setCompetitors(competitorsToText(setup.competitors));
-    setPrimaryRegion(validRegion(setup.primaryRegion));
-    setAiModel(setup.aiModel);
+  const openEditModal = (setup: (typeof workspaceSetups)[number]) => {
+    setSetupBeingEdited(setup);
+    setEditWorkspaceFormKey((k) => k + 1);
+    setEditWorkspaceOpen(true);
   };
 
-  const selectScenario = (value: WorkspaceScenario) => {
-    setScenario(value);
-    if (value !== CUSTOM_SCENARIO_VALUE) {
-      setCustomScenario("");
+  const closeEditModal = (open: boolean) => {
+    setEditWorkspaceOpen(open);
+    if (!open) {
+      setSetupBeingEdited(null);
     }
   };
 
+  const setupForEditModal =
+    setupBeingEdited && workspaceSetups.some((s) => s.id === setupBeingEdited.id)
+      ? workspaceSetups.find((s) => s.id === setupBeingEdited.id) ?? setupBeingEdited
+      : setupBeingEdited;
+
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <div className="w-full min-w-0 space-y-6">
       <Card className="rounded-2xl border-slate-200 shadow-sm">
         <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
           <div>
             <CardTitle className="text-base">Workspace setups</CardTitle>
-            <CardDescription>Create multiple workspaces, switch between them, edit setup details, or delete local setup entries.</CardDescription>
+            <CardDescription>
+              Switch active workspace, edit details in a modal, or add a new setup with <span className="font-medium text-slate-700">New workspace</span>.
+            </CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
             {workspace.workspaceConfigured && (
-              <Button
-                type="button"
-                variant="ghost"
-                className="rounded-xl text-red-600 hover:text-red-700"
-                onClick={() => {
-                  void deleteCurrentWorkspace().then(() => {
-                    resetForm();
-                    push("Current workspace removed from database");
-                  });
-                }}
-              >
-                Clear current workspace
-              </Button>
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="rounded-xl"
+                  disabled={clearAiLoading}
+                  onClick={() => {
+                    setClearAiLoading(true);
+                    void clearAiOutputs()
+                      .then(() =>
+                        push(
+                          "Cleared saved strategy, competitors, and drafts. Use Command Center to run Agent 1 and Agent 2 again.",
+                        ),
+                      )
+                      .catch((e) => push(e instanceof Error ? e.message : "Could not clear AI outputs"))
+                      .finally(() => setClearAiLoading(false));
+                  }}
+                >
+                  {clearAiLoading ? "Clearing…" : "Clear AI library"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="rounded-xl text-red-600 hover:text-red-700"
+                  onClick={() => {
+                    void deleteCurrentWorkspace().then(() => {
+                      setNewWorkspaceOpen(false);
+                      closeEditModal(false);
+                      push("Current workspace removed from database");
+                    });
+                  }}
+                >
+                  Clear current workspace
+                </Button>
+              </>
             )}
-            <Button type="button" variant="outline" className="rounded-xl" onClick={resetForm}>
+            <Button type="button" variant="default" className="rounded-xl bg-blue-600 text-white hover:bg-blue-700" onClick={openNewWorkspaceModal}>
               New workspace
             </Button>
           </div>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-2">
-          {workspaceSetups.length === 0 && <p className="text-sm text-slate-500 md:col-span-2">No saved workspace setups yet.</p>}
-          {workspaceSetups.map((setup) => (
-            <div key={setup.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="truncate font-medium text-slate-900">{setup.companyName}</p>
-                  <p className="truncate text-sm text-slate-500">{setup.website || "No website"}</p>
-                  <p className="mt-1 text-xs text-slate-500">{setup.scenario}</p>
-                  <p className="mt-1 text-xs text-slate-600">Region: {primaryRegionLabel(setup.primaryRegion)}</p>
-                  <p className="mt-1 text-xs text-blue-700">
-                    Model: {AI_MODEL_OPTIONS.find((model) => model.value === setup.aiModel)?.label ?? setup.aiModel}
-                  </p>
+          {workspaceSetups.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-6 text-center md:col-span-2">
+              <p className="text-sm font-medium text-slate-800">No saved setups yet</p>
+              <p className="mt-1 text-sm text-slate-600">Create your first workspace to run the AI setup flow.</p>
+              <Button type="button" className="mt-4 rounded-xl bg-blue-600 text-white hover:bg-blue-700" onClick={openNewWorkspaceModal}>
+                New workspace
+              </Button>
+            </div>
+          )}
+          {workspaceSetups.map((setup) => {
+            const editModalActive = editWorkspaceOpen && setupForEditModal?.id === setup.id;
+            return (
+              <div
+                key={setup.id}
+                className={`rounded-2xl border bg-white p-4 shadow-sm transition-shadow ${
+                  editModalActive ? "border-blue-300 ring-2 ring-blue-100" : "border-slate-200 hover:border-slate-300"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium text-slate-900">{setup.companyName}</p>
+                    <p className="truncate text-sm text-slate-500">{setup.website || "No website"}</p>
+                    <p className="mt-1 text-xs text-slate-500">{setup.scenario}</p>
+                    <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-slate-600">
+                      <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 font-medium text-slate-700">
+                        <Globe2 className="size-3 shrink-0" aria-hidden />
+                        {primaryRegionLabel(setup.primaryRegion)}
+                      </span>
+                    </p>
+                    <p className="mt-1 text-xs text-blue-700">Model: {labelForAiModel(setup.aiModel)}</p>
+                  </div>
+                  {setup.id === activeWorkspaceId ? (
+                    <span className="shrink-0 rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700">Active</span>
+                  ) : null}
                 </div>
-                {setup.id === activeWorkspaceId && <span className="rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700">Active</span>}
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button type="button" size="sm" className="rounded-xl" onClick={() => void setActiveWorkspace(setup.id)}>
+                    Use
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" className="rounded-xl" onClick={() => openEditModal(setup)}>
+                    Edit
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="rounded-xl text-red-600 hover:text-red-700"
+                    onClick={() => {
+                      void removeWorkspaceSetup(setup.id).then(() => {
+                        if (setupBeingEdited?.id === setup.id) {
+                          closeEditModal(false);
+                        }
+                        push("Workspace setup deleted");
+                      });
+                    }}
+                  >
+                    Delete
+                  </Button>
+                </div>
               </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button type="button" size="sm" className="rounded-xl" onClick={() => void setActiveWorkspace(setup.id)}>
-                  Use
-                </Button>
-                <Button type="button" size="sm" variant="outline" className="rounded-xl" onClick={() => editSetup(setup)}>
-                  Edit
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="rounded-xl text-red-600 hover:text-red-700"
-                  onClick={() => {
-                    void removeWorkspaceSetup(setup.id).then(() => {
-                      if (editingWorkspaceId === setup.id) {
-                        resetForm();
-                      }
-                      push("Workspace setup deleted");
-                    });
-                  }}
-                >
-                  Delete
-                </Button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </CardContent>
       </Card>
-      <Card className="rounded-2xl border-slate-200 shadow-sm">
-        <CardHeader>
-          <CardTitle className="text-base">{editingWorkspaceId ? "Edit workspace setup" : "Configure your workspace"}</CardTitle>
-          <CardDescription>Set up the core organization details, model router, and AI research inputs used across FlowPilot.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          <section className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Organization</p>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="companyName">Company</Label>
-                <Input id="companyName" value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="Your company" />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="website">Website</Label>
-                <Input id="website" value={website} onChange={(e) => setWebsite(e.target.value)} placeholder="https://company.com" />
-              <p className="text-xs text-slate-500">Optional. If empty, the setup agent will try to infer the company website from the company name and scenario.</p>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="scenario">Workspace scenario</Label>
-              <select
-                id="scenario"
-                value={scenario}
-                onChange={(event) => selectScenario(event.target.value as WorkspaceScenario)}
-                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
-              >
-                {WORKSPACE_SCENARIOS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              {scenario === CUSTOM_SCENARIO_VALUE && (
-                <Input
-                  value={customScenario}
-                  onChange={(event) => setCustomScenario(event.target.value)}
-                  placeholder="Type your workspace scenario"
-                  maxLength={50}
-                />
-              )}
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="primary-region">Primary market (AI &amp; research)</Label>
-              <select
-                id="primary-region"
-                value={primaryRegion}
-                onChange={(e) => setPrimaryRegion(e.target.value as PrimaryRegionCode)}
-                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
-              >
-                {PRIMARY_REGION_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-slate-500">
-                Agent 1 (strategy) and content use this for GCC, India, or cross-border nuance. Default timezone: UAE → Dubai, India / UAE+India → India (adjust in profile if needed).
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="aiModel">AI model router</Label>
-              <select
-                id="aiModel"
-                value={aiModel}
-                onChange={(event) => setAiModel(event.target.value)}
-                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
-              >
-                {AI_MODEL_OPTIONS.map((model) => (
-                  <option key={model.value} value={model.value}>
-                    {model.label}
-                  </option>
-                ))}
-              </select>
-              <p className="text-xs text-slate-500">This model is saved with the workspace and used for setup research, competitor analysis, and content generation.</p>
-            </div>
-          </section>
 
-          <section className="space-y-3 rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">Automatic AI flow</p>
-              <p className="mt-1 text-sm text-blue-900">
-                After setup, FlowPilot creates the master workspace automatically: Agent 1 finds or studies the domain, researches competitors, positioning, feature gaps, and marketing gap issues. Agent 2 uses that strategy output to draft content.
-              </p>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="competitors">Competitor setup inputs (optional)</Label>
-              <Textarea
-                id="competitors"
-                value={competitors}
-                onChange={(event) => setCompetitors(event.target.value)}
-                placeholder={"One competitor per line: name, website, focus\nIf you add competitors, AI compares against them. If empty, AI discovers competitor categories automatically."}
-                className="min-h-28 rounded-xl bg-white"
-              />
-            </div>
-          </section>
+      <SetupWorkspaceModal
+        open={newWorkspaceOpen}
+        onOpenChange={setNewWorkspaceOpen}
+        mode="new"
+        formResetKey={newWorkspaceFormKey}
+        workspace={workspace}
+        selectedAiModel={selectedAiModel}
+        setupWorkspace={setupWorkspace}
+        push={push}
+      />
 
-          <Button
-            className="rounded-2xl bg-blue-600 text-white hover:bg-blue-700"
-            disabled={saving || !companyName.trim() || !selectedScenario}
-            onClick={() => {
-              setSaving(true);
-              void setupWorkspace({
-                workspaceId: editingWorkspaceId,
-                companyName: companyName.trim(),
-                website: website.trim(),
-                scenario: selectedScenario,
-                primaryRegion,
-                workspaceOwnerName: workspace.profile.name,
-                workspaceOwnerEmail: workspace.profile.email,
-                aiModel,
-                competitors: parseCompetitors(competitors),
-              })
-                .then(() => {
-                  push(editingWorkspaceId ? "Workspace updated. AI flow reran setup research." : "Workspace saved. AI flow completed initial research.");
-                  router.replace("/command-center");
-                })
-                .finally(() => setSaving(false));
-            }}
-          >
-            {saving ? "Starting AI flow..." : "Save setup and start AI flow"}
-          </Button>
-        </CardContent>
-      </Card>
+      <SetupWorkspaceModal
+        open={editWorkspaceOpen}
+        onOpenChange={closeEditModal}
+        mode="edit"
+        formResetKey={editWorkspaceFormKey}
+        workspace={workspace}
+        selectedAiModel={selectedAiModel}
+        setupWorkspace={setupWorkspace}
+        push={push}
+        editSetup={setupForEditModal ?? undefined}
+      />
     </div>
   );
 }

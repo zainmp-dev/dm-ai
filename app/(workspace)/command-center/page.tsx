@@ -1,5 +1,5 @@
-import { CommandCenterView } from "@/components/command-center-view";
+import { redirect } from "next/navigation";
 
 export default function CommandCenterPage() {
-  return <CommandCenterView />;
+  redirect("/pipeline?tab=command");
 }
