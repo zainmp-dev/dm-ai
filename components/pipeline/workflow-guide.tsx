@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import { format, formatDistanceToNow, parseISO } from "date-fns";
-import { ArrowRight, ChevronRight } from "lucide-react";
+import { AlertTriangle, ArrowRight, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 import type { ContentItem } from "@/lib/types";
@@ -36,21 +36,13 @@ const STEPS = [
   {
     n: 4,
     id: "content" as const,
-    title: "Content",
-    detail: "Full post library, edit, and create.",
+    title: "Content · Approval",
+    detail: "Library, review, platforms, and post-now.",
     href: "/pipeline?tab=content",
-    linkLabel: "Library",
+    linkLabel: "Create + Review",
   },
   {
     n: 5,
-    id: "approve" as const,
-    title: "Approve",
-    detail: "Review drafts and set platforms.",
-    href: "/pipeline?tab=approval",
-    linkLabel: "Review",
-  },
-  {
-    n: 6,
     id: "ship" as const,
     title: "Schedule · Publish",
     detail: "Calendar, then go live and read the log.",
@@ -171,19 +163,9 @@ export function useWorkflowGuideData(): WorkflowGuideData {
         detailIso: shortWhen(latestContentTouch),
       },
       content: {
-        status: `${content.length} post${content.length === 1 ? "" : "s"}`,
-        when: "Library tab",
+        status: `${content.length} post${content.length === 1 ? "" : "s"} · ${pending.length} to review`,
+        when: relWhen(latestPending) !== "—" ? `Review ${relWhen(latestPending)}` : "Library + review",
         detailIso: shortWhen(latestContentTouch),
-      },
-      approve: {
-        status:
-          pending.length > 0
-            ? pending.length === 1
-              ? "1 to review"
-              : `${pending.length} waiting`
-            : "All clear",
-        when: relWhen(latestPending) !== "—" ? relWhen(latestPending) : "—",
-        detailIso: shortWhen(latestPending),
       },
       ship: {
         status: `${scheduled.length} scheduled · ${published.length} live`,
@@ -213,12 +195,28 @@ function FlowArrow() {
 }
 
 export function WorkflowEndToEndFlow({ data }: { data: WorkflowGuideData }) {
+  const workspace = useWorkspaceStore((s) => s.workspace);
+  const workspaceName =
+    workspace?.companyName?.trim() ||
+    workspace?.profile?.company?.trim() ||
+    workspace?.profile?.name?.trim() ||
+    "Workspace";
+  const connectedCount = workspace
+    ? [workspace.integrations.linkedin.connected, workspace.integrations.meta.connected].filter(Boolean).length
+    : 0;
+  const hasConnectionWarning = Boolean(workspace) && connectedCount < 2;
+
   return (
     <div className={cn("w-full", boxClass)}>
-      <div className="mb-3 flex items-center justify-between gap-2 border-b border-blue-100/80 pb-3 dark:border-blue-900/40">
-        <h2 className="text-sm font-semibold tracking-tight text-slate-900 dark:text-zinc-50 sm:text-base">
-          End-to-end flow
-        </h2>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-blue-100/80 pb-3 dark:border-blue-900/40">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold tracking-tight text-slate-900 dark:text-zinc-50 sm:text-base">
+            End-to-end flow
+          </h2>
+          <p className="mt-0.5 truncate text-[11px] text-slate-500 dark:text-slate-400 sm:text-xs">
+            {workspaceName}
+          </p>
+        </div>
         <Link
           href="/settings"
           className="text-xs font-medium text-blue-600 transition hover:text-blue-800 hover:underline dark:text-blue-400 sm:text-sm"
@@ -226,11 +224,20 @@ export function WorkflowEndToEndFlow({ data }: { data: WorkflowGuideData }) {
           Settings
         </Link>
       </div>
+      {hasConnectionWarning ? (
+        <div className="mb-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          <p>
+            Social not connected. Connect LinkedIn and Meta in Settings to complete the flow.
+          </p>
+        </div>
+      ) : null}
 
       <nav className="min-w-0 w-full" aria-label="Workflow steps from workspace to publish">
         <ol className="flex w-full min-w-0 flex-col gap-3 sm:flex-row sm:flex-nowrap sm:items-stretch sm:gap-0 sm:py-0.5">
           {STEPS.map((step, index) => {
             const meta = data.steps?.[step.id];
+            const connectStepNeedsAttention = step.id === "connect" && hasConnectionWarning;
             const blurb = meta
               ? [meta.status, meta.when !== "—" ? meta.when : null, meta.detailIso !== "—" ? meta.detailIso : null]
                   .filter(Boolean)
@@ -259,7 +266,9 @@ export function WorkflowEndToEndFlow({ data }: { data: WorkflowGuideData }) {
                     <div
                       className={cn(
                         "flex h-full min-h-[5.25rem] flex-col rounded-2xl border p-3 transition-all sm:min-h-[6.5rem] sm:p-3.5",
-                        "border-blue-100/90 bg-white shadow-sm ring-1 ring-blue-50/50 dark:border-blue-900/50 dark:bg-zinc-900/80 dark:ring-blue-950/30",
+                        connectStepNeedsAttention
+                          ? "border-amber-300 bg-amber-50/60 shadow-sm ring-1 ring-amber-200/70 dark:border-amber-800 dark:bg-amber-950/25 dark:ring-amber-900/30"
+                          : "border-blue-100/90 bg-white shadow-sm ring-1 ring-blue-50/50 dark:border-blue-900/50 dark:bg-zinc-900/80 dark:ring-blue-950/30",
                         "group-hover:border-blue-300 group-hover:shadow-md dark:group-hover:border-blue-800",
                         "group-active:scale-[0.99]",
                       )}

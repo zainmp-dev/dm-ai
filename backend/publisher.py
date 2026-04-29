@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Any
 
 import requests
+import re
+import time
 
 from config import fresh_settings
 from database import Content
@@ -40,6 +42,160 @@ def _request_json(method: str, url: str, *, request_timeout: int, **kwargs: Any)
             raise RuntimeError(hint[:900])
         raise RuntimeError(str(err)[:500])
     return data if isinstance(data, dict) else {"response": data}
+
+
+def _request_bytes(method: str, url: str, *, request_timeout: int, **kwargs: Any) -> tuple[bytes, str | None]:
+    try:
+        response = requests.request(method, url, timeout=request_timeout, **kwargs)
+        response.raise_for_status()
+    except requests.Timeout as exc:
+        raise RuntimeError("Publisher request timed out") from exc
+    except requests.RequestException as exc:
+        detail = exc.response.text[:500] if exc.response is not None else str(exc)
+        raise RuntimeError(detail) from exc
+    return response.content, response.headers.get("Content-Type")
+
+
+def _linkedin_headers(access_token: str, api_version: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {access_token}",
+        "LinkedIn-Version": api_version,
+        "X-Restli-Protocol-Version": "2.0.0",
+    }
+
+
+def _register_linkedin_asset(
+    *,
+    access_token: str,
+    author_urn: str,
+    api_version: str,
+    recipe: str,
+    request_timeout: int,
+) -> tuple[str, str]:
+    payload = {
+        "registerUploadRequest": {
+            "owner": author_urn,
+            "recipes": [recipe],
+            "serviceRelationships": [
+                {
+                    "relationshipType": "OWNER",
+                    "identifier": "urn:li:userGeneratedContent",
+                }
+            ],
+        }
+    }
+    data = _request_json(
+        "POST",
+        "https://api.linkedin.com/v2/assets?action=registerUpload",
+        headers={**_linkedin_headers(access_token, api_version), "Content-Type": "application/json"},
+        json=payload,
+        request_timeout=request_timeout,
+    )
+    value = data.get("value") if isinstance(data, dict) else None
+    if not isinstance(value, dict):
+        raise RuntimeError("LinkedIn upload registration returned an unexpected response")
+    asset = value.get("asset")
+    upload_mechanism = value.get("uploadMechanism")
+    if not asset or not isinstance(upload_mechanism, dict):
+        raise RuntimeError("LinkedIn upload registration did not return asset details")
+    upload_req = upload_mechanism.get("com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest")
+    if not isinstance(upload_req, dict) or not upload_req.get("uploadUrl"):
+        raise RuntimeError("LinkedIn upload registration did not return upload URL")
+    return str(asset), str(upload_req["uploadUrl"])
+
+
+def _upload_linkedin_media_from_url(
+    *,
+    media_url: str,
+    upload_url: str,
+    access_token: str,
+    api_version: str,
+    expected_mime_prefix: str,
+    request_timeout: int,
+) -> None:
+    raw, media_type = _request_bytes("GET", media_url, request_timeout=request_timeout)
+    if not raw:
+        raise RuntimeError("LinkedIn media upload failed: source file is empty")
+    ct = (media_type or "").split(";", 1)[0].strip().lower()
+    if ct and not ct.startswith(expected_mime_prefix):
+        raise RuntimeError(f"LinkedIn requires {expected_mime_prefix.rstrip('/')} media, got content type '{ct}'")
+    try:
+        response = requests.put(
+            upload_url,
+            data=raw,
+            headers={
+                "Content-Type": ct or "application/octet-stream",
+            },
+            timeout=request_timeout,
+        )
+        response.raise_for_status()
+    except requests.Timeout as exc:
+        raise RuntimeError("LinkedIn media upload timed out") from exc
+    except requests.RequestException as exc:
+        detail = exc.response.text[:500] if exc.response is not None else str(exc)
+        raise RuntimeError(f"LinkedIn media upload failed: {detail}") from exc
+
+
+def _linkedin_asset_id_from_urn(asset_urn: str) -> str:
+    # urn:li:digitalmediaAsset:<id>
+    return asset_urn.rsplit(":", 1)[-1].strip()
+
+
+def _linkedin_wait_asset_ready(
+    *,
+    access_token: str,
+    api_version: str,
+    asset_urn: str,
+    request_timeout: int,
+    max_wait_seconds: int = 20,
+) -> None:
+    asset_id = _linkedin_asset_id_from_urn(asset_urn)
+    deadline = time.time() + max_wait_seconds
+    last_state = "UNKNOWN"
+    while time.time() < deadline:
+        data = _request_json(
+            "GET",
+            f"https://api.linkedin.com/v2/assets/{asset_id}",
+            headers=_linkedin_headers(access_token, api_version),
+            request_timeout=request_timeout,
+        )
+        status_obj = data.get("status")
+        status_str = str(status_obj).upper() if status_obj is not None else ""
+        if "ALLOWED" in status_str or "AVAILABLE" in status_str or "READY" in status_str:
+            return
+        if "BLOCKED" in status_str or "FAILED" in status_str:
+            raise RuntimeError(f"LinkedIn asset processing failed: {status_str}")
+        last_state = status_str or last_state
+        time.sleep(1.0)
+    # Do not hard-fail if status endpoint is eventually consistent; publish attempt may still succeed.
+    if last_state not in {"UNKNOWN", ""}:
+        return
+
+
+def _remove_exact_url_from_text(text: str, url: str) -> str:
+    if not text or not url:
+        return text
+    variants = {url.strip()}
+    if url.startswith("https://"):
+        variants.add("http://" + url[8:])
+    if url.startswith("http://"):
+        variants.add("https://" + url[7:])
+    out = text
+    for v in variants:
+        out = out.replace(v, " ")
+    # Collapse whitespace/newlines so formatting stays clean after URL removal.
+    out = "\n".join(" ".join(line.split()) for line in out.splitlines())
+    out = "\n".join(line for line in out.splitlines() if line.strip())
+    return out.strip()
+
+
+def _remove_all_urls_from_text(text: str) -> str:
+    if not text:
+        return text
+    out = re.sub(r"https?://[^\s]+", " ", text, flags=re.IGNORECASE)
+    out = "\n".join(" ".join(line.split()) for line in out.splitlines())
+    out = "\n".join(line for line in out.splitlines() if line.strip())
+    return out.strip()
 
 
 def _media_url_reachable_by_meta(url: str | None) -> bool:
@@ -181,25 +337,56 @@ def publish_linkedin(post: Content) -> PublishResult:
         return PublishResult(False, "Missing LINKEDIN_ACCESS_TOKEN or LINKEDIN_AUTHOR_URN")
 
     resolved, warn = resolve_publish_media_url(post.media_url)
+    if post.media_url and warn:
+        return PublishResult(False, f"LinkedIn: {warn}")
     body_text = (post.content or "").strip()
+    if resolved:
+        # Any URL in commentary can trigger link preview cards and hide media.
+        body_text = _remove_exact_url_from_text(body_text, resolved)
+        body_text = _remove_all_urls_from_text(body_text)
     share: dict[str, Any] = {
         "shareCommentary": {"text": body_text[:3000] if body_text else "•"},
         "shareMediaCategory": "NONE",
     }
-    # Link-style share lets LinkedIn render a preview from a public https URL (image or page).
-    if resolved and resolved.startswith("https://") and not _looks_like_video(resolved):
-        share["shareMediaCategory"] = "ARTICLE"
+    if resolved and resolved.startswith("https://"):
+        try:
+            is_video = _looks_like_video(resolved)
+            recipe = (
+                "urn:li:digitalmediaRecipe:feedshare-video"
+                if is_video
+                else "urn:li:digitalmediaRecipe:feedshare-image"
+            )
+            asset, upload_url = _register_linkedin_asset(
+                access_token=settings.linkedin_access_token,
+                author_urn=settings.linkedin_author_urn,
+                api_version=settings.linkedin_api_version,
+                recipe=recipe,
+                request_timeout=settings.request_timeout_seconds,
+            )
+            _upload_linkedin_media_from_url(
+                media_url=resolved,
+                upload_url=upload_url,
+                access_token=settings.linkedin_access_token,
+                api_version=settings.linkedin_api_version,
+                expected_mime_prefix="video/" if is_video else "image/",
+                request_timeout=settings.request_timeout_seconds,
+            )
+            _linkedin_wait_asset_ready(
+                access_token=settings.linkedin_access_token,
+                api_version=settings.linkedin_api_version,
+                asset_urn=asset,
+                request_timeout=settings.request_timeout_seconds,
+            )
+        except RuntimeError as exc:
+            return PublishResult(False, f"LinkedIn media upload failed: {exc}")
+        share["shareMediaCategory"] = "VIDEO" if _looks_like_video(resolved) else "IMAGE"
         share["media"] = [
             {
                 "status": "READY",
-                "originalUrl": resolved,
+                "media": asset,
                 "title": {"text": (body_text[:200] if body_text else "Post")},
             }
         ]
-    elif warn:
-        extra = "[Media could not be attached: {}]".format(warn.strip())
-        share["shareCommentary"]["text"] = (body_text + "\n\n" + extra).strip()[:3000]
-
     payload = {
         "author": settings.linkedin_author_urn,
         "lifecycleState": "PUBLISHED",
@@ -214,10 +401,8 @@ def publish_linkedin(post: Content) -> PublishResult:
             "POST",
             "https://api.linkedin.com/v2/ugcPosts",
             headers={
-                "Authorization": f"Bearer {settings.linkedin_access_token}",
+                **_linkedin_headers(settings.linkedin_access_token, settings.linkedin_api_version),
                 "Content-Type": "application/json",
-                "LinkedIn-Version": settings.linkedin_api_version,
-                "X-Restli-Protocol-Version": "2.0.0",
             },
             json=payload,
             request_timeout=settings.request_timeout_seconds,

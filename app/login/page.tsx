@@ -50,7 +50,7 @@ export default function LoginPage() {
               <button
                 type="button"
                 onClick={() => setShowPassword((prev) => !prev)}
-                className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-zinc-500 hover:text-zinc-700"
+                className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
                 aria-label={showPassword ? "Hide password" : "Show password"}
               >
                 {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -94,7 +94,7 @@ export default function LoginPage() {
           </Button>
           <p className="text-center text-sm text-zinc-500">
             No account?{" "}
-            <Link href="/signup" className="font-medium text-zinc-900 hover:underline">
+            <Link href="/signup" className="font-medium text-zinc-900 hover:underline dark:text-zinc-100">
               Create one
             </Link>
           </p>

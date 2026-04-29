@@ -122,7 +122,7 @@ export default function DashboardPage() {
       label: "Pending approvals",
       value: workspace.content.filter((item) => item.status === "PENDING").length,
       icon: Timer,
-      href: "/pipeline?tab=approval",
+      href: "/pipeline?tab=content",
     },
     {
       label: "Published posts",

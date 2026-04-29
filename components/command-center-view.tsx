@@ -696,9 +696,9 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
           </CardContent>
         </Card>
       )}
-      <div className="grid items-start gap-4 xl:grid-cols-12 xl:gap-6">
+      <div className="grid items-stretch gap-4 xl:grid-cols-12 xl:gap-6">
         {/* Left — wider competitor / strategy column */}
-        <div className="space-y-3 xl:col-span-5">
+        <div className="flex min-h-0 flex-col gap-3 xl:col-span-5 xl:min-h-[46rem]">
           <Card className="rounded-2xl border-blue-100/90 bg-gradient-to-br from-white to-blue-50/50 shadow-sm shadow-blue-900/[0.04] dark:border-blue-900/50 dark:from-zinc-900 dark:to-blue-950/20">
             <CardHeader className="pb-2">
               <CardTitle className="text-base text-slate-900 dark:text-zinc-50">Agent 1 — Strategy first</CardTitle>
@@ -779,7 +779,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
             ) : null}
           </Card>
 
-          <Card className="rounded-2xl border-blue-200/80 bg-gradient-to-b from-blue-50/50 to-white shadow-sm dark:border-blue-500/25 dark:from-blue-950/20 dark:to-zinc-950">
+          <Card className="flex min-h-0 flex-1 flex-col rounded-2xl border-blue-200/80 bg-gradient-to-b from-blue-50/50 to-white shadow-sm dark:border-blue-500/25 dark:from-blue-950/20 dark:to-zinc-950">
             <CardHeader className="space-y-2 border-b border-blue-100/80 pb-3 dark:border-blue-500/20">
               <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
                 <div>
@@ -801,7 +801,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                 <span className="font-medium">View</span> for an exportable snapshot. Content queue regenerates separately.
               </p>
             </CardHeader>
-            <CardContent className="space-y-3 pt-3">
+            <CardContent className="flex min-h-0 flex-1 flex-col space-y-3 pt-3">
               <div className="rounded-2xl border border-blue-100/90 bg-white/90 p-3 text-sm text-zinc-700 shadow-sm dark:border-blue-500/20 dark:bg-zinc-900/40 dark:text-zinc-200">
                 <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-600/90 dark:text-blue-300/80">
                   Strategy output
@@ -895,7 +895,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                     {researchCompetitors.length === 0 ? "No competitor cards yet." : "No matches—try a different search."}
                   </p>
                 )}
-                <div className="space-y-2.5">
+                <div className="min-h-0 space-y-2.5 overflow-y-auto pr-1">
                   {researchSlice.map((c) => (
                     <div
                       key={c.id}
@@ -971,17 +971,19 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
         </div>
 
         {/* Content queue — compact cards, 3 per row on xl */}
-        <Card className="h-fit w-full shrink-0 self-start rounded-2xl border-blue-100/90 bg-white shadow-sm shadow-blue-900/[0.03] dark:border-blue-900/50 dark:bg-zinc-900/40 xl:col-span-7">
-          <CardHeader className="shrink-0 flex-row flex-wrap items-center justify-between gap-2 space-y-0 pb-2">
-            <div>
+        <Card className="flex min-h-0 w-full shrink-0 flex-col rounded-2xl border-blue-100/90 bg-white shadow-sm shadow-blue-900/[0.03] dark:border-blue-900/50 dark:bg-zinc-900/40 xl:col-span-7 xl:min-h-[46rem]">
+          <CardHeader className="shrink-0 pb-2">
+            <div className="flex w-full items-start justify-between gap-2">
+              <div className="min-w-0">
               <CardTitle className="text-base text-slate-900 dark:text-zinc-50">Content queue</CardTitle>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Pagination above the grid · uniform card height</p>
-            </div>
-            <Button type="button" variant="secondary" size="sm" className="rounded-xl" disabled={contentLoading || !workspaceReady} onClick={() => void runContent()}>
+              </div>
+            <Button type="button" variant="secondary" size="sm" className="ml-auto shrink-0 rounded-xl" disabled={contentLoading || !workspaceReady} onClick={() => void runContent()}>
               {contentLoading ? "Refreshing…" : workspaceReady ? "Regenerate library" : "Setup required"}
             </Button>
+            </div>
           </CardHeader>
-          <CardContent className="flex flex-col gap-3 pt-2 pb-5">
+          <CardContent className="flex min-h-0 flex-1 flex-col gap-3 pt-2 pb-5">
             <div className="flex shrink-0 flex-wrap items-center gap-2">
               {[7, 14, 21, 30].map((days) => (
                 <Button
@@ -1041,89 +1043,91 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                 No content yet. Regenerate the library.
               </div>
             )}
-            <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {contentQueueSlice.map((item) => {
-                const bodyPreview = formatQueueBodyPreview(item.contentText);
-                return (
-                  <div
-                    key={item.id}
-                    tabIndex={0}
-                    onClick={() => setPreviewItem(item)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        setPreviewItem(item);
-                      }
-                    }}
-                    className="flex h-[23rem] cursor-pointer flex-col gap-2 rounded-2xl border border-blue-100/90 bg-white p-4 shadow-sm outline-none transition hover:border-blue-200 hover:shadow-md focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:border-blue-900/50 dark:bg-zinc-900/80 dark:hover:border-blue-800"
-                    aria-label={`Open preview: ${item.title}`}
-                  >
-                    <div className="flex shrink-0 items-start gap-3">
-                      <ContentQueueThumb item={item} />
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <p className="text-[11px] font-medium tabular-nums text-zinc-500 dark:text-zinc-400">{formatQueueDate(item)}</p>
-                        <p
-                          className="line-clamp-2 text-[15px] font-semibold leading-snug text-zinc-900 dark:text-zinc-50"
-                          title={item.title}
+            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+              <div className="grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {contentQueueSlice.map((item) => {
+                  const bodyPreview = formatQueueBodyPreview(item.contentText);
+                  return (
+                    <div
+                      key={item.id}
+                      tabIndex={0}
+                      onClick={() => setPreviewItem(item)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setPreviewItem(item);
+                        }
+                      }}
+                      className="flex h-[23rem] cursor-pointer flex-col gap-2 rounded-2xl border border-blue-100/90 bg-white p-4 shadow-sm outline-none transition hover:border-blue-200 hover:shadow-md focus-visible:ring-2 focus-visible:ring-blue-500/30 dark:border-blue-900/50 dark:bg-zinc-900/80 dark:hover:border-blue-800"
+                      aria-label={`Open preview: ${item.title}`}
+                    >
+                      <div className="flex shrink-0 items-start gap-3">
+                        <ContentQueueThumb item={item} />
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <p className="text-[11px] font-medium tabular-nums text-zinc-500 dark:text-zinc-400">{formatQueueDate(item)}</p>
+                          <p
+                            className="line-clamp-2 text-[15px] font-semibold leading-snug text-zinc-900 dark:text-zinc-50"
+                            title={item.title}
+                          >
+                            {item.title}
+                          </p>
+                          <p className="text-[11px] text-zinc-500">
+                            <span className="font-medium text-zinc-600 dark:text-zinc-400">Format</span> · {item.mediaType}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="min-h-0 flex-1 overflow-hidden">
+                        {bodyPreview ? (
+                          <p
+                            className="line-clamp-4 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300"
+                            title={bodyPreview}
+                          >
+                            {bodyPreview}
+                          </p>
+                        ) : (
+                          <p className="text-xs italic text-zinc-400">No body text yet.</p>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                        <PlatformBadge platform={item.selectedPlatform} />
+                        <ContentStatusBadge status={item.status} />
+                      </div>
+                      <div
+                        className="mt-auto shrink-0 flex flex-wrap gap-1.5 border-t border-blue-100/80 pt-3 dark:border-blue-900/40"
+                        onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                      >
+                        {item.status === "PENDING" && (
+                          <Button type="button" size="sm" className="h-9 flex-1 rounded-lg px-3 text-xs sm:flex-none" onClick={() => openPlatformModal(item.id)}>
+                            Approve
+                          </Button>
+                        )}
+                        {item.status === "APPROVED" && (
+                          <Button type="button" size="sm" variant="secondary" className="h-9 flex-1 rounded-lg px-3 text-xs sm:flex-none" onClick={() => openPlatformModal(item.id)}>
+                            Platform
+                          </Button>
+                        )}
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="h-9 rounded-lg px-3 text-xs"
+                          disabled={item.status === "PUBLISHED"}
+                          onClick={() => void reject(item.id).then(() => push("Marked as rejected"))}
                         >
-                          {item.title}
-                        </p>
-                        <p className="text-[11px] text-zinc-500">
-                          <span className="font-medium text-zinc-600 dark:text-zinc-400">Format</span> · {item.mediaType}
-                        </p>
+                          Reject
+                        </Button>
+                        <Button type="button" size="sm" variant="outline" className="h-9 rounded-lg px-3 text-xs" onClick={() => openEdit(item)}>
+                          Edit
+                        </Button>
+                        <Button type="button" size="sm" variant="ghost" className="h-9 rounded-lg px-3 text-xs" onClick={() => setPreviewItem(item)}>
+                          Preview
+                        </Button>
                       </div>
                     </div>
-                    <div className="min-h-0 flex-1 overflow-hidden">
-                      {bodyPreview ? (
-                        <p
-                          className="line-clamp-4 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300"
-                          title={bodyPreview}
-                        >
-                          {bodyPreview}
-                        </p>
-                      ) : (
-                        <p className="text-xs italic text-zinc-400">No body text yet.</p>
-                      )}
-                    </div>
-                    <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                      <PlatformBadge platform={item.selectedPlatform} />
-                      <ContentStatusBadge status={item.status} />
-                    </div>
-                    <div
-                      className="mt-auto shrink-0 flex flex-wrap gap-1.5 border-t border-blue-100/80 pt-3 dark:border-blue-900/40"
-                      onClick={(e) => e.stopPropagation()}
-                      onKeyDown={(e) => e.stopPropagation()}
-                    >
-                      {item.status === "PENDING" && (
-                        <Button type="button" size="sm" className="h-9 flex-1 rounded-lg px-3 text-xs sm:flex-none" onClick={() => openPlatformModal(item.id)}>
-                          Approve
-                        </Button>
-                      )}
-                      {item.status === "APPROVED" && (
-                        <Button type="button" size="sm" variant="secondary" className="h-9 flex-1 rounded-lg px-3 text-xs sm:flex-none" onClick={() => openPlatformModal(item.id)}>
-                          Platform
-                        </Button>
-                      )}
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-9 rounded-lg px-3 text-xs"
-                        disabled={item.status === "PUBLISHED"}
-                        onClick={() => void reject(item.id).then(() => push("Marked as rejected"))}
-                      >
-                        Reject
-                      </Button>
-                      <Button type="button" size="sm" variant="outline" className="h-9 rounded-lg px-3 text-xs" onClick={() => openEdit(item)}>
-                        Edit
-                      </Button>
-                      <Button type="button" size="sm" variant="ghost" className="h-9 rounded-lg px-3 text-xs" onClick={() => setPreviewItem(item)}>
-                        Preview
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </CardContent>
         </Card>

@@ -346,13 +346,13 @@ export function AppShell({ children }: { children: ReactNode }) {
                   <DropdownMenuContent align="end" className="w-80 rounded-xl p-2">
                     <div className="px-2 py-1.5">
                       <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">Notifications</p>
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400">Recent workspace updates and approvals.</p>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">Recent workspace updates and content reviews.</p>
                     </div>
                     <DropdownMenuSeparator />
                     <div className="max-h-80 space-y-2 overflow-y-auto p-1">
                       {pendingContentCount > 0 && (
                         <Link
-                          href="/pipeline?tab=approval"
+                          href="/pipeline?tab=content"
                           className="block rounded-xl border border-amber-200/90 bg-amber-50 px-3 py-2.5 text-sm text-amber-900 transition-colors hover:border-amber-300 hover:bg-amber-50/80"
                         >
                           <span className="font-medium text-amber-950">Approval required</span>

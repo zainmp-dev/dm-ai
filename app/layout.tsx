@@ -69,7 +69,7 @@ export default function RootLayout({
     >
       <body
         suppressHydrationWarning
-        className="min-h-full flex flex-col bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-50"
+        className="min-h-full flex flex-col bg-background text-foreground"
       >
         <script suppressHydrationWarning dangerouslySetInnerHTML={{ __html: themeInitScript }} />
         <ThemeProvider>

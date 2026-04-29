@@ -152,13 +152,13 @@ export default function NotificationsPage() {
 
       {pendingCount > 0 && (
         <Link
-          href="/pipeline?tab=approval"
+          href="/pipeline?tab=content"
           className="mb-4 flex min-w-0 items-start justify-between gap-4 rounded-2xl border border-amber-200/80 bg-amber-50/90 px-4 py-3.5 shadow-sm transition-colors hover:border-amber-300 hover:bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/40 dark:hover:border-amber-800/60 dark:hover:bg-amber-950/50"
         >
           <div className="min-w-0">
             <p className="text-sm font-medium text-amber-950 dark:text-amber-100">Approval required</p>
             <p className="mt-0.5 text-sm text-amber-900/90 dark:text-amber-200/90">
-              {pendingCount} post{pendingCount === 1 ? "" : "s"} waiting in the Workflow approval tab.
+              {pendingCount} post{pendingCount === 1 ? "" : "s"} waiting in the Content + Approval workflow tab.
             </p>
           </div>
           <span className="shrink-0 rounded-lg bg-amber-100/80 px-2.5 py-1 text-xs font-semibold text-amber-950 dark:bg-amber-900/80 dark:text-amber-100">

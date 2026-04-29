@@ -50,8 +50,7 @@ const TIME_OPTIONS = [
   { label: "Tomorrow 18:00", value: "tomorrow-6pm" },
 ] as const;
 
-/** One page = one row of three on lg+; pagination steps by this count. */
-const LIBRARY_PAGE_SIZE = 6;
+const LIBRARY_PAGE_SIZE_OPTIONS = [8, 12] as const;
 
 function LibraryThumb({
   url,
@@ -125,6 +124,7 @@ export function ContentWorkspaceView() {
   const [draftScheduledAt, setDraftScheduledAt] = useState("");
   const [draftAutoActivate, setDraftAutoActivate] = useState(false);
   const [approvePlatforms, setApprovePlatforms] = useState<PublishingPlatform[]>([]);
+  const [approvingTargets, setApprovingTargets] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
   const [mediaPickerTarget, setMediaPickerTarget] = useState<"create" | "edit">("create");
@@ -136,12 +136,13 @@ export function ContentWorkspaceView() {
   const [mediaOpen, setMediaOpen] = useState(false);
   const [detailItem, setDetailItem] = useState<ContentItem | null>(null);
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [libraryPageSize, setLibraryPageSize] = useState<number>(12);
   const [libraryPage, setLibraryPage] = useState(0);
   const [manualCreateOpen, setManualCreateOpen] = useState(false);
   const [postNowOpen, setPostNowOpen] = useState(false);
   const [postNowWorking, setPostNowWorking] = useState(false);
   const [postNowTarget, setPostNowTarget] = useState<"manual-create" | "edit" | null>(null);
-  const [postNowPlatform, setPostNowPlatform] = useState<PublishingPlatform>("linkedin");
+  const [postNowPlatforms, setPostNowPlatforms] = useState<PublishingPlatform[]>(["linkedin"]);
   const [postNowEditId, setPostNowEditId] = useState<string | null>(null);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -178,15 +179,15 @@ export function ContentWorkspaceView() {
     return new Set(rows.map((item) => item.mediaPreview).filter(Boolean));
   }, [activeItem, content, mediaPickerTarget]);
 
-  const libraryTotalPages = Math.max(1, Math.ceil(content.length / LIBRARY_PAGE_SIZE));
+  const libraryTotalPages = Math.max(1, Math.ceil(content.length / libraryPageSize));
   const effectiveLibraryPage = Math.min(libraryPage, libraryTotalPages - 1);
-  const librarySliceStart = effectiveLibraryPage * LIBRARY_PAGE_SIZE;
-  const librarySlice = content.slice(librarySliceStart, librarySliceStart + LIBRARY_PAGE_SIZE);
+  const librarySliceStart = effectiveLibraryPage * libraryPageSize;
+  const librarySlice = content.slice(librarySliceStart, librarySliceStart + libraryPageSize);
 
   useEffect(() => {
-    const maxPage = Math.max(0, Math.ceil(content.length / LIBRARY_PAGE_SIZE) - 1);
+    const maxPage = Math.max(0, Math.ceil(content.length / libraryPageSize) - 1);
     if (libraryPage > maxPage) setLibraryPage(maxPage);
-  }, [content.length, libraryPage]);
+  }, [content.length, libraryPage, libraryPageSize]);
 
   useEffect(() => {
     if (newAutoActivate && !prevAutoActivateRef.current) setScheduleOpen(true);
@@ -217,8 +218,14 @@ export function ContentWorkspaceView() {
     return <p className="text-sm text-zinc-500">Workspace unavailable.</p>;
   }
 
+  const connectedPostNowPlatforms = APPROVAL_PLATFORM_OPTIONS
+    .filter((o) => !o.disabled && isPlatformConnected(workspace.integrations, o.id))
+    .map((o) => o.id as PublishingPlatform);
+
   const openPostNow = (target: "manual-create" | "edit") => {
-    setPostNowPlatform(workspace.preferences.defaultPlatform);
+    const preferred = workspace.preferences.defaultPlatform;
+    const initial = connectedPostNowPlatforms.includes(preferred) ? [preferred] : connectedPostNowPlatforms.slice(0, 1);
+    setPostNowPlatforms(initial);
     setPostNowTarget(target);
     if (target === "edit" && activeItem) setPostNowEditId(activeItem.id);
     else setPostNowEditId(null);
@@ -227,7 +234,11 @@ export function ContentWorkspaceView() {
 
   const confirmPostNow = async () => {
     const nowIso = new Date().toISOString();
-    const platform = postNowPlatform;
+    const selectedPlatforms = postNowPlatforms.filter((p) => connectedPostNowPlatforms.includes(p));
+    if (selectedPlatforms.length === 0) {
+      push("Please select at least one connected platform.");
+      return;
+    }
     setPostNowWorking(true);
     try {
       if (postNowTarget === "manual-create") {
@@ -246,12 +257,13 @@ export function ContentWorkspaceView() {
           mediaPreview: newMediaPreview,
           scheduledAt: nowIso,
           autoActivate: true,
-          selectedPlatform: platform,
+          selectedPlatform: selectedPlatforms[0],
         });
         if (id) {
+          await approve(id, selectedPlatforms);
           const res = await publish([id]);
           if (res.published > 0) {
-            push(`Published to ${platformLabel(platform)}`);
+            push(`Published to ${selectedPlatforms.map((p) => platformLabel(p)).join(", ")}`);
             setNewTitle("");
             setNewText("");
             setNewMediaPreview("");
@@ -278,11 +290,12 @@ export function ContentWorkspaceView() {
           mediaPreview: draftMediaPreview,
           scheduledAt: nowIso,
           autoActivate: true,
-          selectedPlatform: platform,
+          selectedPlatform: selectedPlatforms[0],
         });
+        await approve(postNowEditId, selectedPlatforms);
         const res = await publish([postNowEditId]);
         if (res.published > 0) {
-          push(`Published to ${platformLabel(platform)}`);
+          push(`Published to ${selectedPlatforms.map((p) => platformLabel(p)).join(", ")}`);
           setEditingId(null);
         } else {
           push(res.warnings[0] ?? "Publish did not complete");
@@ -653,10 +666,22 @@ export function ContentWorkspaceView() {
           <DialogHeader className="text-left">
             <DialogTitle>Post now</DialogTitle>
             <DialogDescription>
-              Choose a channel. We stamp the current time, save the draft, then try to publish right away (connections and public media URLs must be valid).
+              Choose one or more channels. We stamp the current time, save the draft, then publish immediately to selected connected platforms.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-2 py-1">
+            <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2.5 text-sm">
+              <input
+                type="checkbox"
+                className="text-zinc-900"
+                checked={
+                  connectedPostNowPlatforms.length > 0 &&
+                  connectedPostNowPlatforms.every((platform) => postNowPlatforms.includes(platform))
+                }
+                onChange={(e) => setPostNowPlatforms(e.target.checked ? [...connectedPostNowPlatforms] : [])}
+              />
+              <span className="font-medium">All connected platforms</span>
+            </label>
             {APPROVAL_PLATFORM_OPTIONS.filter((o) => !o.disabled).map((option) => {
               const connected = isPlatformConnected(workspace.integrations, option.id);
               return (
@@ -668,12 +693,17 @@ export function ContentWorkspaceView() {
                   )}
                 >
                   <input
-                    type="radio"
-                    name="post-now-platform"
+                    type="checkbox"
                     className="text-zinc-900"
-                    checked={postNowPlatform === option.id}
+                    checked={postNowPlatforms.includes(option.id as PublishingPlatform)}
                     disabled={!connected}
-                    onChange={() => setPostNowPlatform(option.id as PublishingPlatform)}
+                    onChange={() =>
+                      setPostNowPlatforms((current) =>
+                        current.includes(option.id as PublishingPlatform)
+                          ? current.filter((id) => id !== option.id)
+                          : [...current, option.id as PublishingPlatform],
+                      )
+                    }
                   />
                   <span className="font-medium">{platformLabel(option.id)}</span>
                   {!connected ? <span className="text-xs">(not connected)</span> : null}
@@ -743,9 +773,28 @@ export function ContentWorkspaceView() {
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200/60 pb-2">
           <div>
             <h2 className="text-sm font-semibold text-zinc-900">Library</h2>
-            <p className="text-[11px] text-zinc-500">6 items per page · hover for summary</p>
+            <p className="text-[11px] text-zinc-500">Uniform card height · {libraryPageSize} items per page</p>
           </div>
-          <span className="rounded-md bg-zinc-100 px-2 py-0.5 text-[11px] font-medium tabular-nums text-zinc-600">{content.length}</span>
+          <div className="flex items-center gap-2">
+            <Label htmlFor="library-page-size" className="text-xs text-zinc-500">
+              Per page
+            </Label>
+            <select
+              id="library-page-size"
+              value={libraryPageSize}
+              onChange={(e) => {
+                setLibraryPageSize(Number(e.target.value));
+                setLibraryPage(0);
+              }}
+              className="h-8 rounded-lg border border-zinc-200 bg-white px-2.5 text-xs dark:border-zinc-700 dark:bg-zinc-950"
+            >
+              {LIBRARY_PAGE_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
         {content.length === 0 ? (
           <div className="rounded-lg border border-dashed border-zinc-200/80 bg-zinc-50/50 py-12 text-center text-xs text-zinc-500">
@@ -753,7 +802,37 @@ export function ContentWorkspaceView() {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {content.length > libraryPageSize ? (
+              <div className="flex flex-col gap-2 rounded-xl border border-zinc-100 bg-zinc-50/40 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800 dark:bg-zinc-900/30">
+                <div />
+                <div className="flex items-center justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 rounded-lg px-3 text-xs"
+                    disabled={effectiveLibraryPage <= 0}
+                    onClick={() => setLibraryPage((p) => Math.max(0, p - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <p className="min-w-[5.5rem] text-center text-xs tabular-nums text-zinc-500">
+                    Page {effectiveLibraryPage + 1} / {libraryTotalPages}
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 rounded-lg px-3 text-xs"
+                    disabled={effectiveLibraryPage >= libraryTotalPages - 1}
+                    onClick={() => setLibraryPage((p) => Math.min(libraryTotalPages - 1, p + 1))}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-2 2xl:grid-cols-3">
               {librarySlice.map((item) => {
                 const feedPlatform = item.selectedPlatform ?? workspace.preferences.defaultPlatform;
                 const scheduledLabel = item.scheduledAt ? formatInstantInZone(item.scheduledAt, contentTimeZone) : null;
@@ -777,7 +856,7 @@ export function ContentWorkspaceView() {
                     key={item.id}
                     title={hoverSummary}
                     onClick={() => setDetailItem(item)}
-                    className="flex min-w-0 cursor-pointer flex-col gap-3 rounded-xl border border-zinc-200/80 bg-white p-4 shadow-sm outline-none transition-[box-shadow,border-color] hover:border-zinc-300 hover:shadow-md focus-visible:ring-2 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:border-zinc-700 sm:flex-row sm:items-stretch"
+                    className="flex min-h-[17rem] h-full min-w-0 cursor-pointer flex-col gap-3 rounded-xl border border-zinc-200/80 bg-white p-4 shadow-sm outline-none transition-[box-shadow,border-color] hover:border-zinc-300 hover:shadow-md focus-visible:ring-2 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-950 dark:hover:border-zinc-700 sm:flex-row sm:items-stretch"
                     aria-label={`Open details: ${item.title}`}
                   >
                     <div
@@ -891,21 +970,15 @@ export function ContentWorkspaceView() {
                 );
               })}
             </div>
-            {content.length > LIBRARY_PAGE_SIZE ? (
-              <div className="flex flex-col gap-2 border-t border-zinc-100 pt-3 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-xs tabular-nums text-zinc-500">
-                  Showing{" "}
-                  <span className="font-medium text-zinc-700 dark:text-zinc-300">
-                    {librarySliceStart + 1}–{Math.min(librarySliceStart + LIBRARY_PAGE_SIZE, content.length)}
-                  </span>{" "}
-                  of {content.length}
-                </p>
+            {content.length > libraryPageSize ? (
+              <div className="flex flex-col gap-2 rounded-xl border border-zinc-100 bg-zinc-50/40 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800 dark:bg-zinc-900/30">
+                <div />
                 <div className="flex items-center justify-end gap-2">
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-8 rounded-lg text-xs"
+                    className="h-8 rounded-lg px-3 text-xs"
                     disabled={effectiveLibraryPage <= 0}
                     onClick={() => setLibraryPage((p) => Math.max(0, p - 1))}
                   >
@@ -918,7 +991,7 @@ export function ContentWorkspaceView() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-8 rounded-lg text-xs"
+                    className="h-8 rounded-lg px-3 text-xs"
                     disabled={effectiveLibraryPage >= libraryTotalPages - 1}
                     onClick={() => setLibraryPage((p) => Math.min(libraryTotalPages - 1, p + 1))}
                   >
@@ -937,10 +1010,10 @@ export function ContentWorkspaceView() {
           if (!o) setDetailItem(null);
         }}
       >
-        <DialogContent className="max-h-[92vh] max-w-lg overflow-y-auto sm:max-w-xl">
+        <DialogContent className="max-h-[92vh] max-w-lg gap-0 overflow-hidden p-0 sm:max-w-xl">
           {detailItem ? (
             <>
-              <DialogHeader className="space-y-1 text-left">
+              <DialogHeader className="space-y-1 border-b border-zinc-100 px-6 pb-4 pt-6 text-left dark:border-zinc-800">
                 <DialogTitle className="text-base leading-snug">{detailItem.title}</DialogTitle>
                 <DialogDescription className="text-xs text-zinc-500">
                   {detailItem.mediaType}
@@ -948,7 +1021,7 @@ export function ContentWorkspaceView() {
                   {detailItem.scheduledAt ? <> · Publish {formatInstantInZone(detailItem.scheduledAt, contentTimeZone)}</> : null}
                 </DialogDescription>
               </DialogHeader>
-              <div className="space-y-3 text-sm">
+              <div className="max-h-[min(58vh,520px)] space-y-3 overflow-y-auto px-6 py-4 text-sm">
                 <div>
                   <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500">Feed preview</p>
                   <SocialPostPreview
@@ -972,81 +1045,83 @@ export function ContentWorkspaceView() {
                   <dt className="text-zinc-500">Internal ID</dt>
                   <dd className="font-mono text-[10px] text-zinc-600">{detailItem.id}</dd>
                 </dl>
-                <div>
+                {/* <div>
                   <p className="mb-1 text-[11px] font-medium text-zinc-500">Full copy</p>
                   <p className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-md border border-zinc-100 bg-white px-3 py-2 text-sm leading-relaxed text-zinc-800">
                     {detailItem.contentText}
                   </p>
-                </div>
+                </div> */}
               </div>
-              <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+              <DialogFooter className="border-t border-zinc-100 bg-white/95 px-6 py-4 backdrop-blur supports-[backdrop-filter]:bg-white/90 dark:border-zinc-800 dark:bg-zinc-900/95 sm:justify-between">
                 <Button type="button" variant="ghost" size="sm" className="rounded-lg" onClick={() => setDetailItem(null)}>
                   Close
                 </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  className="rounded-lg"
-                  onClick={() => {
-                    const id = detailItem.id;
-                    setDetailItem(null);
-                    const row = content.find((c) => c.id === id);
-                    if (!row) return;
-                    setEditingId(row.id);
-                    setDraftTitle(row.title);
-                    setDraftText(row.contentText);
-                    setDraftMediaPreview(row.mediaPreview);
-                    setDraftMediaType(row.mediaType);
-                    setDraftScheduledAt(toDateTimeLocalInZone(row.scheduledAt, contentTimeZone));
-                    setDraftTimePreset("");
-                    setDraftAutoActivate(row.status === "APPROVED" || row.status === "SCHEDULED");
-                  }}
-                >
-                  Edit
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="rounded-lg border-red-200 text-red-700 hover:bg-red-50"
-                  onClick={() => {
-                    setDeleteTargetId(detailItem.id);
-                  }}
-                >
-                  <Trash2 className="mr-1.5 size-3.5" aria-hidden />
-                  Delete
-                </Button>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  className="rounded-lg"
-                  disabled={detailItem.status === "PUBLISHED"}
-                  onClick={() => {
-                    const id = detailItem.id;
-                    void reject(id).then(() => {
-                      push("Content rejected");
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="rounded-lg"
+                    onClick={() => {
+                      const id = detailItem.id;
                       setDetailItem(null);
-                    });
-                  }}
-                >
-                  Reject (keep)
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  className="rounded-lg"
-                  onClick={() => {
-                    const id = detailItem.id;
-                    setDetailItem(null);
-                    setApproveTargetId(id);
-                    const row = content.find((c) => c.id === id);
-                    setApprovePlatforms(row?.selectedPlatform ? [row.selectedPlatform] : []);
-                  }}
-                >
-                  Approve for platforms…
-                </Button>
+                      const row = content.find((c) => c.id === id);
+                      if (!row) return;
+                      setEditingId(row.id);
+                      setDraftTitle(row.title);
+                      setDraftText(row.contentText);
+                      setDraftMediaPreview(row.mediaPreview);
+                      setDraftMediaType(row.mediaType);
+                      setDraftScheduledAt(toDateTimeLocalInZone(row.scheduledAt, contentTimeZone));
+                      setDraftTimePreset("");
+                      setDraftAutoActivate(row.status === "APPROVED" || row.status === "SCHEDULED");
+                    }}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="rounded-lg border-red-200 text-red-700 hover:bg-red-50"
+                    onClick={() => {
+                      setDeleteTargetId(detailItem.id);
+                    }}
+                  >
+                    <Trash2 className="mr-1.5 size-3.5" aria-hidden />
+                    Delete
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    className="rounded-lg"
+                    disabled={detailItem.status === "PUBLISHED"}
+                    onClick={() => {
+                      const id = detailItem.id;
+                      void reject(id).then(() => {
+                        push("Content rejected");
+                        setDetailItem(null);
+                      });
+                    }}
+                  >
+                    Reject (keep)
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="rounded-lg"
+                    onClick={() => {
+                      const id = detailItem.id;
+                      setDetailItem(null);
+                      setApproveTargetId(id);
+                      const row = content.find((c) => c.id === id);
+                      setApprovePlatforms(row?.selectedPlatform ? [row.selectedPlatform] : []);
+                    }}
+                  >
+                    Approve for platforms…
+                  </Button>
+                </div>
               </DialogFooter>
             </>
           ) : null}
@@ -1092,12 +1167,12 @@ export function ContentWorkspaceView() {
 
       {activeItem && (
         <Dialog open={Boolean(activeItem)} onOpenChange={(o) => !o && setEditingId(null)}>
-          <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
-            <DialogHeader className="space-y-1 text-left">
+          <DialogContent className="max-h-[90vh] gap-0 overflow-hidden p-0 sm:max-w-lg">
+            <DialogHeader className="space-y-1 border-b border-zinc-100 px-6 pb-4 pt-6 text-left dark:border-zinc-800">
               <DialogTitle>Edit content</DialogTitle>
               <DialogDescription>Update copy, media, and schedule. Times use {contentTimeZone}.</DialogDescription>
             </DialogHeader>
-            <div className="space-y-4">
+            <div className="max-h-[min(56vh,500px)] space-y-4 overflow-y-auto px-6 py-4">
               <div className="space-y-2">
                 <Label htmlFor="edit-title">Title</Label>
                 <Input id="edit-title" value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} className="rounded-xl" />
@@ -1190,87 +1265,96 @@ export function ContentWorkspaceView() {
                     </select>
                   </div>
                 </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="mt-3 w-full rounded-xl border-emerald-200/90 bg-emerald-50/50 text-emerald-900 hover:bg-emerald-100/80"
-                  disabled={!draftTitle.trim() || !draftText.trim() || !draftMediaPreview}
-                  onClick={() => openPostNow("edit")}
-                >
-                  Post now…
-                </Button>
               </div>
               <label className="flex items-center gap-2 text-sm text-zinc-700">
                 <input type="checkbox" checked={draftAutoActivate} onChange={(e) => setDraftAutoActivate(e.target.checked)} />
                 Auto approve + schedule (needs a publish time when enabled)
               </label>
             </div>
-            <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap sm:justify-end">
+            <DialogFooter className="border-t border-zinc-100 bg-white/95 px-6 py-4 backdrop-blur supports-[backdrop-filter]:bg-white/90 dark:border-zinc-800 dark:bg-zinc-900/95 sm:justify-between">
               <Button type="button" variant="ghost" className="rounded-xl" onClick={() => setEditingId(null)}>
                 Cancel
               </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                className="rounded-xl"
-                onClick={() => {
-                  setDraftTimePreset("1h");
-                  setDraftScheduledAt(toDateTimeLocalInZone(applyTimePresetInZone("1h", contentTimeZone), contentTimeZone));
-                }}
-              >
-                +1 hour
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                className="rounded-xl"
-                onClick={() => {
-                  if (!draftMediaPreview) {
-                    push("Please include at least one media file.");
-                    return;
-                  }
-                  if (draftAutoActivate && !draftScheduledAt.trim()) {
-                    push("Please select publish time before auto activate.");
-                    return;
-                  }
-                  void updateContentItem({
-                    contentId: activeItem.id,
-                    title: draftTitle,
-                    contentText: draftText,
-                    mediaType: draftMediaType,
-                    mediaPreview: draftMediaPreview,
-                    scheduledAt: draftScheduledAt.trim()
-                      ? zonedLocalToUtcIso(draftScheduledAt.trim(), contentTimeZone)
-                      : null,
-                    autoActivate: draftAutoActivate,
-                  })
-                    .then(() => {
-                      setEditingId(null);
-                      push("Content updated");
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="rounded-xl"
+                  onClick={() => {
+                    setDraftTimePreset("1h");
+                    setDraftScheduledAt(toDateTimeLocalInZone(applyTimePresetInZone("1h", contentTimeZone), contentTimeZone));
+                  }}
+                >
+                  +1 hour
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="rounded-xl border-emerald-200/90 bg-emerald-50/50 text-emerald-900 hover:bg-emerald-100/80"
+                  disabled={!draftTitle.trim() || !draftText.trim() || !draftMediaPreview}
+                  onClick={() => openPostNow("edit")}
+                >
+                  Post now…
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="rounded-xl"
+                  onClick={() => {
+                    if (!draftMediaPreview) {
+                      push("Please include at least one media file.");
+                      return;
+                    }
+                    if (draftAutoActivate && !draftScheduledAt.trim()) {
+                      push("Please select publish time before auto activate.");
+                      return;
+                    }
+                    void updateContentItem({
+                      contentId: activeItem.id,
+                      title: draftTitle,
+                      contentText: draftText,
+                      mediaType: draftMediaType,
+                      mediaPreview: draftMediaPreview,
+                      scheduledAt: draftScheduledAt.trim()
+                        ? zonedLocalToUtcIso(draftScheduledAt.trim(), contentTimeZone)
+                        : null,
+                      autoActivate: draftAutoActivate,
                     })
-                    .catch((err: unknown) => push(err instanceof Error ? err.message : "Update failed"));
-                }}
-              >
-                Save changes
-              </Button>
-              <Button
-                type="button"
-                className="rounded-xl"
-                onClick={() => {
-                  setApproveTargetId(activeItem.id);
-                  setApprovePlatforms(activeItem.selectedPlatform ? [activeItem.selectedPlatform] : []);
-                  setEditingId(null);
-                }}
-              >
-                Approve for platforms…
-              </Button>
+                      .then(() => {
+                        setEditingId(null);
+                        push("Content updated");
+                      })
+                      .catch((err: unknown) => push(err instanceof Error ? err.message : "Update failed"));
+                  }}
+                >
+                  Save changes
+                </Button>
+                <Button
+                  type="button"
+                  className="rounded-xl"
+                  onClick={() => {
+                    setApproveTargetId(activeItem.id);
+                    setApprovePlatforms(activeItem.selectedPlatform ? [activeItem.selectedPlatform] : []);
+                    setEditingId(null);
+                  }}
+                >
+                  Approve for platforms…
+                </Button>
+              </div>
             </DialogFooter>
           </DialogContent>
         </Dialog>
       )}
 
-      <Dialog open={Boolean(approveTargetItem)} onOpenChange={(o) => !o && setApproveTargetId(null)}>
+      <Dialog
+        open={Boolean(approveTargetItem)}
+        onOpenChange={(o) => {
+          if (!o) {
+            setApproveTargetId(null);
+            setApprovingTargets(false);
+          }
+        }}
+      >
         <DialogContent className="max-w-md">
           <DialogHeader className="space-y-1 text-left">
             <DialogTitle>Publish targets</DialogTitle>
@@ -1321,12 +1405,22 @@ export function ContentWorkspaceView() {
             })}
           </div>
           <DialogFooter className="gap-2 sm:justify-end">
-            <Button type="button" variant="ghost" className="rounded-xl" onClick={() => setApproveTargetId(null)}>
+            <Button
+              type="button"
+              variant="ghost"
+              className="rounded-xl"
+              disabled={approvingTargets}
+              onClick={() => {
+                setApproveTargetId(null);
+                setApprovingTargets(false);
+              }}
+            >
               Cancel
             </Button>
             <Button
               type="button"
               className="rounded-xl"
+              disabled={approvingTargets}
               onClick={() => {
                 if (!approveTargetItem || approvePlatforms.length === 0) {
                   push("Please select at least one platform.");
@@ -1337,18 +1431,26 @@ export function ContentWorkspaceView() {
                   push(`Connect ${disconnected.map((p) => platformLabel(p)).join(", ")} in Settings before approving.`);
                   return;
                 }
-                void approve(approveTargetItem.id, approvePlatforms).then(() => {
-                  if (approvePlatforms.length > 1) {
-                    push(`Content approved for ${approvePlatforms.length} platforms.`);
-                  } else {
-                    push(`Content approved for ${platformLabel(approvePlatforms[0])}.`);
-                  }
-                  setApproveTargetId(null);
-                  setEditingId(null);
-                });
+                setApprovingTargets(true);
+                void approve(approveTargetItem.id, approvePlatforms)
+                  .then(() => {
+                    setApproveTargetId(null);
+                    setEditingId(null);
+                    if (approvePlatforms.length > 1) {
+                      push(`Content approved for ${approvePlatforms.length} platforms.`);
+                    } else {
+                      push(`Content approved for ${platformLabel(approvePlatforms[0])}.`);
+                    }
+                  })
+                  .catch((err: unknown) => {
+                    push(apiErrorMessage(err));
+                  })
+                  .finally(() => {
+                    setApprovingTargets(false);
+                  });
               }}
             >
-              Approve
+              {approvingTargets ? "Approving..." : "Approve"}
             </Button>
           </DialogFooter>
         </DialogContent>

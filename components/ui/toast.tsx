@@ -20,9 +20,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="fixed right-4 top-4 z-50 flex w-80 flex-col gap-2">
+      <div className="pointer-events-none fixed right-4 top-4 z-[220] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2">
         {toasts.map((toast) => (
-          <div key={toast.id} className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-800 shadow-md">
+          <div
+            key={toast.id}
+            className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-800 shadow-lg ring-1 ring-black/5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+          >
             {toast.title}
           </div>
         ))}

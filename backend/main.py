@@ -11,10 +11,11 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -269,6 +270,29 @@ def _default_timezone_for_region(region: str) -> str:
     if region in {"india", "uae-india"}:
         return "Asia/Kolkata"
     return "Asia/Kolkata"
+
+
+def _workspace_profile_timezone(db: Session, workspace_id: str) -> str:
+    row = db.execute(
+        text("select timezone from flowpilot_profile where workspace_id = :workspace_id"),
+        {"workspace_id": workspace_id},
+    ).mappings().first()
+    tz_name = str((row or {}).get("timezone") or "").strip()
+    return tz_name or "Asia/Kolkata"
+
+
+def _normalize_scheduled_at_utc(db: Session, workspace_id: str, scheduled_at: datetime | None) -> datetime | None:
+    if scheduled_at is None:
+        return None
+    dt = scheduled_at
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        tz_name = _workspace_profile_timezone(db, workspace_id)
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = timezone.utc
+        dt = dt.replace(tzinfo=tz)
+    return dt.astimezone(timezone.utc)
 
 
 def get_current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict[str, Any]:
@@ -573,6 +597,32 @@ def _set_integration(db: Session, workspace_id: str, platform: str, connected: b
             "account_handle": account_handle,
         },
     )
+
+
+def _integration_connected(db: Session, workspace_id: str, integration_platform: str) -> bool:
+    row = db.execute(
+        text("select connected from flowpilot_integrations where workspace_id = :workspace_id and platform = :platform"),
+        {"workspace_id": workspace_id, "platform": integration_platform},
+    ).mappings().first()
+    return bool(row and row.get("connected"))
+
+
+def _publish_platform_connected(db: Session, workspace_id: str, post_platform: str) -> bool:
+    normalized = post_platform.strip().lower()
+    if normalized == "linkedin":
+        return _integration_connected(db, workspace_id, "linkedin")
+    if normalized in {"instagram", "facebook"}:
+        return _integration_connected(db, workspace_id, "meta")
+    return False
+
+
+def _required_integration_label(post_platform: str) -> str:
+    normalized = post_platform.strip().lower()
+    if normalized == "linkedin":
+        return "LinkedIn"
+    if normalized in {"instagram", "facebook"}:
+        return "Meta"
+    return "Social"
 
 
 def _default_platform(db: Session, workspace_id: str) -> str:
@@ -1937,7 +1987,8 @@ def workspace_content(
     elif body.action == "create":
         activation_platform = _activation_platform(db, workspace_id, body)
         auto_on = body.auto_activate is True
-        status = "SCHEDULED" if auto_on and body.scheduled_at else "APPROVED" if auto_on else "PENDING"
+        scheduled_at_utc = _normalize_scheduled_at_utc(db, workspace_id, body.scheduled_at)
+        status = "SCHEDULED" if auto_on and scheduled_at_utc else "APPROVED" if auto_on else "PENDING"
         new_id = f"cnt-{uuid.uuid4().hex[:12]}"
         created_content_id = new_id
         _insert_flowpilot_content_row(
@@ -1950,7 +2001,7 @@ def workspace_content(
             media_preview=body.media_preview or f"https://picsum.photos/seed/{workspace_id}-{uuid.uuid4().hex[:6]}/800/450",
             status=status,
             selected_platform=activation_platform,
-            scheduled_at=body.scheduled_at,
+            scheduled_at=scheduled_at_utc,
             strategy_version=_current_strategy_version(db, workspace_id),
         )
         record_activity(db, workspace_id, "AI flow added a new content draft to the library.")
@@ -1960,7 +2011,8 @@ def workspace_content(
             raise HTTPException(status_code=400, detail="content_id is required")
         activation_platform = _activation_platform(db, workspace_id, body)
         auto_on = body.auto_activate is True
-        status = "SCHEDULED" if auto_on and body.scheduled_at else "APPROVED" if auto_on else "PENDING"
+        scheduled_at_utc = _normalize_scheduled_at_utc(db, workspace_id, body.scheduled_at)
+        status = "SCHEDULED" if auto_on and scheduled_at_utc else "APPROVED" if auto_on else "PENDING"
         scheduled_sql = (
             "scheduled_at = :scheduled_at"
             if "scheduled_at" in body.model_fields_set
@@ -1986,7 +2038,7 @@ def workspace_content(
                 "content_text": body.content_text,
                 "media_type": body.media_type,
                 "media_preview": body.media_preview,
-                "scheduled_at": body.scheduled_at,
+                "scheduled_at": scheduled_at_utc,
                 "selected_platform": activation_platform,
                 "status": status,
             },
@@ -2035,6 +2087,13 @@ def approve_workspace_content(
     selected_platforms = _valid_platforms(body.platforms or ([body.platform] if body.platform else []))
     if not selected_platforms:
         raise HTTPException(status_code=400, detail="At least one supported platform is required")
+    disconnected = [platform for platform in selected_platforms if not _publish_platform_connected(db, workspace_id, platform)]
+    if disconnected:
+        names = ", ".join(f"{platform} ({_required_integration_label(platform)})" for platform in disconnected)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Connect required integration(s) before approval: {names}.",
+        )
 
     row = _workspace_content_row(db, workspace_id, body.content_id)
     if row is None:
@@ -2102,6 +2161,9 @@ def schedule_workspace_content(
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     workspace_id = str(user["id"])
+    scheduled_at_utc = _normalize_scheduled_at_utc(db, workspace_id, body.scheduled_at)
+    if scheduled_at_utc is None:
+        raise HTTPException(status_code=400, detail="scheduled_at is required")
     db.execute(
         text(
             "update flowpilot_content set scheduled_at = :scheduled_at, "
@@ -2109,9 +2171,9 @@ def schedule_workspace_content(
             "updated_at = now() "
             "where workspace_id = :workspace_id and id = :content_id"
         ),
-        {"workspace_id": workspace_id, "content_id": body.content_id, "scheduled_at": body.scheduled_at},
+        {"workspace_id": workspace_id, "content_id": body.content_id, "scheduled_at": scheduled_at_utc},
     )
-    record_activity(db, workspace_id, f"Smart scheduling set a publishing slot for {body.scheduled_at.isoformat()}.")
+    record_activity(db, workspace_id, f"Smart scheduling set a publishing slot for {scheduled_at_utc.isoformat()}.")
     db.commit()
     return {"content": workspace_snapshot(db, workspace_id, user)["content"]}
 
@@ -2150,7 +2212,15 @@ def publish_workspace_content(
         if platform not in {"linkedin", "instagram", "facebook"}:
             warnings.append(f"{row['title']} has no supported platform selected")
             continue
+        if not _publish_platform_connected(db, workspace_id, platform):
+            warnings.append(f"{row['title']}: connect {_required_integration_label(platform)} before publishing")
+            _insert_publishing_log(db, workspace_id, content_id, platform, "Failed")
+            continue
         mp = str(row.get("media_preview") or "").strip()
+        if platform == "instagram" and not mp:
+            warnings.append(f"{row['title']}: Instagram requires image or video media")
+            _insert_publishing_log(db, workspace_id, content_id, platform, "Failed")
+            continue
         post = WorkspacePublishPost(platform=platform, content=str(row["content_text"]), media_url=mp or None)
         result = publish_post(post)  # type: ignore[arg-type]
         if result.success:

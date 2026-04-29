@@ -101,10 +101,10 @@ function WorkspaceSetupFields({
 }: SetupFormState) {
   return (
     <>
-      <section className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
-        <div className="flex items-center gap-2 text-slate-700">
-          <Building2 className="size-4 shrink-0 text-slate-500" aria-hidden />
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Organization</p>
+      <section className="space-y-4 rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 dark:border-zinc-800 dark:bg-zinc-900/40">
+        <div className="flex items-center gap-2 text-zinc-700 dark:text-zinc-300">
+          <Building2 className="size-4 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden />
+          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Organization</p>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-2">
@@ -124,7 +124,7 @@ function WorkspaceSetupFields({
               onChange={(e) => setWebsite(e.target.value)}
               placeholder="https://company.com"
             />
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
               Optional. If empty, the setup agent will try to infer the company website from the company name and scenario.
             </p>
           </div>
@@ -135,7 +135,7 @@ function WorkspaceSetupFields({
             id={`${idPrefix}scenario`}
             value={scenario}
             onChange={(event) => selectScenario(event.target.value as WorkspaceScenario)}
-            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none"
+            className="h-10 w-full rounded-xl border border-zinc-200 bg-white px-3 text-sm text-zinc-900 outline-none focus:border-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:border-zinc-500"
           >
             {WORKSPACE_SCENARIOS.map((option) => (
               <option key={option.value} value={option.value}>
@@ -152,21 +152,21 @@ function WorkspaceSetupFields({
             />
           )}
         </div>
-        <div className="space-y-3 rounded-2xl border-2 border-blue-200/80 bg-gradient-to-b from-blue-50/90 to-white p-4 shadow-sm ring-1 ring-blue-100/60">
+        <div className="space-y-3 rounded-2xl border-2 border-blue-200/80 bg-gradient-to-b from-blue-50/90 to-white p-4 shadow-sm ring-1 ring-blue-100/60 dark:border-blue-900/60 dark:from-blue-950/30 dark:to-zinc-900 dark:ring-blue-900/40">
           <div className="flex items-start gap-3">
             <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm">
               <Globe2 className="size-5" aria-hidden />
             </div>
             <div className="min-w-0 space-y-2 pt-0.5">
-              <Label htmlFor={`${idPrefix}primary-region`} className="text-base font-semibold text-slate-900">
+              <Label htmlFor={`${idPrefix}primary-region`} className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
                 Primary market
               </Label>
-              <p className="text-xs text-slate-600">AI research and content are scoped to this market (UAE and India only).</p>
+              <p className="text-xs text-zinc-600 dark:text-zinc-300">AI research and content are scoped to this market (UAE and India only).</p>
               <select
                 id={`${idPrefix}primary-region`}
                 value={primaryRegion}
                 onChange={(e) => setPrimaryRegion(e.target.value as PrimaryRegionCode)}
-                className="h-11 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm font-medium text-slate-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200"
+                className="h-11 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm font-medium text-zinc-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200 dark:border-blue-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:border-blue-500 dark:focus:ring-blue-900/50"
               >
                 {PRIMARY_REGION_OPTIONS.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -174,20 +174,20 @@ function WorkspaceSetupFields({
                   </option>
                 ))}
               </select>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">
                 Default timezone: UAE &amp; GCC → Dubai; India / UAE+India → India (override in Profile if needed).
               </p>
             </div>
           </div>
         </div>
         <div className="space-y-2">
-          <p className="text-sm font-medium text-slate-900">AI model</p>
+          <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">AI model</p>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 type="button"
                 variant="outline"
-                className="h-10 w-full justify-between gap-2 rounded-xl border-slate-200 bg-white text-left text-sm font-normal text-slate-900 shadow-sm"
+                className="h-10 w-full justify-between gap-2 rounded-xl border-zinc-200 bg-white text-left text-sm font-normal text-zinc-900 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
                 aria-label="Select AI model"
                 id={`${idPrefix}aiModel`}
               >
@@ -201,7 +201,7 @@ function WorkspaceSetupFields({
             >
               {AI_MODEL_GROUPS.map((group, gi) => (
                 <div key={group.label} className="py-1">
-                  <DropdownMenuLabel className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                  <DropdownMenuLabel className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
                     {group.label}
                   </DropdownMenuLabel>
                   {group.options.map((model) => (
@@ -221,14 +221,14 @@ function WorkspaceSetupFields({
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
-          <p className="text-xs text-slate-500">Saved with the workspace. Used for research, content, and analytics.</p>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">Saved with the workspace. Used for research, content, and analytics.</p>
         </div>
       </section>
 
-      <section className="space-y-3 rounded-2xl border border-blue-100 bg-blue-50/60 p-4">
+      <section className="space-y-3 rounded-2xl border border-blue-100 bg-blue-50/60 p-4 dark:border-blue-900/60 dark:bg-blue-950/25">
         <div>
           <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">Automatic AI flow</p>
-          <p className="mt-1 text-sm text-blue-900">
+          <p className="mt-1 text-sm text-blue-900 dark:text-blue-100">
             After setup, FlowPilot creates the master workspace automatically: Agent 1 finds or studies the domain, researches competitors,
             positioning, feature gaps, and marketing gap issues. Agent 2 uses that strategy output to draft content.
           </p>
@@ -242,7 +242,7 @@ function WorkspaceSetupFields({
             placeholder={
               "One competitor per line: name, website, focus\nIf you add competitors, AI compares against them. If empty, AI discovers competitor categories automatically."
             }
-            className="min-h-28 rounded-xl bg-white"
+            className="min-h-28 rounded-xl bg-white dark:bg-zinc-900"
           />
         </div>
       </section>
@@ -347,7 +347,7 @@ function SetupWorkspaceModalFormInner({
         competitors={competitors}
         setCompetitors={setCompetitors}
       />
-      <div className="flex flex-col-reverse gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end">
+      <div className="flex flex-col-reverse gap-2 border-t border-zinc-100 pt-4 dark:border-zinc-800 sm:flex-row sm:justify-end">
         <Button type="button" variant="outline" className="rounded-xl" onClick={onRequestClose}>
           Cancel
         </Button>
@@ -417,10 +417,10 @@ function SetupWorkspaceModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[min(90vh,880px)] max-w-2xl overflow-y-auto rounded-2xl border-slate-200 p-0 shadow-lg sm:max-w-2xl">
-        <DialogHeader className="space-y-1 border-b border-slate-100 px-6 pb-4 pt-6 text-left sm:px-8 sm:pt-8">
-          <DialogTitle className="text-lg font-semibold tracking-tight text-slate-900">{title}</DialogTitle>
-          <DialogDescription className="text-sm leading-relaxed text-slate-600">{description}</DialogDescription>
+      <DialogContent className="max-h-[min(90vh,880px)] max-w-2xl overflow-y-auto rounded-2xl p-0 shadow-lg sm:max-w-2xl">
+        <DialogHeader className="space-y-1 border-b border-zinc-100 px-6 pb-4 pt-6 text-left dark:border-zinc-800 sm:px-8 sm:pt-8">
+          <DialogTitle className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">{title}</DialogTitle>
+          <DialogDescription className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">{description}</DialogDescription>
         </DialogHeader>
         <div className="space-y-6 px-6 pb-6 sm:px-8 sm:pb-8">
           {open && canShowForm ? (
@@ -531,12 +531,13 @@ function WorkspaceSetupForm({
 
   return (
     <div className="w-full min-w-0 space-y-6">
-      <Card className="rounded-2xl border-slate-200 shadow-sm">
+      <Card className="rounded-2xl shadow-sm">
         <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
           <div>
             <CardTitle className="text-base">Workspace setups</CardTitle>
             <CardDescription>
-              Switch active workspace, edit details in a modal, or add a new setup with <span className="font-medium text-slate-700">New workspace</span>.
+              Switch active workspace, edit details in a modal, or add a new setup with{" "}
+              <span className="font-medium text-zinc-700 dark:text-zinc-300">New workspace</span>.
             </CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -584,9 +585,9 @@ function WorkspaceSetupForm({
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-2">
           {workspaceSetups.length === 0 && (
-            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50/50 p-6 text-center md:col-span-2">
-              <p className="text-sm font-medium text-slate-800">No saved setups yet</p>
-              <p className="mt-1 text-sm text-slate-600">Create your first workspace to run the AI setup flow.</p>
+            <div className="rounded-2xl border border-dashed border-zinc-200 bg-zinc-50/50 p-6 text-center dark:border-zinc-700 dark:bg-zinc-900/30 md:col-span-2">
+              <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">No saved setups yet</p>
+              <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">Create your first workspace to run the AI setup flow.</p>
               <Button type="button" className="mt-4 rounded-xl bg-blue-600 text-white hover:bg-blue-700" onClick={openNewWorkspaceModal}>
                 New workspace
               </Button>
@@ -597,25 +598,29 @@ function WorkspaceSetupForm({
             return (
               <div
                 key={setup.id}
-                className={`rounded-2xl border bg-white p-4 shadow-sm transition-shadow ${
-                  editModalActive ? "border-blue-300 ring-2 ring-blue-100" : "border-slate-200 hover:border-slate-300"
+                className={`rounded-2xl border bg-white p-4 shadow-sm transition-shadow dark:bg-zinc-900 ${
+                  editModalActive
+                    ? "border-blue-300 ring-2 ring-blue-100 dark:border-blue-700 dark:ring-blue-900/60"
+                    : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-700 dark:hover:border-zinc-600"
                 }`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <p className="truncate font-medium text-slate-900">{setup.companyName}</p>
-                    <p className="truncate text-sm text-slate-500">{setup.website || "No website"}</p>
-                    <p className="mt-1 text-xs text-slate-500">{setup.scenario}</p>
-                    <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-slate-600">
-                      <span className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-1.5 py-0.5 font-medium text-slate-700">
+                    <p className="truncate font-medium text-zinc-900 dark:text-zinc-100">{setup.companyName}</p>
+                    <p className="truncate text-sm text-zinc-500 dark:text-zinc-400">{setup.website || "No website"}</p>
+                    <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{setup.scenario}</p>
+                    <p className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-zinc-600 dark:text-zinc-300">
+                      <span className="inline-flex items-center gap-1 rounded-md bg-zinc-100 px-1.5 py-0.5 font-medium text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
                         <Globe2 className="size-3 shrink-0" aria-hidden />
                         {primaryRegionLabel(setup.primaryRegion)}
                       </span>
                     </p>
-                    <p className="mt-1 text-xs text-blue-700">Model: {labelForAiModel(setup.aiModel)}</p>
+                    <p className="mt-1 text-xs text-blue-700 dark:text-blue-300">Model: {labelForAiModel(setup.aiModel)}</p>
                   </div>
                   {setup.id === activeWorkspaceId ? (
-                    <span className="shrink-0 rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700">Active</span>
+                    <span className="shrink-0 rounded-full bg-blue-100 px-2 py-1 text-xs font-medium text-blue-700 dark:bg-blue-900/40 dark:text-blue-200">
+                      Active
+                    </span>
                   ) : null}
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">

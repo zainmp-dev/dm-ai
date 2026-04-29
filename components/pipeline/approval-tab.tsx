@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Calendar, CheckCircle2, Clock, Search } from "lucide-react";
 import { ContentStatusBadge } from "@/components/status-badge";
 import { MediaLocalDropzone } from "@/components/media-local-dropzone";
@@ -37,6 +37,7 @@ const PLATFORM_OPTIONS: { id: PublishingPlatform; label: string; disabled?: bool
 const ACTIVE_PLATFORM_OPTIONS = PLATFORM_OPTIONS.filter((opt) => !opt.disabled);
 
 const STATUS_FILTERS = ["ALL", "PENDING", "APPROVED", "REJECTED", "PUBLISHED"] as const;
+const PAGE_SIZE_OPTIONS = [8, 12] as const;
 
 function QueueThumb({ url, mediaType }: { url: string; mediaType: MediaType }) {
   const safe = sanitizeMediaUrl(url);
@@ -89,11 +90,15 @@ export function ApprovalTab() {
   const approve = useWorkspaceStore((s) => s.approve);
   const reject = useWorkspaceStore((s) => s.reject);
   const schedule = useWorkspaceStore((s) => s.schedule);
+  const publish = useWorkspaceStore((s) => s.publish);
   const updateContentItem = useWorkspaceStore((s) => s.updateContentItem);
   const refreshWorkspace = useWorkspaceStore((s) => s.refreshWorkspace);
   const { push } = useToast();
   const [filter, setFilter] = useState<ContentStatus | "ALL">("PENDING");
   const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+  const [pageSize, setPageSize] = useState<number>(12);
+  const [page, setPage] = useState(1);
   const [viewingId, setViewingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const [draftText, setDraftText] = useState("");
@@ -122,7 +127,7 @@ export function ApprovalTab() {
   }, [content, viewingId]);
 
   const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
+    const q = deferredSearch.trim().toLowerCase();
     let rows = filter === "ALL" ? content : content.filter((item) => item.status === filter);
     if (q) {
       rows = rows.filter(
@@ -133,12 +138,37 @@ export function ApprovalTab() {
       );
     }
     return [...rows].sort((a, b) => sortKeyMs(b) - sortKeyMs(a));
-  }, [content, filter, search]);
+  }, [content, deferredSearch, filter]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [filter, deferredSearch, pageSize]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const pagedRows = useMemo(() => {
+    const start = (safePage - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, pageSize, safePage]);
 
   const viewingItem = content.find((item) => item.id === viewingId) ?? null;
   const isReadonlyItem = viewingItem?.status === "PUBLISHED";
   const canRejectItem = viewingItem ? viewingItem.status !== "PUBLISHED" && viewingItem.status !== "REJECTED" : false;
   const canApproveItem = viewingItem ? viewingItem.status !== "PUBLISHED" : false;
+
+  const getPostNowValidationError = () => {
+    if (selectedPlatforms.length === 0) return "Please select at least one platform.";
+    if (!workspace) return "Workspace unavailable.";
+    const disconnected = selectedPlatforms.filter((p) => !isPlatformConnected(workspace.integrations, p));
+    if (disconnected.length > 0) {
+      return `Connect ${disconnected.map((p) => platformLabel(p)).join(", ")} in Settings before approving.`;
+    }
+    const needsMedia = postNow && selectedPlatforms.includes("instagram");
+    if (needsMedia && !draftMediaPreview.trim()) {
+      return "Instagram requires media. Add an image or video before Post Now.";
+    }
+    return null;
+  };
 
   const openViewDialog = (id: string) => {
     const item = content.find((row) => row.id === id);
@@ -201,38 +231,61 @@ export function ApprovalTab() {
     <Card className="rounded-2xl border-zinc-200 shadow-sm">
       <CardHeader className="space-y-4 border-b border-zinc-100 pb-4 dark:border-zinc-800">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle className="text-base">Approval queue</CardTitle>
-          <div className="flex flex-wrap gap-1.5">
-            {STATUS_FILTERS.map((value) => (
-              <Button
-                key={value}
-                size="sm"
-                variant={filter === value ? "default" : "secondary"}
-                className="h-8 rounded-lg px-2.5 text-xs"
-                onClick={() => setFilter(value)}
-              >
-                {value}
-              </Button>
-            ))}
+          <div className="space-y-1">
+            <CardTitle className="text-base">Approval queue</CardTitle>
+            <p className="text-xs text-zinc-500">Review, edit, and publish-ready posts in one clean queue.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Label htmlFor="approval-page-size" className="text-xs text-zinc-500">
+              Per page
+            </Label>
+            <select
+              id="approval-page-size"
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              className="h-9 rounded-lg border border-zinc-200 bg-white px-3 text-sm transition-colors dark:border-zinc-700 dark:bg-zinc-950"
+            >
+              {PAGE_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-400" aria-hidden />
-          <Input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search title, text, or ID…"
-            className="h-10 rounded-xl pl-9"
-            autoComplete="off"
-          />
+        <div className="flex flex-wrap gap-1.5">
+          {STATUS_FILTERS.map((value) => (
+            <Button
+              key={value}
+              size="sm"
+              variant={filter === value ? "default" : "secondary"}
+              className="h-9 rounded-xl px-3 text-xs transition-all duration-200"
+              onClick={() => setFilter(value)}
+            >
+              {value}
+            </Button>
+          ))}
+        </div>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="relative w-full sm:max-w-md">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-zinc-400" aria-hidden />
+            <Input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search title, text, or ID…"
+              className="h-11 rounded-xl pl-9"
+              autoComplete="off"
+            />
+          </div>
+          <div />
         </div>
       </CardHeader>
       <CardContent className="space-y-3 pt-4">
-        {filtered.length === 0 && (
+        {pagedRows.length === 0 && (
           <p className="rounded-2xl border border-dashed border-zinc-200 py-10 text-center text-sm text-zinc-500">Nothing in this queue.</p>
         )}
-        {filtered.map((item) => {
+        {pagedRows.map((item) => {
           const scheduledLabel = item.scheduledAt ? formatInstantInZone(item.scheduledAt, contentTimeZone) : null;
           const updatedLabel = item.updatedAt ? formatInstantInZone(item.updatedAt, contentTimeZone) : null;
           const createdLabel = item.createdAt ? formatInstantInZone(item.createdAt, contentTimeZone) : null;
@@ -250,7 +303,7 @@ export function ApprovalTab() {
                   openViewDialog(item.id);
                 }
               }}
-              className="flex cursor-pointer flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-100 bg-zinc-50/60 px-4 py-3 outline-none transition hover:border-zinc-200 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-900/30 dark:hover:border-zinc-700"
+              className="flex min-h-[132px] cursor-pointer flex-wrap items-center justify-between gap-3 rounded-2xl border border-zinc-100 bg-zinc-50/60 px-4 py-3 outline-none transition-all duration-200 hover:border-zinc-200 hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-zinc-400 dark:border-zinc-800 dark:bg-zinc-900/30 dark:hover:border-zinc-700"
             >
               <div className="flex min-w-0 flex-1 items-start gap-3">
                 <QueueThumb url={item.mediaPreview} mediaType={item.mediaType} />
@@ -291,7 +344,7 @@ export function ApprovalTab() {
                   type="button"
                   size="sm"
                   variant="secondary"
-                  className="rounded-xl"
+                  className="h-9 rounded-xl px-3"
                   onClick={(e) => {
                     e.stopPropagation();
                     openViewDialog(item.id);
@@ -306,6 +359,28 @@ export function ApprovalTab() {
             </div>
           );
         })}
+        {filtered.length > 0 && (
+          <div className="flex flex-col gap-2 border-t border-zinc-100 pt-3 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800">
+            <p className="text-xs text-zinc-500">
+              Page {safePage} of {totalPages}
+            </p>
+            <div className="flex items-center gap-2">
+              <Button type="button" size="sm" variant="outline" className="h-9 rounded-xl px-3" disabled={safePage <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+                Previous
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="h-9 rounded-xl px-3"
+                disabled={safePage >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        )}
       </CardContent>
       {viewingItem && (
         <Dialog open={Boolean(viewingItem)} onOpenChange={(open) => !open && closeViewDialog()}>
@@ -416,9 +491,9 @@ export function ApprovalTab() {
                       }}
                     />
                     <span>
-                      <span className="font-medium">Post when approved (no schedule)</span>
+                      <span className="font-medium">Post Now when approved (no schedule)</span>
                       <span className="mt-0.5 block text-xs font-normal text-zinc-500">
-                        Publishes from the queue as soon as it is ready — no future time slot.
+                        Auto-publishes immediately after approval once platform checks pass.
                       </span>
                     </span>
                   </label>
@@ -559,13 +634,9 @@ export function ApprovalTab() {
                     type="button"
                     className="h-10 min-w-[8.5rem] gap-2 font-semibold shadow-sm"
                     onClick={() => {
-                      if (selectedPlatforms.length === 0) {
-                        push("Please select at least one platform.");
-                        return;
-                      }
-                      const disconnected = selectedPlatforms.filter((p) => !isPlatformConnected(workspace.integrations, p));
-                      if (disconnected.length > 0) {
-                        push(`Connect ${disconnected.map((p) => platformLabel(p)).join(", ")} in Settings before approving.`);
+                      const validationError = getPostNowValidationError();
+                      if (validationError) {
+                        push(validationError);
                         return;
                       }
                       if (!postNow && !draftScheduleAt.trim()) {
@@ -586,8 +657,23 @@ export function ApprovalTab() {
                           await schedule(viewingItem.id, zonedLocalToUtcIso(draftScheduleAt, contentTimeZone));
                         }
                         await approve(viewingItem.id, selectedPlatforms);
+                        if (postNow) {
+                          const publishResult = await publish([viewingItem.id]);
+                          if (publishResult.warnings.length > 0) {
+                            push(`Post Now published ${publishResult.published}. ${publishResult.warnings[0]}`);
+                          } else if (publishResult.published > 0) {
+                            push("Post Now published successfully.");
+                          } else {
+                            push("Post Now could not publish yet. Check publishing warnings.");
+                          }
+                          return;
+                        }
                       };
                       void apply().then(() => {
+                        if (postNow) {
+                          closeViewDialog();
+                          return;
+                        }
                         if (allPlatformsChecked || selectedPlatforms.length > 1) {
                           push(`Approved for ${selectedPlatforms.length} platforms.`);
                         } else {
