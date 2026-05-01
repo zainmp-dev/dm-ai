@@ -23,6 +23,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.routing import APIRoute
+from fastapi.openapi.docs import get_swagger_ui_html
 from pydantic import BaseModel, Field
 from starlette.datastructures import UploadFile
 from sqlalchemy import text
@@ -1677,6 +1678,7 @@ app = FastAPI(
     lifespan=lifespan,
     redirect_slashes=False,
     root_path=os.getenv("API_ROOT_PATH", ""),
+    docs_url=None,
 )
 
 app.add_middleware(
@@ -1699,6 +1701,16 @@ def root() -> dict[str, Any]:
         "health": "/health",
         "note": "App routes are under /workspace, /content, /strategy, etc. (not /).",
     }
+
+
+@app.get("/docs", include_in_schema=False)
+def custom_swagger_ui_html():
+    # Relative openapi URL keeps docs working both locally (/docs)
+    # and behind nginx path prefixes like /api/docs.
+    return get_swagger_ui_html(
+        openapi_url="openapi.json",
+        title=f"{app.title} - Swagger UI",
+    )
 
 
 @app.get("/health")
