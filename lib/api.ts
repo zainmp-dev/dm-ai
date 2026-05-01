@@ -264,6 +264,27 @@ export async function apiLogin(body: { email: string; password: string }) {
   return data;
 }
 
+export async function apiStartOAuth(body: {
+  provider: "google" | "facebook";
+  intent?: "login" | "signup";
+  appOrigin?: string;
+}) {
+  const { data } = await apiClient.post<{ auth_url: string }>("/auth/oauth/start", {
+    provider: body.provider,
+    intent: body.intent || "login",
+    app_origin: body.appOrigin,
+  });
+  return data;
+}
+
+export async function apiCompleteOAuth(body: { code: string; state: string }) {
+  const { data } = await apiClient.get<{ token: string; user: { name: string; email: string } }>("/auth/oauth/callback", {
+    params: { code: body.code, state: body.state },
+    skipGlobalLoading: true,
+  });
+  return data;
+}
+
 export async function apiPostStrategy(
   companyName: string,
   website: string,

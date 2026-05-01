@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
 import { HeaderThemeControl } from "@/components/header-theme-control";
-import { apiLogin } from "@/lib/api";
+import { apiErrorMessage, apiLogin, apiStartOAuth } from "@/lib/api";
 import { setAuthSession } from "@/lib/auth";
 import axios from "axios";
 
@@ -48,14 +48,6 @@ function FacebookIcon() {
   );
 }
 
-function AppleIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4 fill-current">
-      <path d="M16.37 12.14c.02 2.45 2.16 3.26 2.18 3.27-.02.05-.34 1.18-1.1 2.34-.66.99-1.34 1.98-2.42 2-.06 0-.12.01-.18.01-.98 0-1.25-.58-2.56-.58-1.34 0-1.66.56-2.6.6h-.1c-1.03 0-1.81-1.04-2.48-2.02-1.36-2-2.4-5.64-1-8.07.69-1.2 1.93-1.96 3.28-1.98 1.02-.02 1.99.68 2.6.68.58 0 1.69-.84 2.85-.72.49.02 1.86.2 2.74 1.5-.07.04-1.64.95-1.62 2.97ZM14.1 4.91c.55-.67.95-1.6.85-2.51-.8.03-1.79.54-2.37 1.22-.53.61-.98 1.56-.86 2.45.9.07 1.82-.47 2.38-1.16Z" />
-    </svg>
-  );
-}
-
 export default function LoginPage() {
   const router = useRouter();
   const { push } = useToast();
@@ -63,6 +55,7 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState<"" | "google" | "facebook">("");
   const trimmedEmail = email.trim();
 
   const handleLogin = () => {
@@ -97,14 +90,28 @@ export default function LoginPage() {
       .finally(() => setLoading(false));
   };
 
-  const handleProviderClick = (provider: "Google" | "Facebook" | "Apple") => {
-    push(`${provider} sign in coming soon`);
-  };
-
   const handleLoginSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (loading) return;
     handleLogin();
+  };
+
+  const handleOAuthStart = (provider: "google" | "facebook") => {
+    if (loading || oauthLoading) return;
+    setOauthLoading(provider);
+    void apiStartOAuth({
+      provider,
+      intent: "login",
+      appOrigin: typeof window !== "undefined" ? window.location.origin : undefined,
+    })
+      .then(({ auth_url }) => {
+        if (!auth_url) throw new Error("Missing authorization URL");
+        window.location.assign(auth_url);
+      })
+      .catch((error: unknown) => {
+        push(apiErrorMessage(error) || "Unable to start social sign-in.");
+      })
+      .finally(() => setOauthLoading(""));
   };
 
   return (
@@ -194,12 +201,14 @@ export default function LoginPage() {
               <p className="text-xs text-zinc-500">Or sign in with</p>
               <div className="h-px flex-1 bg-zinc-300/70 dark:bg-zinc-700" />
             </div>
-            <div className="mt-3 grid grid-cols-3 gap-2">
+            <div className="mt-3 grid grid-cols-2 gap-2">
               <Button
                 type="button"
                 variant="outline"
                 className="rounded-xl bg-white/60 dark:bg-zinc-800/70"
-                onClick={() => handleProviderClick("Google")}
+                disabled={loading || Boolean(oauthLoading)}
+                aria-label="Sign in with Google"
+                onClick={() => handleOAuthStart("google")}
               >
                 <GoogleIcon />
               </Button>
@@ -207,19 +216,16 @@ export default function LoginPage() {
                 type="button"
                 variant="outline"
                 className="rounded-xl bg-white/60 dark:bg-zinc-800/70"
-                onClick={() => handleProviderClick("Facebook")}
+                disabled={loading || Boolean(oauthLoading)}
+                aria-label="Sign in with Facebook"
+                onClick={() => handleOAuthStart("facebook")}
               >
                 <FacebookIcon />
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="rounded-xl bg-white/60 dark:bg-zinc-800/70"
-                onClick={() => handleProviderClick("Apple")}
-              >
-                <AppleIcon />
-              </Button>
             </div>
+            {oauthLoading ? (
+              <p className="mt-2 text-center text-xs text-zinc-500 dark:text-zinc-400">Redirecting to {oauthLoading}…</p>
+            ) : null}
           </div>
           <p className="text-center text-sm text-zinc-500">
             No account?{" "}

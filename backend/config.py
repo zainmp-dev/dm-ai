@@ -121,6 +121,12 @@ class Settings:
     )
     oauth_state_secret: str = field(default_factory=lambda: _str_env("OAUTH_STATE_SECRET"))
     token_encryption_keys: str = field(default_factory=lambda: _str_env("TOKEN_ENCRYPTION_KEYS"))
+    google_client_id: str = field(default_factory=lambda: _str_env("GOOGLE_CLIENT_ID"))
+    google_client_secret: str = field(default_factory=lambda: _str_env("GOOGLE_CLIENT_SECRET"))
+    google_redirect_uri: str = field(default_factory=lambda: _str_env("GOOGLE_REDIRECT_URI"))
+    facebook_client_id: str = field(default_factory=lambda: _str_env_first("FACEBOOK_CLIENT_ID", "META_AUTH_CLIENT_ID"))
+    facebook_client_secret: str = field(default_factory=lambda: _str_env_first("FACEBOOK_CLIENT_SECRET", "META_AUTH_CLIENT_SECRET"))
+    facebook_redirect_uri: str = field(default_factory=lambda: _str_env("FACEBOOK_REDIRECT_URI"))
     # Public API prefix used in returned app-relative URLs (default keeps current dev behavior).
     public_api_prefix: str = field(default_factory=lambda: _str_env_first("FLOWPILOT_API_PREFIX", "PUBLIC_API_PREFIX") or "/api/backend")
 

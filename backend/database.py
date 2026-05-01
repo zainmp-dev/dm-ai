@@ -80,9 +80,14 @@ def _init_workspace_tables(connection: object) -> None:
             name text not null,
             email text not null unique,
             password text not null,
+            auth_provider text,
+            auth_subject text,
             created_at timestamptz not null default now()
         )
         """,
+        "alter table flowpilot_users add column if not exists auth_provider text",
+        "alter table flowpilot_users add column if not exists auth_subject text",
+        "create unique index if not exists uq_flowpilot_users_auth_identity on flowpilot_users(auth_provider, auth_subject) where auth_provider is not null and auth_subject is not null",
         """
         create table if not exists flowpilot_workspace (
             workspace_id text primary key,

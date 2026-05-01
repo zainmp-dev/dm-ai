@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 import requests
@@ -46,6 +46,8 @@ from publisher import publish_post
 from scheduler import scheduler_loop
 from routes.social_routes import router as social_router
 from services.oauth_service import linkedin_connect_url, meta_connect_url
+from utils.http_client import request_json
+from utils.state_signing import encode_state, new_nonce, verify_state
 
 
 logging.basicConfig(level=logging.INFO)
@@ -146,6 +148,16 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=200)
 
 
+class OAuthStartRequest(BaseModel):
+    provider: str = Field(min_length=3, max_length=20)
+    intent: str = Field(default="login", max_length=20)
+    app_origin: str | None = Field(default=None, max_length=300)
+
+
+class OAuthStartResponse(BaseModel):
+    auth_url: str
+
+
 class CompetitorInput(BaseModel):
     name: str = Field(default="", max_length=200)
     website: str = Field(default="", max_length=500)
@@ -225,6 +237,127 @@ def auth_token(user_id: str) -> str:
 def serialize_auth_user(row: dict[str, Any]) -> AuthUserResponse:
     return AuthUserResponse(name=str(row["name"]), email=str(row["email"]))
 
+
+def _safe_origin(origin: str | None) -> str:
+    raw = (origin or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        return ""
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _oauth_redirect_uri(provider: str, request_origin: str, app_origin: str | None = None) -> str:
+    s = fresh_settings()
+    explicit = {
+        "google": s.google_redirect_uri,
+        "facebook": s.facebook_redirect_uri,
+    }.get(provider, "")
+    if explicit.strip():
+        return explicit.strip()
+    frontend_origin = _safe_origin(app_origin) or _safe_origin(s.public_app_origin)
+    if frontend_origin:
+        return f"{frontend_origin}/auth/callback"
+    return f"{request_origin.rstrip('/')}/auth/callback"
+
+
+def _oauth_state(provider: str, intent: str) -> str:
+    s = fresh_settings()
+    if not s.oauth_state_secret:
+        raise ValueError("OAUTH_STATE_SECRET is required for OAuth login.")
+    payload = {
+        "provider": provider,
+        "intent": "signup" if intent == "signup" else "login",
+        "nonce": new_nonce(),
+        "ts": int(time.time()),
+    }
+    return encode_state(payload, s.oauth_state_secret)
+
+
+def _verify_oauth_state(state: str) -> dict[str, str]:
+    s = fresh_settings()
+    if not s.oauth_state_secret:
+        raise ValueError("OAUTH_STATE_SECRET is required for OAuth login.")
+    payload = verify_state(state, s.oauth_state_secret, max_age_seconds=600)
+    provider = str(payload.get("provider") or "").strip().lower()
+    intent = str(payload.get("intent") or "login").strip().lower()
+    if provider not in {"google", "facebook"}:
+        raise ValueError("Invalid OAuth state provider")
+    if intent not in {"login", "signup"}:
+        intent = "login"
+    return {"provider": provider, "intent": intent}
+
+
+def _auth_name_from_email(email: str) -> str:
+    local = (email or "").split("@", 1)[0].strip()
+    return local[:1].upper() + local[1:] if local else "User"
+
+
+def _upsert_oauth_user(
+    db: Session,
+    *,
+    provider: str,
+    subject: str,
+    email: str,
+    name: str,
+) -> tuple[dict[str, str], bool]:
+    email_norm = email.strip().lower()
+    if not email_norm:
+        raise HTTPException(status_code=400, detail="OAuth provider did not return an email.")
+    row = db.execute(
+        text(
+            "select id, name, email, auth_provider, auth_subject "
+            "from flowpilot_users where auth_provider = :provider and auth_subject = :subject"
+        ),
+        {"provider": provider, "subject": subject},
+    ).mappings().first()
+    if row is None:
+        row = db.execute(
+            text("select id, name, email, auth_provider, auth_subject from flowpilot_users where lower(email) = :email"),
+            {"email": email_norm},
+        ).mappings().first()
+    if row is None:
+        user_id = f"usr-{uuid.uuid4().hex[:10]}"
+        resolved_name = (name or "").strip() or _auth_name_from_email(email_norm)
+        db.execute(
+            text(
+                "insert into flowpilot_users (id, name, email, password, auth_provider, auth_subject, created_at) "
+                "values (:id, :name, :email, :password, :auth_provider, :auth_subject, now())"
+            ),
+            {
+                "id": user_id,
+                "name": resolved_name,
+                "email": email_norm,
+                "password": uuid.uuid4().hex,
+                "auth_provider": provider,
+                "auth_subject": subject,
+            },
+        )
+        db.commit()
+        return {"id": user_id, "name": resolved_name, "email": email_norm}, True
+
+    user_id = str(row["id"])
+    updates: dict[str, Any] = {}
+    if not row.get("auth_provider") and not row.get("auth_subject"):
+        updates["auth_provider"] = provider
+        updates["auth_subject"] = subject
+    if updates:
+        db.execute(
+            text(
+                "update flowpilot_users "
+                "set auth_provider = coalesce(:auth_provider, auth_provider), "
+                "auth_subject = coalesce(:auth_subject, auth_subject) "
+                "where id = :id"
+            ),
+            {"id": user_id, "auth_provider": updates.get("auth_provider"), "auth_subject": updates.get("auth_subject")},
+        )
+        db.commit()
+    resolved_name = (str(row.get("name") or "").strip() or name.strip() or _auth_name_from_email(email_norm))
+    return {"id": user_id, "name": resolved_name, "email": email_norm}, False
 
 def _cloudinary_uploads_ready() -> bool:
     return bool(
@@ -1611,6 +1744,176 @@ def serve_local_media_file(workspace_id: str, file_name: str) -> FileResponse:
         media_type=media_type or "application/octet-stream",
         filename=file_name,
     )
+
+
+def _oauth_google_auth_url(*, state: str, redirect_uri: str) -> str:
+    s = fresh_settings()
+    if not s.google_client_id or not s.google_client_secret:
+        raise ValueError("Google OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.")
+    params = {
+        "client_id": s.google_client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "state": state,
+        "prompt": "select_account",
+        "access_type": "offline",
+    }
+    return f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+
+
+def _oauth_facebook_auth_url(*, state: str, redirect_uri: str) -> str:
+    s = fresh_settings()
+    if not s.facebook_client_id or not s.facebook_client_secret:
+        raise ValueError("Facebook OAuth is not configured. Set FACEBOOK_CLIENT_ID and FACEBOOK_CLIENT_SECRET.")
+    params = {
+        "client_id": s.facebook_client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "email,public_profile",
+        "state": state,
+    }
+    return f"https://www.facebook.com/v22.0/dialog/oauth?{urlencode(params)}"
+
+
+def _decode_jwt_payload_without_verify(token: str) -> dict[str, Any]:
+    parts = token.split(".")
+    if len(parts) < 2:
+        return {}
+    try:
+        payload = base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)).decode("utf-8")
+        data = json.loads(payload)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _google_user_from_code(*, code: str, redirect_uri: str) -> dict[str, str]:
+    s = fresh_settings()
+    token = request_json(
+        "POST",
+        "https://oauth2.googleapis.com/token",
+        timeout_seconds=s.request_timeout_seconds,
+        log_context="Google token exchange",
+        data={
+            "code": code,
+            "client_id": s.google_client_id,
+            "client_secret": s.google_client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        },
+    )
+    access_token = str(token.get("access_token") or "").strip()
+    id_token = str(token.get("id_token") or "").strip()
+    if not access_token and not id_token:
+        raise ValueError("Google login failed: missing token in callback.")
+    profile: dict[str, Any] = {}
+    if access_token:
+        profile = request_json(
+            "GET",
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            timeout_seconds=s.request_timeout_seconds,
+            log_context="Google userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if not profile and id_token:
+        profile = request_json(
+            "GET",
+            "https://oauth2.googleapis.com/tokeninfo",
+            timeout_seconds=s.request_timeout_seconds,
+            log_context="Google token info",
+            params={"id_token": id_token},
+        )
+        if str(profile.get("aud") or "") != s.google_client_id:
+            raise ValueError("Google login failed: token audience mismatch.")
+    email = str(profile.get("email") or "").strip().lower()
+    sub = str(profile.get("sub") or "").strip()
+    name = str(profile.get("name") or "").strip()
+    if not sub or not email:
+        raise ValueError("Google login failed: missing account identity or email.")
+    return {"provider": "google", "subject": sub, "email": email, "name": name}
+
+
+def _facebook_user_from_code(*, code: str, redirect_uri: str) -> dict[str, str]:
+    s = fresh_settings()
+    token = request_json(
+        "GET",
+        "https://graph.facebook.com/v22.0/oauth/access_token",
+        timeout_seconds=s.request_timeout_seconds,
+        log_context="Facebook token exchange",
+        params={
+            "client_id": s.facebook_client_id,
+            "client_secret": s.facebook_client_secret,
+            "redirect_uri": redirect_uri,
+            "code": code,
+        },
+    )
+    access_token = str(token.get("access_token") or "").strip()
+    if not access_token:
+        raise ValueError("Facebook login failed: missing access token.")
+    profile = request_json(
+        "GET",
+        "https://graph.facebook.com/me",
+        timeout_seconds=s.request_timeout_seconds,
+        log_context="Facebook userinfo",
+        params={"fields": "id,name,email", "access_token": access_token},
+    )
+    email = str(profile.get("email") or "").strip().lower()
+    subject = str(profile.get("id") or "").strip()
+    name = str(profile.get("name") or "").strip()
+    if not subject or not email:
+        raise ValueError("Facebook login failed: email permission is required.")
+    return {"provider": "facebook", "subject": subject, "email": email, "name": name}
+
+
+@app.post("/auth/oauth/start", response_model=OAuthStartResponse)
+def auth_oauth_start(body: OAuthStartRequest, request: Request) -> OAuthStartResponse:
+    provider = body.provider.strip().lower()
+    if provider not in {"google", "facebook"}:
+        raise HTTPException(status_code=400, detail="Unsupported OAuth provider")
+    state = _oauth_state(provider, body.intent)
+    redirect_uri = _oauth_redirect_uri(provider, _request_origin(request), body.app_origin)
+    try:
+        if provider == "google":
+            auth_url = _oauth_google_auth_url(state=state, redirect_uri=redirect_uri)
+        else:
+            auth_url = _oauth_facebook_auth_url(state=state, redirect_uri=redirect_uri)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return OAuthStartResponse(auth_url=auth_url)
+
+
+@app.get("/auth/oauth/callback", response_model=AuthResponse)
+def auth_oauth_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    db: Session = Depends(get_db),
+) -> AuthResponse:
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="Missing OAuth code/state")
+    try:
+        payload = _verify_oauth_state(state)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    provider = payload["provider"]
+    request_origin = _request_origin(request)
+    redirect_uri = _oauth_redirect_uri(provider, request_origin)
+    try:
+        if provider == "google":
+            profile = _google_user_from_code(code=code, redirect_uri=redirect_uri)
+        else:
+            profile = _facebook_user_from_code(code=code, redirect_uri=redirect_uri)
+        user_row, _is_new = _upsert_oauth_user(
+            db,
+            provider=profile["provider"],
+            subject=profile["subject"],
+            email=profile["email"],
+            name=profile["name"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AuthResponse(token=auth_token(user_row["id"]), user=AuthUserResponse(name=user_row["name"], email=user_row["email"]))
 
 
 @app.post("/signup", response_model=AuthResponse)
