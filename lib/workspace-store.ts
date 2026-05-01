@@ -107,6 +107,21 @@ function writeStoredWorkspaceSetups(setups: WorkspaceSetupConfig[], activeWorksp
   }
 }
 
+/** Loose match for website fields so local setup and API snapshot don't trigger redundant POST /workspace. */
+function normalizeWebsiteKey(url: string): string {
+  const raw = url.trim().toLowerCase();
+  if (!raw) return "";
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const u = new URL(withScheme);
+    const host = u.hostname.replace(/^www\./, "");
+    const path = (u.pathname || "/").replace(/\/+$/, "") || "";
+    return `${host}${path}`;
+  } catch {
+    return raw.replace(/^www\./, "").replace(/\/+$/, "");
+  }
+}
+
 export interface WorkspaceSetupConfig {
   id: string;
   companyName: string;
@@ -130,6 +145,8 @@ interface WorkspaceStore {
   workspace: WorkspaceSnapshot | null;
   workspaceSetups: WorkspaceSetupConfig[];
   activeWorkspaceId: string | null;
+  /** True after the first GET /workspace attempt (success or failure). Used so initial fetch does not flip global `loading`. */
+  workspaceHydrated: boolean;
   loading: boolean;
   error: string | null;
   selectedAiModel: string;
@@ -171,8 +188,8 @@ interface WorkspaceStore {
   schedule: (contentId: string, scheduledAt: string) => Promise<void>;
   publish: (contentIds: string[]) => Promise<{ published: number; warnings: string[] }>;
   runCron: () => Promise<{ published: number; warnings: string[] }>;
-  connectLinkedin: () => Promise<boolean>;
-  connectMeta: () => Promise<boolean>;
+  connectLinkedin: (target?: "_self" | "_blank") => Promise<boolean>;
+  connectMeta: (target?: "_self" | "_blank") => Promise<boolean>;
   saveProfile: (patch: Partial<UserProfile>) => Promise<void>;
   savePreferences: (patch: Partial<PostingPreferences>) => Promise<void>;
   setupWorkspace: (payload: {
@@ -192,6 +209,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   workspace: null,
   workspaceSetups: [],
   activeWorkspaceId: null,
+  workspaceHydrated: false,
   loading: false,
   error: null,
   selectedAiModel: loadSelectedAiModel(),
@@ -224,7 +242,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     const alreadyActive =
       get().activeWorkspaceId === workspaceId &&
       current?.companyName.trim().toLowerCase() === setup.companyName.trim().toLowerCase() &&
-      current?.companyWebsite.trim().toLowerCase() === setup.website.trim().toLowerCase() &&
+      normalizeWebsiteKey(current?.companyWebsite ?? "") === normalizeWebsiteKey(setup.website) &&
       current?.workspaceScenario === setup.scenario;
     if (alreadyActive) {
       return;
@@ -232,16 +250,19 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     writeStoredWorkspaceSetups(get().workspaceSetups, setup.id);
     set({ activeWorkspaceId: setup.id, loading: true, error: null });
     try {
-      await apiSetupWorkspace({
-        companyName: setup.companyName,
-        website: setup.website,
-        scenario: setup.scenario,
-        primaryRegion: setup.primaryRegion,
-        workspaceOwnerName: setup.workspaceOwnerName,
-        workspaceOwnerEmail: setup.workspaceOwnerEmail,
-        aiModel: normalizeStoredAiModel(setup.aiModel),
-        competitors: setup.competitors,
-      });
+      await apiSetupWorkspace(
+        {
+          companyName: setup.companyName,
+          website: setup.website,
+          scenario: setup.scenario,
+          primaryRegion: setup.primaryRegion,
+          workspaceOwnerName: setup.workspaceOwnerName,
+          workspaceOwnerEmail: setup.workspaceOwnerEmail,
+          aiModel: normalizeStoredAiModel(setup.aiModel),
+          competitors: setup.competitors,
+        },
+        { skipGlobalLoading: true },
+      );
       get().setSelectedAiModel(setup.aiModel);
       await get().refreshWorkspace({ soft: true });
     } catch (e) {
@@ -290,11 +311,12 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     }
     try {
       const workspace = await apiGetWorkspace();
-      set({ workspace, loading: false, error: null });
+      set({ workspace, loading: false, error: null, workspaceHydrated: true });
     } catch (e) {
       set({
         error: e instanceof Error ? e.message : "Unable to reach workspace API",
         loading: false,
+        workspaceHydrated: true,
       });
     }
   },
@@ -445,13 +467,37 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
       };
     }
   },
-  connectLinkedin: async () => {
-    await apiConnectLinkedin();
+  connectLinkedin: async (target = "_self") => {
+    const res = await apiConnectLinkedin();
+    const authUrl = typeof res.auth_url === "string" ? res.auth_url : "";
+    if (authUrl && typeof window !== "undefined") {
+      if (target === "_blank") {
+        const popup = window.open(authUrl, "_blank", "noopener,noreferrer");
+        if (!popup) {
+          window.location.assign(authUrl);
+        }
+      } else {
+        window.location.assign(authUrl);
+      }
+      return true;
+    }
     await get().refreshWorkspace({ soft: true });
     return get().workspace?.integrations.linkedin.connected ?? false;
   },
-  connectMeta: async () => {
-    await apiConnectMeta();
+  connectMeta: async (target = "_self") => {
+    const res = await apiConnectMeta();
+    const authUrl = typeof res.auth_url === "string" ? res.auth_url : "";
+    if (authUrl && typeof window !== "undefined") {
+      if (target === "_blank") {
+        const popup = window.open(authUrl, "_blank", "noopener,noreferrer");
+        if (!popup) {
+          window.location.assign(authUrl);
+        }
+      } else {
+        window.location.assign(authUrl);
+      }
+      return true;
+    }
     await get().refreshWorkspace({ soft: true });
     return get().workspace?.integrations.meta.connected ?? false;
   },
@@ -495,3 +541,12 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
 }));
 
 export const useMarketingStore = useWorkspaceStore;
+
+/** Full-page skeleton: first load in flight, or blocking refresh with no snapshot yet. */
+export function selectWorkspaceShellPending(s: {
+  workspace: WorkspaceSnapshot | null;
+  workspaceHydrated: boolean;
+  loading: boolean;
+}): boolean {
+  return !s.workspace && (!s.workspaceHydrated || s.loading);
+}

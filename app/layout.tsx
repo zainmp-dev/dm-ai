@@ -17,9 +17,8 @@ const geistMono = Geist_Mono({
 });
 
 const siteUrl =
-  process.env.VERCEL_URL != null
-    ? `https://${process.env.VERCEL_URL}`
-    : "http://localhost:3000";
+  process.env.NEXT_PUBLIC_SITE_URL ||
+  (process.env.VERCEL_URL != null ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
 export const metadata: Metadata = {
   metadataBase: new URL(siteUrl),
@@ -59,7 +58,7 @@ export default function RootLayout({
 }: Readonly<{
   children: ReactNode;
 }>) {
-  const themeInitScript = `(function(){try{var t=localStorage.getItem("flow-theme");if(t==="dark")document.documentElement.classList.add("dark");else if(t==="light")document.documentElement.classList.remove("dark");else if(window.matchMedia("(prefers-color-scheme: dark)").matches)document.documentElement.classList.add("dark");else document.documentElement.classList.remove("dark");}catch(e){}})();`;
+  const themeInitScript = `(function(){try{var t=localStorage.getItem("flow-theme");if(t==="dark")document.documentElement.classList.add("dark");else document.documentElement.classList.remove("dark");}catch(e){document.documentElement.classList.remove("dark");}})();`;
 
   return (
     <html

@@ -22,7 +22,7 @@ import { NotificationEntry } from "@/components/notification-entry";
 import type { NotificationKind } from "@/lib/notification-routes";
 import { resolveNotificationLink } from "@/lib/notification-routes";
 import type { ActivityItem } from "@/lib/types";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
 
 const PAGE_SIZE = 10;
@@ -65,7 +65,7 @@ function filterActivities(
 
 export default function NotificationsPage() {
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const pending = workspace ? workspace.content.filter((item) => item.status === "PENDING") : [];
   const pendingCount = pending.length;
 
@@ -122,7 +122,7 @@ export default function NotificationsPage() {
     setPage(1);
   }
 
-  if (!workspace && loading) {
+  if (shellPending) {
     return <Skeleton className="h-96 w-full min-w-0 rounded-2xl" />;
   }
 

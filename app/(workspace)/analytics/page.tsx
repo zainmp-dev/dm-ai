@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 
 type AnalyticsResult = {
   performance_summary: string;
@@ -21,7 +21,7 @@ type AnalyticsResult = {
 
 export default function AnalyticsPage() {
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const selectedAiModel = useWorkspaceStore((s) => s.selectedAiModel);
   const { push } = useToast();
   const [content, setContent] = useState("");
@@ -31,7 +31,7 @@ export default function AnalyticsPage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState<AnalyticsResult | null>(null);
 
-  if (!workspace && loading) {
+  if (shellPending) {
     return <Skeleton className="h-[520px] w-full rounded-2xl" />;
   }
 

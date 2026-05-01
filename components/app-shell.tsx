@@ -18,7 +18,7 @@ import {
   Workflow,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -118,7 +118,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
   const selectedAiModel = useWorkspaceStore((s) => s.selectedAiModel);
   const setSelectedAiModel = useWorkspaceStore((s) => s.setSelectedAiModel);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const error = useWorkspaceStore((s) => s.error);
   const refreshWorkspace = useWorkspaceStore((s) => s.refreshWorkspace);
 
@@ -140,12 +140,15 @@ export function AppShell({ children }: { children: ReactNode }) {
       .toUpperCase() ?? "U";
   const setupRequired = visibleWorkspace ? !visibleWorkspace.workspaceConfigured : true;
   const showSetupOnly = setupRequired && pathname === "/workspace-setup";
+  /** OAuth returns to Settings; Pipeline is used before setup is "complete" — do not trap those behind workspace-setup. */
+  const setupRedirectExempt =
+    pathname === "/settings" || pathname === "/pipeline" || pathname === "/publishing";
 
   useEffect(() => {
-    if (setupRequired && pathname !== "/workspace-setup") {
+    if (setupRequired && pathname !== "/workspace-setup" && !setupRedirectExempt) {
       router.replace("/workspace-setup");
     }
-  }, [pathname, router, setupRequired]);
+  }, [pathname, router, setupRequired, setupRedirectExempt]);
 
   return (
     <div className="flex h-[100dvh] min-h-0 overflow-hidden bg-[#f4f6f9] dark:bg-zinc-950">
@@ -382,14 +385,14 @@ export function AppShell({ children }: { children: ReactNode }) {
                       variant="ghost"
                       className="h-9 gap-2 rounded-full border border-transparent px-1.5 pr-2.5 transition-[background-color,border-color] duration-200 hover:border-zinc-200/90 hover:bg-zinc-900/[0.03] dark:hover:border-zinc-700 dark:hover:bg-white/[0.05]"
                     >
-                      {loading && !profile ? (
+                      {shellPending && !profile ? (
                         <Skeleton className="size-8 rounded-full" />
                       ) : (
                         <span className="flex size-8 items-center justify-center rounded-full bg-gradient-to-br from-zinc-800 to-zinc-950 text-[11px] font-semibold text-white shadow-sm ring-2 ring-white dark:from-zinc-200 dark:to-zinc-400 dark:text-zinc-900 dark:ring-zinc-800">
                           {initials}
                         </span>
                       )}
-                      {!loading && profile && (
+                      {!shellPending && profile && (
                         <span className="hidden max-w-[11rem] text-left text-sm lg:block">
                           <span className="block truncate font-medium leading-tight text-zinc-900 dark:text-zinc-50">{profile.name}</span>
                           <span className="mt-0.5 block truncate text-[11px] leading-tight text-zinc-500 dark:text-zinc-400">

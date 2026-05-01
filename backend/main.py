@@ -44,6 +44,8 @@ from database import Content, create_many_content, get_all_content, get_content,
 from emailer import content_action_email, safe_send_email
 from publisher import publish_post
 from scheduler import scheduler_loop
+from routes.social_routes import router as social_router
+from services.oauth_service import linkedin_connect_url, meta_connect_url
 
 
 logging.basicConfig(level=logging.INFO)
@@ -57,6 +59,11 @@ def _http_for_agent_error(exc: AgentError) -> tuple[int, str]:
     if '"code":402' in low or " 402" in low or "payment required" in low or "more credits" in low:
         return 402, (msg[:650] + "…") if len(msg) > 650 else msg
     return 502, msg[:800] + "…" if len(msg) > 800 else msg
+
+
+def _request_origin(request: Request) -> str:
+    url = request.url
+    return f"{url.scheme}://{url.netloc}"
 
 
 class GenerateRequest(BaseModel):
@@ -861,7 +868,8 @@ def _extension_for_mime(mime: str) -> str:
 
 
 def _local_public_media_path(workspace_id: str, file_name: str) -> str:
-    return f"/api/backend/{MEDIA_PATH_SEG}/{workspace_id}/{file_name}"
+    prefix = "/" + settings.public_api_prefix.strip().strip("/")
+    return f"{prefix}/{MEDIA_PATH_SEG}/{workspace_id}/{file_name}"
 
 
 def _local_upload_api_response(media_url: str, media_type: str) -> dict[str, Any]:
@@ -880,16 +888,18 @@ def _validate_media_library_external_url(url: str, *, workspace_id: str | None =
         raise HTTPException(status_code=400, detail="media_url is required")
     if u.startswith("http://"):
         u = "https://" + u[7:]
-    if u.startswith("/api/backend/media-assets/"):
-        if ".." in u or u.count("/api/backend/media-assets/") != 1:
+    prefix = "/" + settings.public_api_prefix.strip().strip("/")
+    media_prefix = f"{prefix}/media-assets/"
+    if u.startswith(media_prefix):
+        if ".." in u or u.count(media_prefix) != 1:
             raise HTTPException(status_code=400, detail="Invalid media URL")
         u = u.split()[0]
-        rest = u.removeprefix("/api/backend/media-assets/").lstrip("/")
+        rest = u.removeprefix(media_prefix).lstrip("/")
         parts = [p for p in rest.split("/") if p]
         if len(parts) != 2:
             raise HTTPException(
                 status_code=400,
-                detail="App media URL must include the file name, e.g. /api/backend/media-assets/usr-…/med-….jpg",
+                detail=f"App media URL must include the file name, e.g. {prefix}/media-assets/usr-.../med-....jpg",
             )
         ws, fname = parts[0], parts[1]
         if ".." in ws or "/" in ws or not fname or "/" in fname or ".." in fname:
@@ -907,7 +917,7 @@ def _validate_media_library_external_url(url: str, *, workspace_id: str | None =
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid media URL") from exc
     if parsed.scheme != "https":
-        raise HTTPException(status_code=400, detail="Only https URLs or /api/backend/media-assets/… links are allowed")
+        raise HTTPException(status_code=400, detail=f"Only https URLs or {prefix}/media-assets/... links are allowed")
     host = (parsed.netloc or "").lower().split(":")[0]
     if host != "res.cloudinary.com":
         raise HTTPException(
@@ -1541,6 +1551,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(social_router)
 
 
 @app.get("/")
@@ -2263,26 +2274,43 @@ def run_workspace_cron(db: Session = Depends(get_db), user: dict[str, Any] = Dep
 
 
 @app.post("/connect/linkedin")
-def connect_linkedin(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+def connect_linkedin(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     workspace_id = str(user["id"])
-    s = fresh_settings()
-    connected = bool(s.linkedin_access_token and s.linkedin_author_urn)
-    _set_integration(db, workspace_id, "linkedin", connected, "LinkedIn Workspace", s.linkedin_author_urn or "not-configured")
-    record_activity(db, workspace_id, "LinkedIn integration checked and saved.")
-    db.commit()
-    return {"integrations": workspace_snapshot(db, workspace_id, user)["integrations"]}
+    try:
+        auth_url = linkedin_connect_url(
+            db,
+            user_id=str(user["id"]),
+            workspace_id=workspace_id,
+            app_origin=_request_origin(request),
+        )
+        db.commit()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"auth_url": auth_url, "integrations": workspace_snapshot(db, workspace_id, user)["integrations"]}
 
 
 @app.post("/connect/meta")
-def connect_meta(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+def connect_meta(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     workspace_id = str(user["id"])
-    s = fresh_settings()
-    connected = bool(s.meta_page_access_token and (s.meta_page_id or s.meta_ig_business_account_id))
-    handle = s.meta_page_id or s.meta_ig_business_account_id or "not-configured"
-    _set_integration(db, workspace_id, "meta", connected, "Meta Workspace", handle)
-    record_activity(db, workspace_id, "Meta integration checked and saved.")
-    db.commit()
-    return {"integrations": workspace_snapshot(db, workspace_id, user)["integrations"]}
+    try:
+        auth_url = meta_connect_url(
+            db,
+            user_id=str(user["id"]),
+            workspace_id=workspace_id,
+            app_origin=_request_origin(request),
+        )
+        db.commit()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"auth_url": auth_url, "integrations": workspace_snapshot(db, workspace_id, user)["integrations"]}
 
 
 @app.get("/profile")

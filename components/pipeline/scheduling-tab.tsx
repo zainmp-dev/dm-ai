@@ -9,11 +9,11 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 
 export function SchedulingTab() {
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const schedule = useWorkspaceStore((s) => s.schedule);
   const { push } = useToast();
   const [view, setView] = useState<"month" | "week">("month");
@@ -51,7 +51,7 @@ export function SchedulingTab() {
     return list;
   }, [range]);
 
-  if (!workspace && loading) {
+  if (shellPending) {
     return <Skeleton className="h-[480px] w-full rounded-2xl" />;
   }
 

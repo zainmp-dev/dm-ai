@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 
 const ACTIVITY_FEED_PAGE_SIZE = 8;
 
@@ -62,7 +62,7 @@ function inferActivityStatus(text: string): { label: string; className: string }
 
 export default function DashboardPage() {
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const [activityQuery, setActivityQuery] = useState("");
   const [activityPage, setActivityPage] = useState(0);
 
@@ -94,7 +94,7 @@ export default function DashboardPage() {
     setActivityPage(0);
   }, [activityQuery]);
 
-  if (!workspace && loading) {
+  if (shellPending) {
     return (
       <div className="space-y-8">
         <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">

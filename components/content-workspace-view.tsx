@@ -31,7 +31,7 @@ import { apiErrorMessage, apiUploadMediaLocal, apiUploadMediaToCloudinary, sanit
 import { isWorkspaceLibraryMediaUrl, normalizeApiMediaType, shouldUseVideoElement } from "@/lib/media-detect";
 import { isPlatformConnected, platformLabel } from "@/lib/platform";
 import type { ContentItem, MediaType, PublishingPlatform } from "@/lib/types";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
 
 const APPROVAL_PLATFORM_OPTIONS = [
@@ -96,7 +96,7 @@ function LibraryThumb({
 
 export function ContentWorkspaceView() {
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const generateContent = useWorkspaceStore((s) => s.generateContent);
   const suggestMasterContent = useWorkspaceStore((s) => s.suggestMasterContent);
   const createContentItem = useWorkspaceStore((s) => s.createContentItem);
@@ -210,7 +210,7 @@ export function ContentWorkspaceView() {
     setMediaPickerOpen(true);
   };
 
-  if (!workspace && loading) {
+  if (shellPending) {
     return <Skeleton className="h-96 w-full rounded-2xl" />;
   }
 
@@ -772,8 +772,8 @@ export function ContentWorkspaceView() {
       <section className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200/60 pb-2">
           <div>
-            <h2 className="text-sm font-semibold text-zinc-900">Library</h2>
-            <p className="text-[11px] text-zinc-500">Uniform card height · {libraryPageSize} items per page</p>
+            <h2 className="text-base font-semibold text-zinc-900">Library</h2>
+            <p className="text-xs text-zinc-500">Clean cards with larger actions · {libraryPageSize} items per page</p>
           </div>
           <div className="flex items-center gap-2">
             <Label htmlFor="library-page-size" className="text-xs text-zinc-500">
@@ -810,7 +810,7 @@ export function ContentWorkspaceView() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-8 rounded-lg px-3 text-xs"
+                    className="h-10 rounded-xl px-4 text-sm font-medium"
                     disabled={effectiveLibraryPage <= 0}
                     onClick={() => setLibraryPage((p) => Math.max(0, p - 1))}
                   >
@@ -823,7 +823,7 @@ export function ContentWorkspaceView() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-8 rounded-lg px-3 text-xs"
+                    className="h-10 rounded-xl px-4 text-sm font-medium"
                     disabled={effectiveLibraryPage >= libraryTotalPages - 1}
                     onClick={() => setLibraryPage((p) => Math.min(libraryTotalPages - 1, p + 1))}
                   >
@@ -910,7 +910,7 @@ export function ContentWorkspaceView() {
                           type="button"
                           variant="default"
                           size="sm"
-                          className="h-8 rounded-lg text-xs"
+                          className="h-10 rounded-xl bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
                           onClick={() => setDetailItem(item)}
                         >
                           View full details
@@ -921,7 +921,7 @@ export function ContentWorkspaceView() {
                               type="button"
                               variant="outline"
                               size="sm"
-                              className="h-8 gap-1 rounded-lg text-xs"
+                              className="h-10 gap-1 rounded-xl border-zinc-300 px-4 text-sm font-medium hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
                               aria-label={`More actions: ${item.title}`}
                             >
                               More
@@ -978,7 +978,7 @@ export function ContentWorkspaceView() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-8 rounded-lg px-3 text-xs"
+                    className="h-10 rounded-xl px-4 text-sm font-medium"
                     disabled={effectiveLibraryPage <= 0}
                     onClick={() => setLibraryPage((p) => Math.max(0, p - 1))}
                   >
@@ -991,7 +991,7 @@ export function ContentWorkspaceView() {
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="h-8 rounded-lg px-3 text-xs"
+                    className="h-10 rounded-xl px-4 text-sm font-medium"
                     disabled={effectiveLibraryPage >= libraryTotalPages - 1}
                     onClick={() => setLibraryPage((p) => Math.min(libraryTotalPages - 1, p + 1))}
                   >

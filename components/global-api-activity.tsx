@@ -58,6 +58,7 @@ export function GlobalApiActivity() {
 
   const isAi = headlineKind === "ai";
   const isPublish = headlineKind === "publish";
+  const showBlockingOverlay = isAi || isPublish;
 
   const barTrack = cn(
     isAi && "bg-violet-100/90 dark:bg-violet-950/40",
@@ -121,54 +122,56 @@ export function GlobalApiActivity() {
         />
       </div>
 
-      <div className="fixed inset-0 top-1 z-0 flex items-center justify-center bg-zinc-950/[0.28] px-4 pt-1 dark:bg-black/50">
-        <div className={cardShell}>
-          <div className="flex flex-col items-center gap-6">
-            <LoadingMark kind={headlineKind} workspaceSearch={workspaceSearch} />
+      {showBlockingOverlay ? (
+        <div className="fixed inset-0 top-1 z-0 flex items-center justify-center bg-zinc-950/[0.28] px-4 pt-1 dark:bg-black/50">
+          <div className={cardShell}>
+            <div className="flex flex-col items-center gap-6">
+              <LoadingMark kind={headlineKind} workspaceSearch={workspaceSearch} />
 
-            <div className="w-full space-y-1.5 text-center">
-              <p className={titleClass}>{processTitle}</p>
-              <p className="text-[0.8rem] font-medium leading-relaxed text-zinc-500 dark:text-zinc-400">
-                {activeCount > 1
-                  ? `${activeCount} operations in progress`
-                  : workspaceSearch
-                    ? "Searching your workspace…"
-                    : `${headlineFor(headlineKind)} — stay on this page`}
-              </p>
-            </div>
+              <div className="w-full space-y-1.5 text-center">
+                <p className={titleClass}>{processTitle}</p>
+                <p className="text-[0.8rem] font-medium leading-relaxed text-zinc-500 dark:text-zinc-400">
+                  {activeCount > 1
+                    ? `${activeCount} operations in progress`
+                    : workspaceSearch
+                      ? "Searching your workspace…"
+                      : `${headlineFor(headlineKind)} — stay on this page`}
+                </p>
+              </div>
 
-            <div className="w-full space-y-2.5">
-              <div className="flex items-end justify-between gap-3">
-                <span className="text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-zinc-400 dark:text-zinc-500">
-                  Loading
-                </span>
-                <span className={pctClass}>
-                  {progress}
-                  <span
-                    className={cn(
-                      "ml-0.5 text-base font-bold tabular-nums",
-                      isAi && "text-violet-400/80 dark:text-violet-300/70",
-                      isPublish && "text-emerald-400/90 dark:text-emerald-400/80",
-                      !isAi && !isPublish && "text-zinc-400 dark:text-zinc-500",
-                    )}
-                  >
-                    %
+              <div className="w-full space-y-2.5">
+                <div className="flex items-end justify-between gap-3">
+                  <span className="text-[0.65rem] font-semibold uppercase tracking-[0.14em] text-zinc-400 dark:text-zinc-500">
+                    Loading
                   </span>
-                </span>
+                  <span className={pctClass}>
+                    {progress}
+                    <span
+                      className={cn(
+                        "ml-0.5 text-base font-bold tabular-nums",
+                        isAi && "text-violet-400/80 dark:text-violet-300/70",
+                        isPublish && "text-emerald-400/90 dark:text-emerald-400/80",
+                        !isAi && !isPublish && "text-zinc-400 dark:text-zinc-500",
+                      )}
+                    >
+                      %
+                    </span>
+                  </span>
+                </div>
+                <div className={cn("h-2 w-full overflow-hidden rounded-full", barTrack)}>
+                  <div
+                    className={cn("h-full rounded-full transition-[width] duration-200 ease-out", barFill)}
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+                <p className="text-center text-[0.7rem] tabular-nums text-zinc-400 dark:text-zinc-500">
+                  1–100 · estimated until complete
+                </p>
               </div>
-              <div className={cn("h-2 w-full overflow-hidden rounded-full", barTrack)}>
-                <div
-                  className={cn("h-full rounded-full transition-[width] duration-200 ease-out", barFill)}
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
-              <p className="text-center text-[0.7rem] tabular-nums text-zinc-400 dark:text-zinc-500">
-                1–100 · estimated until complete
-              </p>
             </div>
           </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }

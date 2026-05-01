@@ -10,8 +10,8 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "backend:dev": "python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --reload --reload-dir backend --reload-delay 2 --port 8011",
-    "backend:dev:stable": "python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8011 --http h11"
+    "backend:dev": "./.venv/bin/python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --reload --reload-dir backend --reload-delay 2 --port 8011",
+    "backend:dev:stable": "./.venv/bin/python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8011 --http h11"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",

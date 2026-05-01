@@ -17,7 +17,7 @@ import {
   apiUploadMediaToCloudinary,
 } from "@/lib/api";
 import type { MediaType } from "@/lib/types";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
 
 const MAX_MEDIA_UPLOAD_BYTES = 8 * 1024 * 1024;
@@ -41,7 +41,7 @@ function isVideoAsset(src: string) {
 
 export default function MediaPage() {
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const refreshWorkspace = useWorkspaceStore((s) => s.refreshWorkspace);
   const { push } = useToast();
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -157,7 +157,7 @@ export default function MediaPage() {
     }
   };
 
-  if (!workspace && loading) {
+  if (shellPending) {
     return <Skeleton className="h-[560px] w-full rounded-2xl" />;
   }
 

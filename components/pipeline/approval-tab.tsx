@@ -25,7 +25,7 @@ import {
   toDateTimeLocalInZone,
   zonedLocalToUtcIso,
 } from "@/lib/workspace-datetime";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
 
 const PLATFORM_OPTIONS: { id: PublishingPlatform; label: string; disabled?: boolean }[] = [
@@ -37,6 +37,13 @@ const PLATFORM_OPTIONS: { id: PublishingPlatform; label: string; disabled?: bool
 const ACTIVE_PLATFORM_OPTIONS = PLATFORM_OPTIONS.filter((opt) => !opt.disabled);
 
 const STATUS_FILTERS = ["ALL", "PENDING", "APPROVED", "REJECTED", "PUBLISHED"] as const;
+const STATUS_FILTER_LABELS: Record<(typeof STATUS_FILTERS)[number], string> = {
+  ALL: "All",
+  PENDING: "Pending",
+  APPROVED: "Approved",
+  REJECTED: "Rejected",
+  PUBLISHED: "Published",
+};
 const PAGE_SIZE_OPTIONS = [8, 12] as const;
 
 function QueueThumb({ url, mediaType }: { url: string; mediaType: MediaType }) {
@@ -86,7 +93,7 @@ function sortKeyMs(item: { scheduledAt: string | null; updatedAt?: string; creat
 
 export function ApprovalTab() {
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const approve = useWorkspaceStore((s) => s.approve);
   const reject = useWorkspaceStore((s) => s.reject);
   const schedule = useWorkspaceStore((s) => s.schedule);
@@ -94,7 +101,7 @@ export function ApprovalTab() {
   const updateContentItem = useWorkspaceStore((s) => s.updateContentItem);
   const refreshWorkspace = useWorkspaceStore((s) => s.refreshWorkspace);
   const { push } = useToast();
-  const [filter, setFilter] = useState<ContentStatus | "ALL">("PENDING");
+  const [filter, setFilter] = useState<ContentStatus | "ALL">("ALL");
   const [search, setSearch] = useState("");
   const deferredSearch = useDeferredValue(search);
   const [pageSize, setPageSize] = useState<number>(12);
@@ -219,7 +226,7 @@ export function ApprovalTab() {
     setSelectedPlatforms(checked ? ACTIVE_PLATFORM_OPTIONS.map((opt) => opt.id) : []);
   };
 
-  if (!workspace && loading) {
+  if (shellPending) {
     return <Skeleton className="h-96 w-full rounded-2xl" />;
   }
 
@@ -253,17 +260,25 @@ export function ApprovalTab() {
             </select>
           </div>
         </div>
-        <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-2">
           {STATUS_FILTERS.map((value) => (
-            <Button
-              key={value}
-              size="sm"
-              variant={filter === value ? "default" : "secondary"}
-              className="h-9 rounded-xl px-3 text-xs transition-all duration-200"
-              onClick={() => setFilter(value)}
-            >
-              {value}
-            </Button>
+              <Button
+                key={value}
+                size="sm"
+                variant={filter === value ? "default" : "secondary"}
+                className={cn(
+                  "h-10 rounded-xl px-4 text-sm font-medium transition-all duration-200",
+                  filter === value
+                    ? "bg-zinc-900 text-white shadow-sm hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                    : "border border-zinc-200 bg-zinc-100/80 text-zinc-700 hover:bg-zinc-200/70 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800",
+                )}
+                onClick={() => setFilter(value)}
+              >
+                {STATUS_FILTER_LABELS[value]}
+                <span className="ml-2 rounded-md bg-white/80 px-1.5 py-0.5 text-[11px] font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-100">
+                  {value === "ALL" ? content.length : content.filter((item) => item.status === value).length}
+                </span>
+              </Button>
           ))}
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -344,7 +359,7 @@ export function ApprovalTab() {
                   type="button"
                   size="sm"
                   variant="secondary"
-                  className="h-9 rounded-xl px-3"
+                  className="h-10 rounded-xl border border-zinc-200 bg-zinc-100 px-4 text-sm font-medium text-zinc-800 hover:bg-zinc-200 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
                   onClick={(e) => {
                     e.stopPropagation();
                     openViewDialog(item.id);
@@ -365,14 +380,14 @@ export function ApprovalTab() {
               Page {safePage} of {totalPages}
             </p>
             <div className="flex items-center gap-2">
-              <Button type="button" size="sm" variant="outline" className="h-9 rounded-xl px-3" disabled={safePage <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
+              <Button type="button" size="sm" variant="outline" className="h-10 rounded-xl px-4 text-sm" disabled={safePage <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>
                 Previous
               </Button>
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
-                className="h-9 rounded-xl px-3"
+                className="h-10 rounded-xl px-4 text-sm"
                 disabled={safePage >= totalPages}
                 onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
               >

@@ -35,7 +35,7 @@ function pickHeadline(counts: Counts): FlowApiLoadingKind {
 }
 
 let revealTimer: ReturnType<typeof setTimeout> | null = null;
-const REVEAL_MS = 130;
+const REVEAL_MS = 280;
 
 export const useApiLoadingStore = create<State>()((set, get) => ({
   inFlight: [],

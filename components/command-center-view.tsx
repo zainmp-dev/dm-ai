@@ -27,7 +27,7 @@ import { shouldUseVideoElement } from "@/lib/media-detect";
 import { primaryRegionLabel } from "@/lib/primary-region";
 import type { ContentItem, PublishingPlatform, WorkspaceSnapshot } from "@/lib/types";
 import { stashCompetitorView } from "@/lib/competitor-view-cache";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
 import { useElapsedSecondsWhileActive, useSimulatedAiProgress } from "@/hooks/use-simulated-ai-progress";
 
@@ -265,7 +265,7 @@ type CommandCenterViewProps = {
 
 export function CommandCenterView({ serverSyncing = false }: CommandCenterViewProps) {
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const generateStrategy = useWorkspaceStore((s) => s.generateStrategy);
   const generateContent = useWorkspaceStore((s) => s.generateContent);
   const approve = useWorkspaceStore((s) => s.approve);
@@ -413,8 +413,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
   const aiJobActive = strategyLoading || contentLoading || bootstrapLoading;
   const aiProgressPct = useSimulatedAiProgress(aiJobActive);
   const aiElapsedSec = useElapsedSecondsWhileActive(aiJobActive);
-  const workspaceLoading = loading;
-
   useEffect(() => {
     if (!aiOutputMissing || bootstrapStartedRef.current) {
       return;
@@ -434,7 +432,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     void runBootstrap();
   }, [aiOutputMissing, calendarDays, generateContent, push]);
 
-  if (!workspace && loading) {
+  if (shellPending) {
     return (
       <div className="grid gap-4 lg:grid-cols-3">
         <Skeleton className="h-[420px] rounded-2xl" />

@@ -8,14 +8,14 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { apiGetProfile, normalizeProfile } from "@/lib/api";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 
 export default function ProfilePage() {
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const saveProfile = useWorkspaceStore((s) => s.saveProfile);
   const { push } = useToast();
-  if (!workspace && loading) {
+  if (shellPending) {
     return <Skeleton className="h-80 w-full rounded-2xl" />;
   }
 

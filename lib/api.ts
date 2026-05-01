@@ -24,7 +24,7 @@ import type {
   WorkspaceSnapshot,
 } from "@/lib/types";
 
-const API_PREFIX = "/api/backend";
+const API_PREFIX = (process.env.NEXT_PUBLIC_API_PREFIX || "/api/backend").replace(/\/+$/, "");
 
 declare module "axios" {
   interface AxiosRequestConfig {
@@ -461,12 +461,12 @@ export async function apiAnalyzeContent(body: { content: string; likes: number; 
 }
 
 export async function apiConnectLinkedin() {
-  const { data } = await apiClient.post<{ integrations: Record<string, Record<string, unknown>> }>("/connect/linkedin");
+  const { data } = await apiClient.post<{ integrations: Record<string, Record<string, unknown>>; auth_url?: string }>("/connect/linkedin");
   return data;
 }
 
 export async function apiConnectMeta() {
-  const { data } = await apiClient.post<{ integrations: Record<string, Record<string, unknown>> }>("/connect/meta");
+  const { data } = await apiClient.post<{ integrations: Record<string, Record<string, unknown>>; auth_url?: string }>("/connect/meta");
   return data;
 }
 
@@ -494,17 +494,22 @@ export async function apiUpdatePreferences(patch: Partial<PostingPreferences>) {
   return data;
 }
 
-export async function apiSetupWorkspace(body: {
-  companyName: string;
-  website: string;
-  scenario: WorkspaceScenario;
-  primaryRegion?: string;
-  workspaceOwnerName: string;
-  workspaceOwnerEmail: string;
-  aiModel?: string;
-  competitors?: { name: string; website: string; focus: string }[];
-}) {
-  const { data } = await apiClient.post<Record<string, unknown>>("/workspace", {
+export async function apiSetupWorkspace(
+  body: {
+    companyName: string;
+    website: string;
+    scenario: WorkspaceScenario;
+    primaryRegion?: string;
+    workspaceOwnerName: string;
+    workspaceOwnerEmail: string;
+    aiModel?: string;
+    competitors?: { name: string; website: string; focus: string }[];
+  },
+  requestOptions?: { skipGlobalLoading?: boolean },
+) {
+  const { data } = await apiClient.post<Record<string, unknown>>(
+    "/workspace",
+    {
       company_name: body.companyName,
       website: body.website,
       scenario: body.scenario,
@@ -513,7 +518,9 @@ export async function apiSetupWorkspace(body: {
       workspace_owner_email: body.workspaceOwnerEmail,
       ai_model: body.aiModel,
       competitors: body.competitors,
-  });
+    },
+    requestOptions?.skipGlobalLoading ? { skipGlobalLoading: true } : undefined,
+  );
   const raw = data;
   return normalizeWorkspace(raw);
 }

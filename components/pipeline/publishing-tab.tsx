@@ -14,14 +14,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { platformLabel } from "@/lib/platform";
 import { useApiLoadingStore } from "@/lib/api-loading-store";
 import type { PublishingPlatform } from "@/lib/types";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 
 const LOG_PAGE_SIZE = 20;
 const READY_PREVIEW = 8;
 
 export function PublishingTab() {
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const publish = useWorkspaceStore((s) => s.publish);
   const runCron = useWorkspaceStore((s) => s.runCron);
   const refreshWorkspace = useWorkspaceStore((s) => s.refreshWorkspace);
@@ -81,7 +81,7 @@ export function PublishingTab() {
       (c.selectedPlatform === "linkedin" ? linkedinConnected : metaConnected),
   );
 
-  if (!workspace && loading) {
+  if (shellPending) {
     return <Skeleton className="h-96 w-full rounded-2xl" />;
   }
 

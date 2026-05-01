@@ -9,6 +9,8 @@ from config import settings
 from database import SessionLocal, get_due_posts, get_notification_state, increment_retry, update_notification_state, update_status
 from emailer import email_configured, safe_send_email, weekly_update_email
 from publisher import publish_post
+from services.posting_service import run_scheduled_posts
+from services.token_service import run_token_maintenance
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,32 @@ def publish_due_posts_once() -> None:
                 logger.warning("Post %s failed permanently: %s", retried.id, result.message)
             else:
                 logger.warning("Post %s publish retry %s/%s: %s", retried.id, retried.retry_count, settings.max_publish_retries, result.message)
+    finally:
+        db.close()
+
+
+def publish_due_social_posts_once() -> None:
+    if SessionLocal is None:
+        logger.error("Scheduler cannot run social posts without DATABASE_URL")
+        return
+    db = SessionLocal()
+    try:
+        run_scheduled_posts(db)
+    except Exception:
+        logger.exception("Scheduled social post run failed")
+    finally:
+        db.close()
+
+
+def refresh_expiring_social_tokens_once() -> None:
+    if SessionLocal is None:
+        logger.error("Scheduler cannot run token refresh without DATABASE_URL")
+        return
+    db = SessionLocal()
+    try:
+        run_token_maintenance(db)
+    except Exception:
+        logger.exception("Token maintenance cycle failed")
     finally:
         db.close()
 
@@ -79,6 +107,8 @@ async def scheduler_loop(stop_event: asyncio.Event) -> None:
     while not stop_event.is_set():
         try:
             await asyncio.to_thread(publish_due_posts_once)
+            await asyncio.to_thread(publish_due_social_posts_once)
+            await asyncio.to_thread(refresh_expiring_social_tokens_once)
             await asyncio.to_thread(send_weekly_agent_update_once)
         except Exception:
             logger.exception("Publishing scheduler cycle failed")

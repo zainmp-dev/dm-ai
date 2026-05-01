@@ -11,14 +11,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { readCompetitorView } from "@/lib/competitor-view-cache";
 import { primaryRegionLabel } from "@/lib/primary-region";
 import { effectiveContentTimeZone, formatInstantInZone } from "@/lib/workspace-datetime";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 
 export default function CompetitorResearchDetailPage() {
   const params = useParams();
   const rawId = params?.id;
   const id = typeof rawId === "string" ? decodeURIComponent(rawId) : Array.isArray(rawId) ? decodeURIComponent(rawId[0]) : "";
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const contentTimeZone = useMemo(
     () => effectiveContentTimeZone(workspace?.profile?.timezone, workspace?.primaryRegion),
     [workspace?.profile?.timezone, workspace?.primaryRegion],
@@ -57,7 +57,7 @@ export default function CompetitorResearchDetailPage() {
     };
   }, [id, workspace]);
 
-  if (!workspace && loading) {
+  if (shellPending) {
     return (
       <div className="w-full min-w-0 space-y-4">
         <Skeleton className="h-10 w-48 rounded-xl" />

@@ -73,28 +73,26 @@ class Settings:
     # Comma-separated OpenRouter model ids tried after the requested model and OPENROUTER_MODEL (quota/model errors only).
     openrouter_model_fallbacks: str = field(default_factory=lambda: _str_env("OPENROUTER_MODEL_FALLBACKS"))
 
-    # Primary: META_PAGE_ACCESS_TOKEN. Aliases for .env.example and common copy-paste from Meta tools.
-    meta_page_access_token: str = field(
-        default_factory=lambda: _str_env_first(
-            "META_PAGE_ACCESS_TOKEN",
-            "META_FACEBOOK_ACCESS_TOKEN",
-            "META_INSTAGRAM_ACCESS_TOKEN",
-        )
-    )
-    meta_page_id: str = field(default_factory=lambda: _str_env("META_PAGE_ID"))
-    meta_ig_business_account_id: str = field(default_factory=lambda: _str_env("META_IG_BUSINESS_ACCOUNT_ID"))
     meta_graph_api_version: str = field(
         default_factory=lambda: _str_env("META_GRAPH_API_VERSION", "v22.0") or "v22.0"
     )
 
-    linkedin_access_token: str = field(
-        default_factory=lambda: _str_env_first("LINKEDIN_ACCESS_TOKEN", "LINKEDIN_TOKEN")
-    )
+    linkedin_client_id: str = field(default_factory=lambda: _str_env("LINKEDIN_CLIENT_ID"))
+    linkedin_client_secret: str = field(default_factory=lambda: _str_env("LINKEDIN_CLIENT_SECRET"))
+    linkedin_redirect_uri: str = field(default_factory=lambda: _str_env("LINKEDIN_REDIRECT_URI"))
     linkedin_author_urn: str = field(default_factory=lambda: _str_env("LINKEDIN_AUTHOR_URN"))
     linkedin_api_version: str = field(
         default_factory=lambda: _str_env("LINKEDIN_API_VERSION", "202405") or "202405"
     )
 
+    # Support both META_* and FACEBOOK_* naming to avoid broken OAuth from env key mismatches.
+    meta_app_id: str = field(default_factory=lambda: _str_env_first("META_APP_ID", "FACEBOOK_APP_ID", "FB_APP_ID"))
+    meta_app_secret: str = field(
+        default_factory=lambda: _str_env_first("META_APP_SECRET", "FACEBOOK_APP_SECRET", "FB_APP_SECRET")
+    )
+    meta_redirect_uri: str = field(
+        default_factory=lambda: _str_env_first("META_REDIRECT_URI", "FACEBOOK_REDIRECT_URI", "FB_REDIRECT_URI")
+    )
     scheduler_interval_seconds: int = field(default_factory=lambda: _int_env("SCHEDULER_INTERVAL_SECONDS", 60))
     weekly_update_interval_days: int = field(default_factory=lambda: _int_env("WEEKLY_UPDATE_INTERVAL_DAYS", 7))
     weekly_study_niche: str = field(
@@ -116,9 +114,15 @@ class Settings:
 
     # On-disk user uploads (served at GET /media-assets/...; URLs stored as /api/backend/media-assets/...)
     media_storage_path: str = field(default_factory=lambda: _str_env("MEDIA_STORAGE_PATH"))
-    # Public origin of the Next.js app (no trailing slash). When set, local upload JSON includes
-    # media_url_absolute for curl/external clients, e.g. http://localhost:3000 or https://app.example.com
-    public_app_origin: str = field(default_factory=lambda: _str_env("FLOWPILOT_PUBLIC_ORIGIN"))
+    # Public origin of the Next.js app (no trailing slash). Used for OAuth callback URL fallback
+    # and for absolute media URLs in API responses.
+    public_app_origin: str = field(
+        default_factory=lambda: _str_env_first("FLOWPILOT_PUBLIC_ORIGIN", "NEXT_PUBLIC_SITE_URL", "PUBLIC_APP_ORIGIN")
+    )
+    oauth_state_secret: str = field(default_factory=lambda: _str_env("OAUTH_STATE_SECRET"))
+    token_encryption_keys: str = field(default_factory=lambda: _str_env("TOKEN_ENCRYPTION_KEYS"))
+    # Public API prefix used in returned app-relative URLs (default keeps current dev behavior).
+    public_api_prefix: str = field(default_factory=lambda: _str_env_first("FLOWPILOT_API_PREFIX", "PUBLIC_API_PREFIX") or "/api/backend")
 
 
 def fresh_settings() -> Settings:

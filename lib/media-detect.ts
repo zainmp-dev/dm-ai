@@ -9,7 +9,9 @@ export function isImageLikeUrl(url: string): boolean {
   if (!u) return false;
   const l = u.toLowerCase();
   if (l.startsWith("data:image/")) return true;
-  if (l.includes("/api/backend/media-assets/") && !/\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(l)) return true;
+  if (l.includes("/api/media-assets/") || l.includes("/api/backend/media-assets/")) {
+    if (!/\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(l)) return true;
+  }
   if (l.includes("res.cloudinary.com") && l.includes("/image/upload/")) return true;
   if (
     l.includes("picsum.photos") ||
@@ -31,7 +33,9 @@ export function isVideoSourceUrl(url: string): boolean {
   if (!u) return false;
   const l = u.toLowerCase();
   if (l.startsWith("data:video/")) return true;
-  if (l.includes("/api/backend/media-assets/") && /\.(mp4|webm|mov|m4v|avi)(\?|#|$)/i.test(l)) return true;
+  if (l.includes("/api/media-assets/") || l.includes("/api/backend/media-assets/")) {
+    if (/\.(mp4|webm|mov|m4v|avi)(\?|#|$)/i.test(l)) return true;
+  }
   if (l.includes("res.cloudinary.com") && l.includes("/video/upload/")) return true;
   if (l.includes("storage.googleapis.com") && l.includes("gtv-videos-bucket")) return true;
   if (/\.(mp4|webm|mov|m4v|m3u8|ogv)(\?|#|$)/i.test(l)) return true;
@@ -50,12 +54,13 @@ export function shouldUseVideoElement(url: string, mediaType: MediaType | undefi
   return false;
 }
 
-/** Workspace library URL: Cloudinary (legacy) or this app's local /api/backend/media-assets/... */
+/** Workspace library URL: Cloudinary (legacy) or this app's local /api(/backend)/media-assets/... */
 export function isWorkspaceLibraryMediaUrl(url: string): boolean {
   const u = url.trim();
   if (!u) return false;
   const l = u.toLowerCase();
   if (l.startsWith("https://res.cloudinary.com/") || l.startsWith("http://res.cloudinary.com/")) return true;
+  if (u.includes("/api/media-assets/") || u.startsWith("/api/media-assets/")) return true;
   if (u.includes("/api/backend/media-assets/") || u.startsWith("/api/backend/media-assets/")) return true;
   return false;
 }

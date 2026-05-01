@@ -1,8 +1,7 @@
 "use client";
 
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { useCallback, type ReactNode } from "react";
 import { Calendar, Command, FileText, Rocket } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ContentWorkspaceView } from "@/components/content-workspace-view";
@@ -24,28 +23,11 @@ export function PipelineContent() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const workflowData = useWorkflowGuideData();
-  const refreshWorkspace = useWorkspaceStore((s) => s.refreshWorkspace);
-  const [commandSyncing, setCommandSyncing] = useState(false);
   const raw = searchParams.get("tab");
   const normalizedTab = raw === "approval" ? "content" : raw;
   const activeTab = TABS.some((t) => t.id === normalizedTab) ? (normalizedTab as (typeof TABS)[number]["id"]) : "command";
   const contentViewRaw = searchParams.get("contentView");
   const activeContentView = contentViewRaw === "approval" ? "approval" : "library";
-
-  useEffect(() => {
-    if (activeTab !== "command") return;
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (!cancelled) setCommandSyncing(true);
-    });
-    void refreshWorkspace({ soft: true }).finally(() => {
-      if (!cancelled) setCommandSyncing(false);
-    });
-    return () => {
-      cancelled = true;
-      queueMicrotask(() => setCommandSyncing(false));
-    };
-  }, [activeTab, refreshWorkspace]);
 
   const setTab = useCallback(
     (id: (typeof TABS)[number]["id"]) => {
@@ -73,7 +55,7 @@ export function PipelineContent() {
 
   let panel: ReactNode;
   if (activeTab === "command") {
-    panel = <CommandCenterView serverSyncing={commandSyncing} />;
+    panel = <CommandCenterView />;
   } else if (activeTab === "content") {
     panel = (
       <div className="space-y-4">
@@ -117,7 +99,7 @@ export function PipelineContent() {
   } else if (activeTab === "publishing") {
     panel = <PublishingTab />;
   } else {
-    panel = <CommandCenterView serverSyncing={commandSyncing} />;
+    panel = <CommandCenterView />;
   }
 
   return (

@@ -10,8 +10,14 @@ const SKIP_IN_HEADERS = new Set([
   "upgrade",
 ]);
 
-function getBackendBase(): string {
-  return (process.env.BACKEND_PROXY_URL ?? "http://127.0.0.1:8011").replace(/\/$/, "");
+function getBackendBase(request: NextRequest): string {
+  const explicit = (process.env.BACKEND_PROXY_URL || "").trim();
+  if (explicit) return explicit.replace(/\/$/, "");
+  const req = request.nextUrl;
+  const isLocalHost = ["localhost", "127.0.0.1", "::1"].includes(req.hostname);
+  if (isLocalHost) return "http://127.0.0.1:8011";
+  // Production fallback: same domain API gateway path.
+  return `${req.protocol}//${req.host}/api`;
 }
 
 /**
@@ -32,7 +38,13 @@ function proxyTargetWouldHitNextItself(request: NextRequest, backendBase: string
   }
   const backendPort = backend.port || (backend.protocol === "https:" ? "443" : "80");
   const reqPort = req.port || (req.protocol === "https:" ? "443" : "80");
-  return backendPort === reqPort;
+  if (backendPort !== reqPort) {
+    return false;
+  }
+  const backendPath = backend.pathname.replace(/\/+$/, "");
+  // Allow same host/port when a dedicated API base path is configured (e.g. https://domain.tld/api).
+  // This is common in AWS reverse-proxy setups and does not imply a loop by itself.
+  return backendPath === "" || backendPath === "/";
 }
 
 /**
@@ -62,15 +74,15 @@ export function buildForwardTarget(backendBase: string, segments: string[], sear
 }
 
 export async function proxyToFastapi(request: NextRequest, pathSegments: string[] | undefined, apiPrefix: string): Promise<NextResponse> {
-  const backendBase = getBackendBase();
+  const backendBase = getBackendBase(request);
 
   if (proxyTargetWouldHitNextItself(request, backendBase)) {
     return NextResponse.json(
       {
         detail:
           "BACKEND_PROXY_URL is set to this Next.js server (same host/port as the page). " +
-          "The proxy would POST to a page route and get 405. " +
-          "Remove BACKEND_PROXY_URL from `.env.local` or set it to the FastAPI URL (e.g. http://127.0.0.1:8011) and run `npm run backend:dev`.",
+          "Use a different backend origin/port, or include an API base path (for example `https://your-domain.com/api`) " +
+          "so requests are routed to FastAPI instead of Next.js pages.",
       },
       { status: 502 },
     );

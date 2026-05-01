@@ -1,8 +1,21 @@
 "use client";
 
 import { Suspense, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
-import { Building2, Globe2, KeyRound, Link2, LayoutGrid, SlidersHorizontal, Sparkles } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import {
+  Building2,
+  CheckCircle2,
+  ExternalLink,
+  Facebook,
+  Globe2,
+  Instagram,
+  KeyRound,
+  LayoutGrid,
+  Link2,
+  Linkedin,
+  SlidersHorizontal,
+  Sparkles,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,7 +25,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { labelForAiModel } from "@/lib/ai-models";
 import { platformLabel } from "@/lib/platform";
 import { primaryRegionLabel } from "@/lib/primary-region";
-import { useWorkspaceStore } from "@/lib/workspace-store";
+import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
 
@@ -30,12 +43,13 @@ function isSectionId(value: string | null): value is (typeof SECTIONS)[number]["
 }
 
 function SettingsContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const workspace = useWorkspaceStore((s) => s.workspace);
   const workspaceSetups = useWorkspaceStore((s) => s.workspaceSetups);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const selectedAiModel = useWorkspaceStore((s) => s.selectedAiModel);
-  const loading = useWorkspaceStore((s) => s.loading);
+  const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const connectLinkedin = useWorkspaceStore((s) => s.connectLinkedin);
   const connectMeta = useWorkspaceStore((s) => s.connectMeta);
   const savePreferences = useWorkspaceStore((s) => s.savePreferences);
@@ -49,7 +63,65 @@ function SettingsContent() {
     }
   }, [searchParams]);
 
-  if (!workspace && loading) {
+  useEffect(() => {
+    const toast = searchParams.get("toast");
+    if (!toast) return;
+
+    const fullQs = searchParams.toString();
+    const dedupeKey = `fp_oauth_toast_ts:${fullQs}`;
+    const now = Date.now();
+    let showToast = true;
+    if (typeof window !== "undefined") {
+      const prev = sessionStorage.getItem(dedupeKey);
+      if (prev) {
+        const t = Number(prev);
+        if (!Number.isNaN(t) && now - t < 5000) {
+          showToast = false;
+        }
+      }
+      sessionStorage.setItem(dedupeKey, String(now));
+    }
+
+    const detailRaw = searchParams.get("toast_detail");
+    let detail = "";
+    if (detailRaw) {
+      try {
+        detail = decodeURIComponent(detailRaw);
+      } catch {
+        detail = detailRaw;
+      }
+    }
+
+    const oauthToastMs = 10_000;
+    if (showToast) {
+      if (toast === "linkedin_connected") {
+        push("LinkedIn connected. You can publish to LinkedIn from the pipeline.", { durationMs: oauthToastMs });
+      } else if (toast === "linkedin_failed") {
+        push(detail ? `LinkedIn connection failed: ${detail}` : "LinkedIn connection failed. Try Connect again.", {
+          durationMs: oauthToastMs,
+        });
+      } else if (toast === "meta_connected") {
+        push("Meta connected. Facebook and Instagram publishing is ready.", { durationMs: oauthToastMs });
+      } else if (toast === "meta_failed") {
+        push(detail ? `Meta connection failed: ${detail}` : "Meta connection failed. Try Connect again.", {
+          durationMs: oauthToastMs,
+        });
+      }
+    }
+
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("toast");
+    next.delete("toast_detail");
+    const rest = next.toString();
+    const target = rest ? `/settings?${rest}` : "/settings";
+    const delayMs = showToast ? 480 : 0;
+    const t = window.setTimeout(() => {
+      router.replace(target);
+    }, delayMs);
+    return () => window.clearTimeout(t);
+  }, [searchParams, router, push]);
+
+  if (shellPending) {
     return <Skeleton className="h-[min(640px,85dvh)] w-full rounded-2xl" />;
   }
 
@@ -180,65 +252,210 @@ function SettingsContent() {
         )}
 
         {active === "integrations" && (
-          <Card className="rounded-2xl border-zinc-200 shadow-sm">
-            <CardHeader>
-              <CardTitle className="text-base">Integrations</CardTitle>
-              <CardDescription>Connect the accounts you publish to. Tokens are configured in the backend environment.</CardDescription>
+          <Card className="overflow-hidden rounded-2xl border border-zinc-200/90 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950/50">
+            <CardHeader className="border-b border-zinc-100 bg-gradient-to-r from-zinc-50/90 to-white px-6 py-5 dark:border-zinc-800 dark:from-zinc-900/40 dark:to-zinc-950/80">
+              <CardTitle className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">Integrations</CardTitle>
+              <CardDescription className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
+                Connect the accounts this workspace publishes to. You&apos;ll sign in on each network and approve access.
+              </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex flex-col gap-4 rounded-2xl border border-zinc-100 bg-zinc-50/50 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800 dark:bg-zinc-900/30">
-                <div>
-                  <p className="font-medium text-zinc-900 dark:text-zinc-100">LinkedIn</p>
-                  <p className="text-sm text-zinc-500">{linkedin.connected ? "Connected" : "Not connected"}</p>
-                  {linkedin.connected && (
-                    <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
-                      {linkedin.accountName} · @{linkedin.accountHandle}
-                    </p>
-                  )}
+            <CardContent className="space-y-6 p-6">
+              <div className="rounded-2xl border border-zinc-200/80 bg-zinc-50/60 px-5 py-4 dark:border-zinc-700/80 dark:bg-zinc-900/35">
+                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Before you connect</p>
+                <ul className="mt-3 space-y-2.5 text-sm leading-relaxed text-zinc-700 dark:text-zinc-300">
+                  <li className="flex gap-2.5">
+                    <span className="mt-2 size-1 shrink-0 rounded-full bg-blue-500" aria-hidden />
+                    <span>
+                      <span className="font-medium text-zinc-900 dark:text-zinc-100">LinkedIn</span> — use the profile or company presence
+                      that should own what you publish.
+                    </span>
+                  </li>
+                  <li className="flex gap-2.5">
+                    <span className="mt-2 size-1 shrink-0 rounded-full bg-indigo-500" aria-hidden />
+                    <span>
+                      <span className="font-medium text-zinc-900 dark:text-zinc-100">Meta (Facebook &amp; Instagram)</span> — you need a{" "}
+                      <strong className="text-zinc-900 dark:text-zinc-50">Facebook Business Page</strong> (not a personal profile on its own).
+                      For Instagram, connect an <strong className="text-zinc-900 dark:text-zinc-50">Instagram Business</strong> profile linked to
+                      that Page in Meta Business Suite, under your organization&apos;s <strong className="text-zinc-900 dark:text-zinc-50">Meta Business</strong>{" "}
+                      account.
+                    </span>
+                  </li>
+                </ul>
+                <p className="mt-3 border-t border-zinc-200/80 pt-3 text-xs leading-relaxed text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+                  When you come back to FlowPilot, a short confirmation appears in the corner of the screen so you know it worked—or if anything
+                  still needs attention.
+                </p>
+                <div className="mt-4 border-t border-zinc-200/80 pt-4 dark:border-zinc-700">
+                  <p className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Setup (opens in a new tab)</p>
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
+                    <a
+                      href="https://www.linkedin.com/developers/apps"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sm font-medium text-blue-600 underline-offset-2 hover:text-blue-700 hover:underline dark:text-blue-400 dark:hover:text-blue-300"
+                      aria-label="LinkedIn Developer Portal, opens in a new tab"
+                    >
+                      LinkedIn Developer Portal
+                      <ExternalLink className="size-3.5 shrink-0 opacity-70" aria-hidden />
+                    </a>
+                    <span className="hidden text-zinc-300 sm:inline dark:text-zinc-600" aria-hidden>
+                      ·
+                    </span>
+                    <a
+                      href="https://developers.facebook.com/apps/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 underline-offset-2 hover:text-indigo-700 hover:underline dark:text-indigo-400 dark:hover:text-indigo-300"
+                      aria-label="Meta for Developers, opens in a new tab"
+                    >
+                      Meta for Developers
+                      <ExternalLink className="size-3.5 shrink-0 opacity-70" aria-hidden />
+                    </a>
+                    <span className="hidden text-zinc-300 sm:inline dark:text-zinc-600" aria-hidden>
+                      ·
+                    </span>
+                    <a
+                      href="https://business.facebook.com/"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 underline-offset-2 hover:text-indigo-700 hover:underline dark:text-indigo-400 dark:hover:text-indigo-300"
+                      aria-label="Meta Business Suite, opens in a new tab"
+                    >
+                      Meta Business Suite
+                      <ExternalLink className="size-3.5 shrink-0 opacity-70" aria-hidden />
+                    </a>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                className={cn(
+                  "flex flex-col gap-5 rounded-2xl border p-5 transition-colors sm:flex-row sm:items-center sm:justify-between",
+                  linkedin.connected
+                    ? "border-emerald-200/90 bg-emerald-50/40 dark:border-emerald-800/60 dark:bg-emerald-950/25"
+                    : "border-zinc-200/90 bg-white dark:border-zinc-800 dark:bg-zinc-900/20",
+                )}
+              >
+                <div className="flex min-w-0 flex-1 gap-4">
+                  <div
+                    className={cn(
+                      "flex size-12 shrink-0 items-center justify-center rounded-xl shadow-sm",
+                      linkedin.connected
+                        ? "bg-emerald-100 text-[#0A66C2] ring-1 ring-emerald-200/80 dark:bg-emerald-900/40 dark:text-sky-300 dark:ring-emerald-800/60"
+                        : "bg-blue-50 text-[#0A66C2] ring-1 ring-blue-100 dark:bg-blue-950/50 dark:text-blue-300 dark:ring-blue-900/40",
+                    )}
+                  >
+                    <Linkedin className="size-6" aria-hidden />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-semibold text-zinc-900 dark:text-zinc-50">LinkedIn</p>
+                      {linkedin.connected ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-900/70 dark:text-emerald-200">
+                          <CheckCircle2 className="size-3.5" aria-hidden />
+                          Connected
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                          Not connected
+                        </span>
+                      )}
+                    </div>
+                    {linkedin.connected ? (
+                      <p className="mt-2 text-sm text-emerald-900/90 dark:text-emerald-100/90">
+                        {linkedin.accountName} · @{linkedin.accountHandle}
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">Publish approved posts to your company or member profile.</p>
+                    )}
+                  </div>
                 </div>
                 <Button
                   type="button"
-                  variant={linkedin.connected ? "secondary" : "default"}
-                  className="rounded-xl sm:w-40"
+                  variant="outline"
+                  className={cn(
+                    "h-10 shrink-0 rounded-xl px-5 font-medium sm:min-w-[9.5rem]",
+                    linkedin.connected
+                      ? "border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-100 dark:hover:bg-emerald-900/30"
+                      : "border-blue-200 bg-blue-600 text-white shadow-sm hover:bg-blue-700 dark:border-blue-700 dark:bg-blue-600 dark:text-white dark:hover:bg-blue-500",
+                  )}
                   onClick={() =>
-                    void connectLinkedin()
+                    void connectLinkedin("_self")
                       .then((ok) =>
-                        push(
-                          ok
-                            ? "LinkedIn is connected and ready to publish."
-                            : "LinkedIn is not connected. In backend/.env, set LINKEDIN_ACCESS_TOKEN and LINKEDIN_AUTHOR_URN, then click Connect again (restart not required).",
-                        ),
+                        push(ok ? "Redirecting to LinkedIn…" : "LinkedIn connect is unavailable right now.", { durationMs: 6000 }),
                       )
-                      .catch((e: unknown) => push(e instanceof Error ? e.message : "Could not reach the server."))
+                      .catch((e: unknown) =>
+                        push(e instanceof Error ? e.message : "Could not reach the server.", { durationMs: 9000 }),
+                      )
                   }
                 >
                   {linkedin.connected ? "Reconnect" : "Connect"}
                 </Button>
               </div>
-              <div className="flex flex-col gap-4 rounded-2xl border border-zinc-100 bg-zinc-50/50 p-4 sm:flex-row sm:items-center sm:justify-between dark:border-zinc-800 dark:bg-zinc-900/30">
-                <div>
-                  <p className="font-medium text-zinc-900 dark:text-zinc-100">Meta (Facebook + Instagram)</p>
-                  <p className="text-sm text-zinc-500">{meta.connected ? "Connected" : "Not connected"}</p>
-                  {meta.connected && (
-                    <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
-                      {meta.accountName} · @{meta.accountHandle}
-                    </p>
-                  )}
+
+              <div
+                className={cn(
+                  "flex flex-col gap-5 rounded-2xl border p-5 transition-colors sm:flex-row sm:items-center sm:justify-between",
+                  meta.connected
+                    ? "border-emerald-200/90 bg-emerald-50/40 dark:border-emerald-800/60 dark:bg-emerald-950/25"
+                    : "border-zinc-200/90 bg-white dark:border-zinc-800 dark:bg-zinc-900/20",
+                )}
+              >
+                <div className="flex min-w-0 flex-1 gap-4">
+                  <div
+                    className={cn(
+                      "flex size-12 shrink-0 flex-row items-center justify-center gap-0.5 rounded-xl shadow-sm",
+                      meta.connected
+                        ? "bg-emerald-100 text-blue-700 ring-1 ring-emerald-200/80 dark:bg-emerald-900/40 dark:text-blue-300 dark:ring-emerald-800/60"
+                        : "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-100 dark:bg-indigo-950/50 dark:text-indigo-300 dark:ring-indigo-900/40",
+                    )}
+                  >
+                    <Facebook className="size-5" aria-hidden />
+                    <Instagram className="size-4 shrink-0 opacity-90" aria-hidden />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-semibold text-zinc-900 dark:text-zinc-50">Meta</p>
+                      <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">Facebook · Instagram</span>
+                      {meta.connected ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-semibold text-emerald-800 dark:bg-emerald-900/70 dark:text-emerald-200">
+                          <CheckCircle2 className="size-3.5" aria-hidden />
+                          Connected
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                          Not connected
+                        </span>
+                      )}
+                    </div>
+                    {meta.connected ? (
+                      <p className="mt-2 text-sm text-emerald-900/90 dark:text-emerald-100/90">
+                        {meta.accountName} · @{meta.accountHandle}
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
+                        Business Page plus Instagram Business, linked in Meta Business Suite.
+                      </p>
+                    )}
+                  </div>
                 </div>
                 <Button
                   type="button"
-                  variant={meta.connected ? "secondary" : "default"}
-                  className="rounded-xl sm:w-40"
+                  variant="outline"
+                  className={cn(
+                    "h-10 shrink-0 rounded-xl px-5 font-medium sm:min-w-[9.5rem]",
+                    meta.connected
+                      ? "border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-100 dark:hover:bg-emerald-900/30"
+                      : "border-blue-200 bg-blue-600 text-white shadow-sm hover:bg-blue-700 dark:border-blue-700 dark:bg-blue-600 dark:text-white dark:hover:bg-blue-500",
+                  )}
                   onClick={() =>
-                    void connectMeta()
+                    void connectMeta("_self")
                       .then((ok) =>
-                        push(
-                          ok
-                            ? "Meta (Facebook / Instagram) is connected and ready to publish."
-                            : "Meta is not connected. In backend/.env, set a Page access token (META_PAGE_ACCESS_TOKEN or META_FACEBOOK_ACCESS_TOKEN) plus META_PAGE_ID and/or META_IG_BUSINESS_ACCOUNT_ID, then click Connect again.",
-                        ),
+                        push(ok ? "Redirecting to Meta…" : "Meta connect is unavailable right now.", { durationMs: 6000 }),
                       )
-                      .catch((e: unknown) => push(e instanceof Error ? e.message : "Could not reach the server."))
+                      .catch((e: unknown) =>
+                        push(e instanceof Error ? e.message : "Could not reach the server.", { durationMs: 9000 }),
+                      )
                   }
                 >
                   {meta.connected ? "Reconnect" : "Connect"}

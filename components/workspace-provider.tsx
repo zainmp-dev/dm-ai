@@ -13,7 +13,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const deleteCurrentWorkspace = useWorkspaceStore((s) => s.deleteCurrentWorkspace);
   useEffect(() => {
     loadWorkspaceSetups();
-    void refreshWorkspace();
+    void refreshWorkspace({ soft: true });
   }, [loadWorkspaceSetups, refreshWorkspace]);
   useEffect(() => {
     if (!workspace?.workspaceConfigured || activeWorkspaceId || workspaceSetups.length > 0) {
