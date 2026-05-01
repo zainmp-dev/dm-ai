@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import mimetypes
+import os
 import re
 import time
 import uuid
@@ -1675,6 +1676,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
     redirect_slashes=False,
+    root_path=os.getenv("API_ROOT_PATH", ""),
 )
 
 app.add_middleware(
