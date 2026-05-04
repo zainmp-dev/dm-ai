@@ -237,7 +237,7 @@ def linkedin_connect_url(db: Session, *, user_id: str, workspace_id: str, app_or
     return auth_url
 
 
-def linkedin_callback(db: Session, *, code: str, state: str, app_origin: str | None = None) -> dict[str, str]:
+def linkedin_callback(db: Session, *, code: str, state: str, app_origin: str | None = None) -> dict[str, Any]:
     s = fresh_settings()
     ids = parse_and_verify_state(db, state)
     redirect_uri = _resolved_linkedin_redirect_uri(app_origin=app_origin)
@@ -282,7 +282,32 @@ def linkedin_callback(db: Session, *, code: str, state: str, app_origin: str | N
         refresh_token=refresh_token,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires_in),
     )
-    return ids
+    account_url: str | None = None
+    vanity = ""
+    try:
+        me = request_json(
+            "GET",
+            "https://api.linkedin.com/v2/me?projection=(id,vanityName)",
+            timeout_seconds=s.request_timeout_seconds,
+            log_context="linkedin me vanity",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "LinkedIn-Version": "202405",
+                "X-Restli-Protocol-Version": "2.0.0",
+            },
+        )
+        vanity = str(me.get("vanityName") or "").strip()
+        if vanity:
+            account_url = f"https://www.linkedin.com/in/{vanity}/"
+    except Exception:
+        logger.warning("LinkedIn /v2/me (vanity) unavailable; account link omitted", exc_info=True)
+    handle = vanity or account_id
+    return {
+        **ids,
+        "account_name": account_name,
+        "account_handle": handle,
+        "account_url": account_url,
+    }
 
 
 def meta_connect_url(db: Session, *, user_id: str, workspace_id: str, app_origin: str | None = None) -> str:
@@ -352,6 +377,9 @@ def meta_callback(db: Session, *, code: str, state: str, app_origin: str | None 
         params={"access_token": user_token, "fields": "id,name,access_token,instagram_business_account{id}"},
     )
     page_rows = pages.get("data") if isinstance(pages.get("data"), list) else []
+    primary_name = "Meta"
+    primary_handle = ""
+    primary_url: str | None = None
     for page in page_rows:
         if not isinstance(page, dict):
             continue
@@ -378,4 +406,15 @@ def meta_callback(db: Session, *, code: str, state: str, app_origin: str | None 
             meta_page_token=page_token,
             meta_ig_id=ig_id or None,
         )
-    return {"user_id": ids["user_id"], "workspace_id": ids["workspace_id"], "connected_pages": len(page_rows)}
+        if not primary_handle:
+            primary_name = page_name
+            primary_handle = page_id
+            primary_url = f"https://www.facebook.com/{page_id}"
+    return {
+        "user_id": ids["user_id"],
+        "workspace_id": ids["workspace_id"],
+        "connected_pages": len(page_rows),
+        "account_name": primary_name,
+        "account_handle": primary_handle or "connected",
+        "account_url": primary_url,
+    }

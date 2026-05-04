@@ -11,7 +11,6 @@ import re
 import time
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,8 +44,11 @@ from config import fresh_settings, settings, user_media_dir
 from database import Content, create_many_content, get_all_content, get_content, get_db, init_db, increment_retry, update_status
 from emailer import content_action_email, safe_send_email
 from publisher import publish_post
+from services.posting_service import publish_flowpilot_workspace_item
 from scheduler import scheduler_loop
+from routes.ads_routes import router as ads_router
 from routes.social_routes import router as social_router
+from services.boost_link_service import boost_url_for_target
 from services.oauth_service import linkedin_connect_url, meta_connect_url
 from utils.http_client import request_json
 from utils.state_signing import encode_state, new_nonce, verify_state
@@ -385,8 +387,8 @@ def default_workspace_snapshot(user: dict[str, Any] | None = None) -> dict[str, 
         "publishing_log": [],
         "media_library": [],
         "integrations": {
-            "linkedin": {"connected": False, "account_name": None, "account_handle": None},
-            "meta": {"connected": False, "account_name": None, "account_handle": None},
+            "linkedin": {"connected": False, "account_name": None, "account_handle": None, "account_url": None},
+            "meta": {"connected": False, "account_name": None, "account_handle": None, "account_url": None},
         },
         "profile": {"name": profile_name, "email": profile_email, "company": "", "timezone": "Asia/Kolkata"},
         "preferences": {"default_platform": "linkedin", "quiet_hours_enabled": True, "approval_digest": "daily"},
@@ -528,11 +530,14 @@ def workspace_snapshot(db: Session, workspace_id: str, user: dict[str, Any]) -> 
         snapshot["preferences"] = dict(preferences)
 
     integrations = {
-        "linkedin": {"connected": False, "account_name": None, "account_handle": None},
-        "meta": {"connected": False, "account_name": None, "account_handle": None},
+        "linkedin": {"connected": False, "account_name": None, "account_handle": None, "account_url": None},
+        "meta": {"connected": False, "account_name": None, "account_handle": None, "account_url": None},
     }
     for row in db.execute(
-        text("select platform, connected, account_name, account_handle from flowpilot_integrations where workspace_id = :workspace_id"),
+        text(
+            "select platform, connected, account_name, account_handle, account_url "
+            "from flowpilot_integrations where workspace_id = :workspace_id"
+        ),
         {"workspace_id": workspace_id},
     ).mappings().all():
         platform = str(row["platform"])
@@ -541,6 +546,7 @@ def workspace_snapshot(db: Session, workspace_id: str, user: dict[str, Any]) -> 
                 "connected": row["connected"],
                 "account_name": row["account_name"],
                 "account_handle": row["account_handle"],
+                "account_url": row.get("account_url"),
             }
     snapshot["integrations"] = integrations
 
@@ -682,13 +688,6 @@ def record_activity(db: Session, workspace_id: str, text_value: str) -> None:
     )
 
 
-@dataclass
-class WorkspacePublishPost:
-    platform: str
-    content: str
-    media_url: str | None
-
-
 def _valid_platforms(platforms: list[str]) -> list[str]:
     cleaned: list[str] = []
     for platform in platforms:
@@ -706,11 +705,13 @@ def _workspace_content_row(db: Session, workspace_id: str, content_id: str) -> d
     return dict(row) if row is not None else None
 
 
-def _insert_publishing_log(db: Session, workspace_id: str, content_id: str, platform: str, status: str) -> None:
+def _insert_publishing_log(
+    db: Session, workspace_id: str, content_id: str, platform: str, status: str, post_url: str | None = None
+) -> None:
     db.execute(
         text(
-            "insert into flowpilot_publishing_log (id, workspace_id, content_id, platform, timestamp, status) "
-            "values (:id, :workspace_id, :content_id, :platform, now(), :status)"
+            "insert into flowpilot_publishing_log (id, workspace_id, content_id, platform, timestamp, status, post_url) "
+            "values (:id, :workspace_id, :content_id, :platform, now(), :status, :post_url)"
         ),
         {
             "id": f"pub-{uuid.uuid4().hex[:12]}",
@@ -718,18 +719,27 @@ def _insert_publishing_log(db: Session, workspace_id: str, content_id: str, plat
             "content_id": content_id,
             "platform": platform,
             "status": status,
+            "post_url": post_url,
         },
     )
 
 
-def _set_integration(db: Session, workspace_id: str, platform: str, connected: bool, account_name: str, account_handle: str) -> None:
+def _set_integration(
+    db: Session,
+    workspace_id: str,
+    platform: str,
+    connected: bool,
+    account_name: str,
+    account_handle: str,
+    account_url: str | None = None,
+) -> None:
     db.execute(
         text(
-            "insert into flowpilot_integrations (workspace_id, platform, connected, account_name, account_handle, updated_at) "
-            "values (:workspace_id, :platform, :connected, :account_name, :account_handle, now()) "
+            "insert into flowpilot_integrations (workspace_id, platform, connected, account_name, account_handle, account_url, updated_at) "
+            "values (:workspace_id, :platform, :connected, :account_name, :account_handle, :account_url, now()) "
             "on conflict (workspace_id, platform) do update set "
             "connected = excluded.connected, account_name = excluded.account_name, "
-            "account_handle = excluded.account_handle, updated_at = now()"
+            "account_handle = excluded.account_handle, account_url = excluded.account_url, updated_at = now()"
         ),
         {
             "workspace_id": workspace_id,
@@ -737,6 +747,7 @@ def _set_integration(db: Session, workspace_id: str, platform: str, connected: b
             "connected": connected,
             "account_name": account_name,
             "account_handle": account_handle,
+            "account_url": account_url,
         },
     )
 
@@ -1689,6 +1700,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(social_router)
+app.include_router(ads_router)
 
 
 @app.get("/")
@@ -2445,6 +2457,7 @@ def approve_workspace_content(
         except (TypeError, ValueError):
             clone_strategy_version = None
 
+    approved_content_ids: list[str] = [body.content_id]
     for platform in selected_platforms[1:]:
         clone_id = f"cnt-{uuid.uuid4().hex[:12]}"
         _insert_flowpilot_content_row(
@@ -2460,10 +2473,14 @@ def approve_workspace_content(
             scheduled_at=row.get("scheduled_at"),
             strategy_version=clone_strategy_version,
         )
+        approved_content_ids.append(clone_id)
 
     record_activity(db, workspace_id, f"Review step approved content for {', '.join(selected_platforms)}.")
     db.commit()
-    return {"content": workspace_snapshot(db, workspace_id, user)["content"]}
+    return {
+        "content": workspace_snapshot(db, workspace_id, user)["content"],
+        "approved_content_ids": approved_content_ids,
+    }
 
 
 @app.post("/reject")
@@ -2549,15 +2566,28 @@ def publish_workspace_content(
             warnings.append(f"{row['title']}: Instagram requires image or video media")
             _insert_publishing_log(db, workspace_id, content_id, platform, "Failed")
             continue
-        post = WorkspacePublishPost(platform=platform, content=str(row["content_text"]), media_url=mp or None)
-        result = publish_post(post)  # type: ignore[arg-type]
+        result = publish_flowpilot_workspace_item(
+            db,
+            user_id=str(user["id"]),
+            workspace_id=workspace_id,
+            channel=platform,
+            content_text=str(row["content_text"]),
+            media_preview=mp or None,
+        )
+        post_url: str | None = None
+        if result.success and result.provider_response:
+            post_url = boost_url_for_target(
+                platform=platform,
+                response=result.provider_response,
+                meta_page_id_hint="",
+            )
         if result.success:
             published_count += 1
             db.execute(
                 text("update flowpilot_content set status = 'PUBLISHED', updated_at = now() where workspace_id = :workspace_id and id = :content_id"),
                 {"workspace_id": workspace_id, "content_id": content_id},
             )
-            _insert_publishing_log(db, workspace_id, content_id, platform, "Success")
+            _insert_publishing_log(db, workspace_id, content_id, platform, "Success", post_url=post_url)
         else:
             warnings.append(f"{row['title']}: {result.message}")
             _insert_publishing_log(db, workspace_id, content_id, platform, "Failed")

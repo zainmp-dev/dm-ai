@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { PublishingPlatform } from "@/lib/types";
@@ -28,6 +28,10 @@ export function PlatformSelectDialog({
   const [selected, setSelected] = useState<PublishingPlatform[]>([]);
   const allChecked = useMemo(() => selected.length === ACTIVE_OPTIONS.length, [selected]);
 
+  useEffect(() => {
+    if (open) setSelected([]);
+  }, [open]);
+
   const toggleOption = (id: PublishingPlatform) => {
     const option = OPTIONS.find((opt) => opt.id === id);
     if (option?.disabled) return;
@@ -50,14 +54,14 @@ export function PlatformSelectDialog({
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>Choose where this asset should be routed after approval.</DialogDescription>
+          <DialogDescription>Choose which networks this item is approved for. Connect each network in Settings before publishing.</DialogDescription>
         </DialogHeader>
         <div className="grid gap-2">
           <label className="flex items-center gap-2 rounded-2xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-800">
             <input type="checkbox" checked={allChecked} onChange={(e) => toggleAll(e.target.checked)} />
             <span>
-              <span className="block font-medium">All Media (publish after all media)</span>
-              <span className="block text-xs text-zinc-500">Select all connected platforms at once</span>
+              <span className="block font-medium">All platforms</span>
+              <span className="block text-xs text-zinc-500">LinkedIn, Instagram, and Facebook in one step</span>
             </span>
           </label>
           {OPTIONS.map((opt) => (

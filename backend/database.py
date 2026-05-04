@@ -189,12 +189,14 @@ def _init_workspace_tables(connection: object) -> None:
             connected boolean not null default false,
             account_name text,
             account_handle text,
+            account_url text,
             updated_at timestamptz not null default now(),
             primary key (workspace_id, platform)
         )
         """,
         # Older DBs may have been created before updated_at existed; CREATE TABLE IF NOT EXISTS does not add columns.
         "alter table flowpilot_integrations add column if not exists updated_at timestamptz not null default now()",
+        "alter table flowpilot_integrations add column if not exists account_url text",
         """
         create table if not exists flowpilot_publishing_log (
             id text primary key,
@@ -202,7 +204,8 @@ def _init_workspace_tables(connection: object) -> None:
             content_id text not null,
             platform text not null,
             timestamp timestamptz not null default now(),
-            status text not null default 'Success'
+            status text not null default 'Success',
+            post_url text
         )
         """,
         """
@@ -258,6 +261,7 @@ def _init_workspace_tables(connection: object) -> None:
         "create index if not exists idx_flowpilot_content_workspace_status on flowpilot_content(workspace_id, status)",
         "create index if not exists idx_flowpilot_content_workspace_schedule on flowpilot_content(workspace_id, scheduled_at)",
         "create index if not exists idx_flowpilot_publishing_log_workspace_time on flowpilot_publishing_log(workspace_id, timestamp desc)",
+        "alter table flowpilot_publishing_log add column if not exists post_url text",
         """
         create table if not exists flowpilot_post_analytics (
             workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
@@ -368,6 +372,26 @@ def _init_workspace_tables(connection: object) -> None:
         "create policy posts_owner_policy on posts for all using (auth.uid()::text = user_id) with check (auth.uid()::text = user_id)",
         "drop policy if exists post_targets_owner_policy on post_targets",
         "create policy post_targets_owner_policy on post_targets for all using (exists (select 1 from posts p where p.id = post_targets.post_id and auth.uid()::text = p.user_id)) with check (exists (select 1 from posts p where p.id = post_targets.post_id and auth.uid()::text = p.user_id))",
+        """
+        create table if not exists ads_campaigns (
+            id uuid primary key,
+            user_id text not null,
+            workspace_id text not null,
+            post_id uuid not null,
+            platform text not null,
+            campaign_id text,
+            ad_id text,
+            budget numeric,
+            status text not null default 'pending',
+            created_at timestamptz not null default now()
+        )
+        """,
+        "create index if not exists idx_ads_campaigns_user_id on ads_campaigns(user_id)",
+        "create index if not exists idx_ads_campaigns_workspace_id on ads_campaigns(workspace_id)",
+        "create index if not exists idx_ads_campaigns_post_id on ads_campaigns(post_id)",
+        "alter table ads_campaigns enable row level security",
+        "drop policy if exists ads_campaigns_owner_policy on ads_campaigns",
+        "create policy ads_campaigns_owner_policy on ads_campaigns for all using (auth.uid()::text = user_id) with check (auth.uid()::text = user_id)",
     ]
     for statement in statements:
         connection.execute(text(statement))

@@ -33,6 +33,14 @@ import { isPlatformConnected, platformLabel } from "@/lib/platform";
 import type { ContentItem, MediaType, PublishingPlatform } from "@/lib/types";
 import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
+import { useElapsedSecondsWhileActive, useSimulatedAiProgress } from "@/hooks/use-simulated-ai-progress";
+
+function formatElapsedSec(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}m ${s.toString().padStart(2, "0")}s`;
+}
 
 const APPROVAL_PLATFORM_OPTIONS = [
   { id: "linkedin", disabled: false },
@@ -148,6 +156,14 @@ export function ContentWorkspaceView() {
   const [deleting, setDeleting] = useState(false);
   const prevAutoActivateRef = useRef(newAutoActivate);
 
+  const createElapsedSec = useElapsedSecondsWhileActive(creating);
+  const suggestElapsedSec = useElapsedSecondsWhileActive(suggesting);
+  const createProgressPct = useSimulatedAiProgress(creating);
+  const suggestProgressPct = useSimulatedAiProgress(suggesting);
+  const postNowElapsedSec = useElapsedSecondsWhileActive(postNowWorking);
+  const postNowProgressPct = useSimulatedAiProgress(postNowWorking);
+  const manualCreateJobActive = creating || suggesting;
+
   const content = useMemo(() => workspace?.content ?? [], [workspace]);
   const contentTimeZone = useMemo(
     () => effectiveContentTimeZone(workspace?.profile?.timezone, workspace?.primaryRegion),
@@ -260,8 +276,8 @@ export function ContentWorkspaceView() {
           selectedPlatform: selectedPlatforms[0],
         });
         if (id) {
-          await approve(id, selectedPlatforms);
-          const res = await publish([id]);
+          const approvedIds = await approve(id, selectedPlatforms);
+          const res = await publish(approvedIds);
           if (res.published > 0) {
             push(`Published to ${selectedPlatforms.map((p) => platformLabel(p)).join(", ")}`);
             setNewTitle("");
@@ -292,8 +308,8 @@ export function ContentWorkspaceView() {
           autoActivate: true,
           selectedPlatform: selectedPlatforms[0],
         });
-        await approve(postNowEditId, selectedPlatforms);
-        const res = await publish([postNowEditId]);
+        const approvedIds = await approve(postNowEditId, selectedPlatforms);
+        const res = await publish(approvedIds);
         if (res.published > 0) {
           push(`Published to ${selectedPlatforms.map((p) => platformLabel(p)).join(", ")}`);
           setEditingId(null);
@@ -386,7 +402,7 @@ export function ContentWorkspaceView() {
                 }}
               >
                 <Sparkles className="mr-1.5 h-3.5 w-3.5 opacity-80" />
-                {suggesting ? "Working…" : "AI suggest"}
+                {suggesting ? `Working… ${formatElapsedSec(suggestElapsedSec)}` : "AI suggest"}
               </Button>
             </div>
             {!workspace.companyName?.trim() ? (
@@ -581,6 +597,38 @@ export function ContentWorkspaceView() {
           </div>
           </div>
 
+          {manualCreateJobActive ? (
+            <div
+              className="shrink-0 space-y-1.5 border-t border-zinc-200/80 bg-zinc-50 px-5 py-3 dark:border-zinc-800 dark:bg-zinc-900/60"
+              role="status"
+              aria-live="polite"
+              aria-label={creating ? "Creating content" : "AI suggest in progress"}
+            >
+              <div className="flex items-center justify-between gap-2 text-xs font-medium text-zinc-700 dark:text-zinc-200">
+                <span>{creating ? "Creating content…" : "AI suggest running…"}</span>
+                <span className="shrink-0 tabular-nums text-zinc-500 dark:text-zinc-400">
+                  {formatElapsedSec(creating ? createElapsedSec : suggestElapsedSec)}
+                </span>
+              </div>
+              <div
+                className="h-1 w-full overflow-hidden rounded-full bg-zinc-200/90 dark:bg-zinc-800"
+                role="progressbar"
+                aria-valuenow={creating ? createProgressPct : suggestProgressPct}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label={`Estimated progress ${creating ? createProgressPct : suggestProgressPct} percent`}
+              >
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-violet-500 to-indigo-600 transition-[width] duration-300 ease-out"
+                  style={{ width: `${creating ? createProgressPct : suggestProgressPct}%` }}
+                />
+              </div>
+              <p className="text-[10px] leading-snug text-zinc-500 dark:text-zinc-400">
+                Bar is estimated until the request finishes (not streamed from the server).
+              </p>
+            </div>
+          ) : null}
+
           <div className="shrink-0 space-y-2 border-t border-zinc-200/80 bg-zinc-50/90 px-5 py-4 text-sm dark:border-zinc-800 dark:bg-zinc-900/80">
             <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-700 dark:text-zinc-300">
               <input
@@ -644,7 +692,7 @@ export function ContentWorkspaceView() {
                     .finally(() => setCreating(false));
                 }}
               >
-                {creating ? "Creating…" : "Create content"}
+                {creating ? `Creating… ${formatElapsedSec(createElapsedSec)}` : "Create content"}
               </Button>
             </div>
           </div>
@@ -711,6 +759,26 @@ export function ContentWorkspaceView() {
               );
             })}
           </div>
+          {postNowWorking ? (
+            <div className="space-y-1.5 rounded-xl border border-zinc-200/80 bg-zinc-50 px-3 py-2.5" role="status" aria-live="polite">
+              <div className="flex items-center justify-between gap-2 text-xs font-medium text-zinc-700">
+                <span>Publishing…</span>
+                <span className="tabular-nums text-zinc-500">{formatElapsedSec(postNowElapsedSec)}</span>
+              </div>
+              <div
+                className="h-1 w-full overflow-hidden rounded-full bg-zinc-200/90"
+                role="progressbar"
+                aria-valuenow={postNowProgressPct}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-600 transition-[width] duration-300 ease-out"
+                  style={{ width: `${postNowProgressPct}%` }}
+                />
+              </div>
+            </div>
+          ) : null}
           <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <Button
               type="button"
@@ -722,7 +790,7 @@ export function ContentWorkspaceView() {
               Cancel
             </Button>
             <Button type="button" className="rounded-xl" disabled={postNowWorking} onClick={() => void confirmPostNow()}>
-              {postNowWorking ? "Working…" : "Publish now"}
+              {postNowWorking ? `Working… ${formatElapsedSec(postNowElapsedSec)}` : "Publish now"}
             </Button>
           </DialogFooter>
         </DialogContent>

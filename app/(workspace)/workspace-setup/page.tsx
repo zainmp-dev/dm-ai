@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Building2, Check, ChevronsUpDown, Globe2 } from "lucide-react";
+import { Building2, Check, ChevronsUpDown, Globe2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -348,11 +348,12 @@ function SetupWorkspaceModalFormInner({
         setCompetitors={setCompetitors}
       />
       <div className="flex flex-col-reverse gap-2 border-t border-zinc-100 pt-4 dark:border-zinc-800 sm:flex-row sm:justify-end">
-        <Button type="button" variant="outline" className="rounded-xl" onClick={onRequestClose}>
+        <Button type="button" variant="outline" className="rounded-xl" disabled={saving} onClick={onRequestClose}>
           Cancel
         </Button>
         <Button
           className="rounded-xl bg-blue-600 text-white hover:bg-blue-700"
+          aria-busy={saving}
           disabled={saving || !companyName.trim() || !selectedScenario || (mode === "edit" && !editSetup)}
           onClick={() => {
             setSaving(true);
@@ -377,7 +378,14 @@ function SetupWorkspaceModalFormInner({
               .finally(() => setSaving(false));
           }}
         >
-          {saving ? "Starting AI flow..." : "Save setup and start AI flow"}
+          {saving ? (
+            <>
+              <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
+              Starting AI flow...
+            </>
+          ) : (
+            "Save setup and start AI flow"
+          )}
         </Button>
       </div>
     </>

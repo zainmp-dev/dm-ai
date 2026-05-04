@@ -671,9 +671,9 @@ export function ApprovalTab() {
                         if (!postNow && draftScheduleAt) {
                           await schedule(viewingItem.id, zonedLocalToUtcIso(draftScheduleAt, contentTimeZone));
                         }
-                        await approve(viewingItem.id, selectedPlatforms);
+                        const approvedIds = await approve(viewingItem.id, selectedPlatforms);
                         if (postNow) {
-                          const publishResult = await publish([viewingItem.id]);
+                          const publishResult = await publish(approvedIds);
                           if (publishResult.warnings.length > 0) {
                             push(`Post Now published ${publishResult.published}. ${publishResult.warnings[0]}`);
                           } else if (publishResult.published > 0) {

@@ -62,6 +62,8 @@ export interface PublishingLogItem {
   platform: PublishingPlatform | string;
   timestamp: string;
   status: PublishStatus;
+  /** Permalink to the live post on the network, when the publisher returned one */
+  postUrl?: string | null;
 }
 
 export interface MediaLibraryItem {
@@ -86,6 +88,8 @@ export interface IntegrationInfo {
   connected: boolean;
   accountName: string | null;
   accountHandle: string | null;
+  /** Public profile or Page URL (opens on the social network) */
+  accountUrl?: string | null;
 }
 
 export interface UserProfile {

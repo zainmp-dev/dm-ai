@@ -2,8 +2,8 @@
 
 import { format } from "date-fns";
 import Link from "next/link";
-import { useDeferredValue, useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { ExternalLink, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PublishingStatusBadge } from "@/components/status-badge";
@@ -12,6 +12,13 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { platformLabel } from "@/lib/platform";
+import {
+  apiErrorMessage,
+  apiGetNativePostBoostLinks,
+  apiListNativeSocialPosts,
+  apiRequestMetaAdsBoost,
+  type NativeSocialPostSummary,
+} from "@/lib/api";
 import { useApiLoadingStore } from "@/lib/api-loading-store";
 import type { PublishingPlatform } from "@/lib/types";
 import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
@@ -35,6 +42,33 @@ export function PublishingTab() {
   const deferredSearch = useDeferredValue(search);
   const [activeLogId, setActiveLogId] = useState<string | null>(null);
   const [logVisible, setLogVisible] = useState(LOG_PAGE_SIZE);
+  const [nativePosts, setNativePosts] = useState<NativeSocialPostSummary[]>([]);
+  const [nativePostsLoaded, setNativePostsLoaded] = useState(false);
+  const [nativePostsError, setNativePostsError] = useState<string | null>(null);
+  const [adsBudgetByPost, setAdsBudgetByPost] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (shellPending || !workspace) return;
+    let cancelled = false;
+    setNativePostsLoaded(false);
+    setNativePostsError(null);
+    void apiListNativeSocialPosts({ limit: 40 })
+      .then((rows) => {
+        if (!cancelled) {
+          setNativePosts(rows);
+          setNativePostsLoaded(true);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setNativePostsError(err instanceof Error ? err.message : "Could not load native posts");
+          setNativePostsLoaded(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [shellPending, workspace]);
 
   const logs = useMemo(() => {
     if (!workspace) return [];
@@ -197,6 +231,157 @@ export function PublishingTab() {
       </Card>
 
       <Card className="rounded-2xl border-zinc-200 shadow-sm">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
+          <CardTitle className="text-base">Native posts (LinkedIn / Meta)</CardTitle>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="rounded-xl"
+            onClick={() => {
+              setNativePostsLoaded(false);
+              void apiListNativeSocialPosts({ limit: 40 })
+                .then((rows) => {
+                  setNativePosts(rows);
+                  setNativePostsError(null);
+                  setNativePostsLoaded(true);
+                })
+                .catch((err: unknown) => {
+                  setNativePostsError(err instanceof Error ? err.message : "Could not load native posts");
+                  setNativePostsLoaded(true);
+                });
+            }}
+          >
+            Refresh list
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-zinc-500">
+            Posts created via the social API appear here. Use Boost to open the live network URL in a new tab (Phase 1). Optional Meta Ads
+            creates a paused campaign using your ad account (requires ads permissions).
+          </p>
+          {!nativePostsLoaded && <Skeleton className="h-24 w-full rounded-xl" />}
+          {nativePostsLoaded && nativePostsError && (
+            <p className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">{nativePostsError}</p>
+          )}
+          {nativePostsLoaded && !nativePostsError && nativePosts.length === 0 && (
+            <p className="rounded-2xl border border-dashed border-zinc-200 py-8 text-center text-sm text-zinc-500">
+              No native posts yet. They are created outside the content library when your client posts to{" "}
+              <code className="rounded bg-zinc-100 px-1">POST /posts</code>.
+            </p>
+          )}
+          {nativePostsLoaded && nativePosts.length > 0 && (
+            <div className="space-y-2">
+              {nativePosts.map((p) => {
+                const isPublished = p.status.toLowerCase() === "published";
+                const hasMetaSuccess = p.targets.some((t) => t.platform === "meta" && t.status === "success");
+                return (
+                  <div
+                    key={p.id}
+                    className="flex flex-wrap items-start justify-between gap-2 rounded-xl border border-zinc-100 bg-zinc-50/60 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="line-clamp-2 text-sm text-zinc-900">{p.content || "(no text)"}</p>
+                      <p className="mt-1 text-[11px] text-zinc-500">
+                        {p.status}
+                        {p.targets.length > 0
+                          ? ` · ${p.targets.map((t) => `${t.platform}:${t.status}`).join(", ")}`
+                          : ""}
+                      </p>
+                      <p className="mt-0.5 font-mono text-[10px] text-zinc-400">{p.id}</p>
+                      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+                        {p.targets.map((t) =>
+                          t.post_url ? (
+                            <a
+                              key={`${p.id}-${t.platform}-${t.post_url}`}
+                              href={t.post_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 underline-offset-2 hover:text-blue-700 hover:underline dark:text-sky-400 dark:hover:text-sky-300"
+                            >
+                              View on {platformLabel(t.platform as PublishingPlatform)}
+                              <ExternalLink className="size-3 shrink-0 opacity-70" aria-hidden />
+                            </a>
+                          ) : null,
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-end gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="rounded-lg"
+                        disabled={!isPublished}
+                        title={!isPublished ? "Only published posts can be boosted" : undefined}
+                        onClick={() => {
+                          void apiGetNativePostBoostLinks(p.id)
+                            .then((links) => {
+                              if (links[0]?.url) {
+                                window.open(links[0].url, "_blank", "noopener,noreferrer");
+                              }
+                              if (links.length > 1) {
+                                push(`Opened first network link (${links.length} channels).`);
+                              } else if (links.length === 1) {
+                                push("Opened boost link in a new tab.");
+                              }
+                            })
+                            .catch((err: unknown) => {
+                              push(apiErrorMessage(err) || "Could not load boost link.");
+                            });
+                        }}
+                      >
+                        Boost
+                      </Button>
+                      {isPublished && hasMetaSuccess ? (
+                        <details className="max-w-xs rounded-lg border border-zinc-200 bg-white p-2 text-left text-xs">
+                          <summary className="cursor-pointer font-medium text-zinc-800">Meta Ads (optional)</summary>
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <Input
+                              type="number"
+                              min={1}
+                              step={1}
+                              className="h-8 w-24 rounded-md text-xs"
+                              placeholder="$/day"
+                              value={adsBudgetByPost[p.id] ?? "10"}
+                              onChange={(e) => setAdsBudgetByPost((m) => ({ ...m, [p.id]: e.target.value }))}
+                            />
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              className="h-8 rounded-md text-xs"
+                              onClick={() => {
+                                const raw = adsBudgetByPost[p.id] ?? "10";
+                                const budget = Number.parseFloat(raw);
+                                if (!Number.isFinite(budget) || budget <= 0) {
+                                  push("Enter a valid daily budget.");
+                                  return;
+                                }
+                                void apiRequestMetaAdsBoost({ postId: p.id, budget })
+                                  .then((r) => {
+                                    push(`Meta Ads draft created (campaign ${r.campaign_id}).`);
+                                  })
+                                  .catch((err: unknown) => {
+                                    push(apiErrorMessage(err) || "Meta Ads boost failed.");
+                                  });
+                              }}
+                            >
+                              Create campaign
+                            </Button>
+                          </div>
+                        </details>
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="rounded-2xl border-zinc-200 shadow-sm">
         <CardHeader>
           <CardTitle className="text-base">Publishing log</CardTitle>
         </CardHeader>
@@ -284,6 +469,17 @@ export function PublishingTab() {
                       {contentItem?.scheduledAt ? `· Scheduled: ${format(new Date(contentItem.scheduledAt), "PPP p")}` : ""}
                     </p>
                     <p className="mt-1 text-[11px] text-zinc-500">Post ID: {item.contentId || "—"}</p>
+                    {item.status === "Success" && item.postUrl ? (
+                      <a
+                        href={item.postUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-blue-600 underline-offset-2 hover:text-blue-700 hover:underline dark:text-sky-400 dark:hover:text-sky-300"
+                      >
+                        Open live post
+                        <ExternalLink className="size-3 shrink-0 opacity-70" aria-hidden />
+                      </a>
+                    ) : null}
                   </div>
                   <PublishingStatusBadge status={item.status} />
                 </div>
@@ -344,6 +540,17 @@ export function PublishingTab() {
                 </p>
                 <p className="text-zinc-600">Media: {activeContent.mediaType}</p>
                 <p className="break-all text-zinc-500">Content ID: {activeLog.contentId}</p>
+                {activeLog.status === "Success" && activeLog.postUrl ? (
+                  <a
+                    href={activeLog.postUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 font-medium text-blue-600 underline-offset-2 hover:text-blue-700 hover:underline dark:text-sky-400"
+                  >
+                    Open live post
+                    <ExternalLink className="size-3.5 shrink-0 opacity-70" aria-hidden />
+                  </a>
+                ) : null}
               </div>
             </div>
           )}

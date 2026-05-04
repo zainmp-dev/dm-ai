@@ -10,7 +10,8 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from config import fresh_settings
-from services.token_service import ensure_token_valid, get_social_account_for_publish
+from publisher import PublishResult, resolve_publish_media_url
+from services.token_service import ensure_token_valid, get_default_active_social_account, get_social_account_for_publish
 from utils.http_client import request_json
 
 logger = logging.getLogger(__name__)
@@ -245,3 +246,79 @@ def run_scheduled_posts(db: Session) -> int:
         except Exception:
             logger.exception("Scheduled publish failed for post=%s", row["id"])
     return count
+
+
+def publish_flowpilot_workspace_item(
+    db: Session,
+    *,
+    user_id: str,
+    workspace_id: str,
+    channel: str,
+    content_text: str,
+    media_preview: str | None,
+) -> PublishResult:
+    """
+    Publish a single `flowpilot_content` row using OAuth tokens from `social_accounts`
+    (same sources as native posts). Used by POST /workspace publish, not the legacy `content` table.
+    """
+    ch = channel.strip().lower()
+    if ch not in {"linkedin", "instagram", "facebook"}:
+        return PublishResult(False, f"Unsupported platform: {channel}")
+
+    db_platform = "linkedin" if ch == "linkedin" else "meta"
+    account = get_default_active_social_account(db, user_id=user_id, workspace_id=workspace_id, platform=db_platform)
+    if not account:
+        return PublishResult(False, "Please connect your account")
+
+    refreshed = ensure_token_valid(db, account)
+    if not refreshed:
+        return PublishResult(False, "Account inactive or token expired. Please reconnect your account")
+
+    s = fresh_settings()
+    resolved_media, media_warning = resolve_publish_media_url(media_preview)
+
+    try:
+        if ch == "linkedin":
+            response = _publish_to_linkedin(
+                content=content_text,
+                media_url=resolved_media,
+                access_token=str(refreshed["access_token"]),
+                author_urn=f"urn:li:person:{refreshed['account_id']}",
+                timeout_seconds=s.request_timeout_seconds,
+            )
+            return PublishResult(True, "Published", provider_response=response)
+
+        page_id = str(refreshed.get("meta_page_id") or refreshed.get("account_id") or "").strip()
+        page_token = str(refreshed.get("meta_page_token") or "").strip()
+        if not page_token:
+            return PublishResult(False, "Meta page token missing; reconnect required")
+        _validate_meta_page_token(page_token=page_token, timeout_seconds=s.request_timeout_seconds)
+        ig_id = str(refreshed.get("meta_ig_id") or "").strip()
+
+        if ch == "instagram":
+            if not resolved_media:
+                return PublishResult(False, media_warning or "Instagram requires image media with a public HTTPS URL")
+            if not ig_id:
+                return PublishResult(
+                    False,
+                    "Instagram needs a linked Instagram Business account. Reconnect Meta in Settings or publish to Facebook.",
+                )
+            response = _publish_to_instagram(
+                content=content_text,
+                image_url=resolved_media,
+                ig_user_id=ig_id,
+                page_token=page_token,
+                timeout_seconds=s.request_timeout_seconds,
+            )
+            return PublishResult(True, "Published", provider_response=response)
+
+        response = _publish_to_meta_page(
+            content=content_text,
+            page_id=page_id,
+            page_token=page_token,
+            timeout_seconds=s.request_timeout_seconds,
+        )
+        return PublishResult(True, "Published", provider_response=response)
+    except Exception as exc:
+        logger.exception("Flowpilot workspace publish failed channel=%s", ch)
+        return PublishResult(False, str(exc)[:800])

@@ -362,9 +362,23 @@ function SettingsContent() {
                       )}
                     </div>
                     {linkedin.connected ? (
-                      <p className="mt-2 text-sm text-emerald-900/90 dark:text-emerald-100/90">
-                        {linkedin.accountName} · @{linkedin.accountHandle}
-                      </p>
+                      <div className="mt-2 space-y-1.5 text-sm text-emerald-900/90 dark:text-emerald-100/90">
+                        <p>
+                          {linkedin.accountName}
+                          {linkedin.accountHandle ? ` · @${linkedin.accountHandle}` : null}
+                        </p>
+                        {linkedin.accountUrl ? (
+                          <a
+                            href={linkedin.accountUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 font-medium text-blue-700 underline-offset-2 hover:text-blue-800 hover:underline dark:text-sky-300 dark:hover:text-sky-200"
+                          >
+                            Open LinkedIn profile
+                            <ExternalLink className="size-3.5 shrink-0 opacity-70" aria-hidden />
+                          </a>
+                        ) : null}
+                      </div>
                     ) : (
                       <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">Publish approved posts to your company or member profile.</p>
                     )}
@@ -429,9 +443,23 @@ function SettingsContent() {
                       )}
                     </div>
                     {meta.connected ? (
-                      <p className="mt-2 text-sm text-emerald-900/90 dark:text-emerald-100/90">
-                        {meta.accountName} · @{meta.accountHandle}
-                      </p>
+                      <div className="mt-2 space-y-1.5 text-sm text-emerald-900/90 dark:text-emerald-100/90">
+                        <p>
+                          {meta.accountName}
+                          {meta.accountHandle ? ` · Page ID ${meta.accountHandle}` : null}
+                        </p>
+                        {meta.accountUrl ? (
+                          <a
+                            href={meta.accountUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 font-medium text-blue-700 underline-offset-2 hover:text-blue-800 hover:underline dark:text-sky-300 dark:hover:text-sky-200"
+                          >
+                            Open Facebook Page
+                            <ExternalLink className="size-3.5 shrink-0 opacity-70" aria-hidden />
+                          </a>
+                        ) : null}
+                      </div>
                     ) : (
                       <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
                         Business Page plus Instagram Business, linked in Meta Business Suite.

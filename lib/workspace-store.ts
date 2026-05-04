@@ -183,7 +183,7 @@ interface WorkspaceStore {
     selectedPlatform?: PublishingPlatform;
   }) => Promise<void>;
   deleteContentItem: (contentId: string) => Promise<void>;
-  approve: (contentId: string, platformOrPlatforms: PublishingPlatform | PublishingPlatform[]) => Promise<void>;
+  approve: (contentId: string, platformOrPlatforms: PublishingPlatform | PublishingPlatform[]) => Promise<string[]>;
   reject: (contentId: string) => Promise<void>;
   schedule: (contentId: string, scheduledAt: string) => Promise<void>;
   publish: (contentIds: string[]) => Promise<{ published: number; warnings: string[] }>;
@@ -430,8 +430,10 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   },
   approve: async (contentId, platformOrPlatforms) => {
     const platforms = Array.isArray(platformOrPlatforms) ? platformOrPlatforms : [platformOrPlatforms];
-    await apiApprove(contentId, platforms);
+    const data = await apiApprove(contentId, platforms);
     await get().refreshWorkspace({ soft: true });
+    const ids = data.approved_content_ids;
+    return Array.isArray(ids) && ids.length > 0 ? ids : [contentId];
   },
   reject: async (contentId) => {
     await apiReject(contentId);

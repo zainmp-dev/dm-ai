@@ -90,6 +90,33 @@ def list_social_accounts(db: Session, *, user_id: str, workspace_id: str) -> lis
     return [dict(r) for r in rows]
 
 
+def get_default_active_social_account(
+    db: Session, *, user_id: str, workspace_id: str, platform: str
+) -> dict[str, Any] | None:
+    """Latest active `social_accounts` row for this user/workspace (`linkedin` or `meta`)."""
+    row = db.execute(
+        text(
+            """
+            select *
+            from social_accounts
+            where user_id = :user_id and workspace_id = :workspace_id
+              and platform = :platform and is_active = true
+              and coalesce(account_id, '') <> ''
+            order by updated_at desc
+            limit 1
+            """
+        ),
+        {"user_id": user_id, "workspace_id": workspace_id, "platform": platform},
+    ).mappings().first()
+    if not row:
+        return None
+    account = dict(row)
+    account["access_token"] = decrypt_secret(account.get("access_token"))
+    account["refresh_token"] = decrypt_secret(account.get("refresh_token"))
+    account["meta_page_token"] = decrypt_secret(account.get("meta_page_token"))
+    return account
+
+
 def get_social_account_for_publish(
     db: Session,
     *,

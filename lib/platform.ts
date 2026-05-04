@@ -10,6 +10,8 @@ export function platformLabel(platform: PublishingPlatform | string | null | und
       return "Facebook";
     case "twitter":
       return "Twitter / X";
+    case "meta":
+      return "Facebook / Meta";
     default:
       return "Platform";
   }

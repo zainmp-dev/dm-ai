@@ -367,7 +367,11 @@ export async function apiPostContent(body: {
 
 export async function apiApprove(contentId: string, platforms: PublishingPlatform[]) {
   const uniquePlatforms = Array.from(new Set(platforms));
-  const { data } = await apiClient.post<{ content: Record<string, unknown>[] }>("/approve", {
+  const { data } = await apiClient.post<{
+    content: Record<string, unknown>[];
+    /** One id per selected platform (original + clones when multi-platform). */
+    approved_content_ids?: string[];
+  }>("/approve", {
     content_id: contentId,
     platform: uniquePlatforms[0],
     platforms: uniquePlatforms,
@@ -670,12 +674,14 @@ export function normalizeActivity(raw: Record<string, unknown>): ActivityItem {
 }
 
 export function normalizePublishing(raw: Record<string, unknown>): PublishingLogItem {
+  const pu = raw.post_url;
   return {
     id: String(raw.id ?? ""),
     contentId: String(raw.content_id ?? ""),
     platform: String(raw.platform ?? ""),
     timestamp: String(raw.timestamp ?? ""),
     status: (raw.status as PublishStatus) ?? "Success",
+    postUrl: typeof pu === "string" && pu.trim() ? pu.trim() : null,
   };
 }
 
@@ -692,12 +698,14 @@ export function normalizeMediaLibraryItem(raw: Record<string, unknown>): MediaLi
 
 export function normalizeIntegration(raw: Record<string, unknown> | undefined): IntegrationInfo {
   if (!raw) {
-    return { connected: false, accountName: null, accountHandle: null };
+    return { connected: false, accountName: null, accountHandle: null, accountUrl: null };
   }
+  const au = raw.account_url;
   return {
     connected: Boolean(raw.connected),
     accountName: raw.account_name ? String(raw.account_name) : null,
     accountHandle: raw.account_handle ? String(raw.account_handle) : null,
+    accountUrl: typeof au === "string" && au.trim() ? au.trim() : null,
   };
 }
 
@@ -746,4 +754,43 @@ export function normalizeLeadsGrowth(raw: Record<string, unknown>): LeadsGrowthP
     name: String(raw.name ?? ""),
     leads: Number(raw.leads ?? 0),
   };
+}
+
+export type NativeSocialPostTarget = { platform: string; status: string; post_url?: string | null };
+
+export type NativeSocialPostSummary = {
+  id: string;
+  content: string;
+  status: string;
+  scheduled_at: string | null;
+  created_at: string | null;
+  targets: NativeSocialPostTarget[];
+};
+
+/** Native `posts` rows (FastAPI social module), not flowpilot content library items. */
+export async function apiListNativeSocialPosts(params?: { limit?: number }) {
+  const { data } = await apiClient.get<{ posts: NativeSocialPostSummary[] }>("/posts", {
+    params: { limit: params?.limit ?? 50 },
+    skipGlobalLoading: true,
+  } as InternalAxiosRequestConfig);
+  return data.posts;
+}
+
+export async function apiGetNativePostBoostLinks(postId: string) {
+  const { data } = await apiClient.get<{ links: { platform: string; url: string }[] }>(
+    `/posts/${encodeURIComponent(postId)}/boost-link`,
+    { skipGlobalLoading: true } as InternalAxiosRequestConfig,
+  );
+  return data.links;
+}
+
+/** Optional Meta Marketing API: creates paused campaign/ad (requires ads permissions on token). */
+export async function apiRequestMetaAdsBoost(body: { postId: string; budget: number }) {
+  const { data } = await apiClient.post<{
+    ok: boolean;
+    row_id: string;
+    campaign_id: string;
+    ad_id: string;
+  }>("/ads/boost", { post_id: body.postId, budget: body.budget });
+  return data;
 }
