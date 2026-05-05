@@ -34,6 +34,13 @@ const WORKSPACE_SCENARIOS = [
   { value: "b2b-saas", label: "B2B SaaS" },
   { value: "ecommerce", label: "Ecommerce" },
   { value: "agency", label: "Agency" },
+  { value: "d2c-brand", label: "D2C Brand" },
+  { value: "manufacturing", label: "Manufacturing" },
+  { value: "logistics", label: "Logistics & Supply Chain" },
+  { value: "travel-hospitality", label: "Travel & Hospitality" },
+  { value: "automotive", label: "Automotive" },
+  { value: "beauty-fashion", label: "Beauty & Fashion" },
+  { value: "construction", label: "Construction & Infrastructure" },
   { value: "healthcare", label: "Healthcare" },
   { value: "education", label: "Education" },
   { value: "real-estate", label: "Real Estate" },
@@ -73,8 +80,10 @@ type SetupFormState = {
   selectScenario: (value: WorkspaceScenario) => void;
   customScenario: string;
   setCustomScenario: (v: string) => void;
-  primaryRegion: PrimaryRegionCode;
-  setPrimaryRegion: (v: PrimaryRegionCode) => void;
+  primaryRegions: PrimaryRegionCode[];
+  togglePrimaryRegion: (v: PrimaryRegionCode) => void;
+  customPrimaryMarket: string;
+  setCustomPrimaryMarket: (v: string) => void;
   aiModel: string;
   setAiModel: (v: string) => void;
   competitors: string;
@@ -92,13 +101,16 @@ function WorkspaceSetupFields({
   selectScenario,
   customScenario,
   setCustomScenario,
-  primaryRegion,
-  setPrimaryRegion,
+  primaryRegions,
+  togglePrimaryRegion,
+  customPrimaryMarket,
+  setCustomPrimaryMarket,
   aiModel,
   setAiModel,
   competitors,
   setCompetitors,
 }: SetupFormState) {
+  const hasPrimaryRegion = (value: PrimaryRegionCode) => primaryRegions.includes(value);
   return (
     <>
       <section className="space-y-4 rounded-2xl border border-zinc-200 bg-zinc-50/70 p-4 dark:border-zinc-800 dark:bg-zinc-900/40">
@@ -147,8 +159,13 @@ function WorkspaceSetupFields({
             <Input
               value={customScenario}
               onChange={(event) => setCustomScenario(event.target.value)}
-              placeholder="Type your workspace scenario"
+              placeholder="Type custom scenario and press Enter"
               maxLength={50}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.currentTarget.blur();
+                }
+              }}
             />
           )}
         </div>
@@ -162,89 +179,55 @@ function WorkspaceSetupFields({
                 Primary market
               </Label>
               <p className="text-xs text-zinc-600 dark:text-zinc-300">AI research and content are scoped to this market (UAE and India only).</p>
-              <select
-                id={`${idPrefix}primary-region`}
-                value={primaryRegion}
-                onChange={(e) => setPrimaryRegion(e.target.value as PrimaryRegionCode)}
-                className="h-11 w-full rounded-xl border border-blue-200 bg-white px-3 text-sm font-medium text-zinc-900 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200 dark:border-blue-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:border-blue-500 dark:focus:ring-blue-900/50"
-              >
-                {PRIMARY_REGION_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
+              <div id={`${idPrefix}primary-region`} className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                {PRIMARY_REGION_OPTIONS.map((opt) => {
+                  const active = hasPrimaryRegion(opt.value as PrimaryRegionCode);
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => togglePrimaryRegion(opt.value as PrimaryRegionCode)}
+                      className={`rounded-xl border px-3 py-2 text-left text-sm transition ${
+                        active
+                          ? "border-blue-500 bg-blue-600 text-white shadow-sm"
+                          : "border-blue-200 bg-white text-zinc-800 hover:border-blue-300 dark:border-blue-800 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:border-blue-700"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+              {hasPrimaryRegion("other") && (
+                <Input
+                  value={customPrimaryMarket}
+                  onChange={(e) => setCustomPrimaryMarket(e.target.value)}
+                  placeholder="Type custom market and press Enter"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.currentTarget.blur();
+                    }
+                  }}
+                />
+              )}
               <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                Default timezone: UAE &amp; GCC → Dubai; India / UAE+India → India (override in Profile if needed).
+                You can select multiple markets. System maps them to the best supported region automatically.
               </p>
             </div>
           </div>
         </div>
-        <div className="space-y-2">
-          <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">AI model</p>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                className="h-10 w-full justify-between gap-2 rounded-xl border-zinc-200 bg-white text-left text-sm font-normal text-zinc-900 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-                aria-label="Select AI model"
-                id={`${idPrefix}aiModel`}
-              >
-                <span className="truncate">{labelForAiModel(aiModel)}</span>
-                <ChevronsUpDown className="size-4 shrink-0 opacity-50" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="start"
-              className="max-h-[min(20rem,70vh)] w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto rounded-xl p-0"
-            >
-              {AI_MODEL_GROUPS.map((group, gi) => (
-                <div key={group.label} className="py-1">
-                  <DropdownMenuLabel className="px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                    {group.label}
-                  </DropdownMenuLabel>
-                  {group.options.map((model) => (
-                    <DropdownMenuItem
-                      key={model.value}
-                      className="cursor-pointer rounded-none px-3 py-2"
-                      onSelect={() => setAiModel(model.value)}
-                    >
-                      <span className="flex w-full items-center justify-between gap-2">
-                        <span className="truncate text-sm">{model.label}</span>
-                        {model.value === aiModel && <Check className="size-4 shrink-0 text-blue-600" />}
-                      </span>
-                    </DropdownMenuItem>
-                  ))}
-                  {gi < AI_MODEL_GROUPS.length - 1 ? <DropdownMenuSeparator className="my-0" /> : null}
-                </div>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">Saved with the workspace. Used for research, content, and analytics.</p>
-        </div>
       </section>
-
-      <section className="space-y-3 rounded-2xl border border-blue-100 bg-blue-50/60 p-4 dark:border-blue-900/60 dark:bg-blue-950/25">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-blue-600">Automatic AI flow</p>
-          <p className="mt-1 text-sm text-blue-900 dark:text-blue-100">
-            After setup, FlowPilot creates the master workspace automatically: Agent 1 finds or studies the domain, researches competitors,
-            positioning, feature gaps, and marketing gap issues. Agent 2 uses that strategy output to draft content.
-          </p>
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor={`${idPrefix}competitors`}>Competitor setup inputs (optional)</Label>
-          <Textarea
-            id={`${idPrefix}competitors`}
-            value={competitors}
-            onChange={(event) => setCompetitors(event.target.value)}
-            placeholder={
-              "One competitor per line: name, website, focus\nIf you add competitors, AI compares against them. If empty, AI discovers competitor categories automatically."
-            }
-            className="min-h-28 rounded-xl bg-white dark:bg-zinc-900"
-          />
-        </div>
+      <section className="space-y-2">
+        <Label htmlFor={`${idPrefix}competitors`}>Competitor setup inputs (optional)</Label>
+        <Textarea
+          id={`${idPrefix}competitors`}
+          value={competitors}
+          onChange={(event) => setCompetitors(event.target.value)}
+          placeholder={
+            "One competitor per line: name, website, focus\nIf you add competitors, AI compares against them. If empty, AI discovers competitor categories automatically."
+          }
+          className="min-h-28 rounded-xl bg-white dark:bg-zinc-900"
+        />
       </section>
     </>
   );
@@ -256,7 +239,8 @@ type SetupModalFormSnapshot = {
   scenario: WorkspaceScenario;
   customScenario: string;
   competitors: string;
-  primaryRegion: PrimaryRegionCode;
+  primaryRegions: PrimaryRegionCode[];
+  customPrimaryMarket: string;
   aiModel: string;
 };
 
@@ -272,7 +256,8 @@ function buildSetupModalFormSnapshot(
       scenario: "b2b-saas",
       customScenario: "",
       competitors: "",
-      primaryRegion: normalizePrimaryRegionCode(undefined),
+      primaryRegions: [normalizePrimaryRegionCode(undefined)],
+      customPrimaryMarket: "",
       aiModel: selectedAiModel,
     };
   }
@@ -283,7 +268,8 @@ function buildSetupModalFormSnapshot(
       scenario: (isPresetScenario(editSetup.scenario) ? editSetup.scenario : CUSTOM_SCENARIO_VALUE) as WorkspaceScenario,
       customScenario: isPresetScenario(editSetup.scenario) ? "" : editSetup.scenario,
       competitors: competitorsToText(editSetup.competitors),
-      primaryRegion: normalizePrimaryRegionCode(editSetup.primaryRegion),
+      primaryRegions: [normalizePrimaryRegionCode(editSetup.primaryRegion)],
+      customPrimaryMarket: "",
       aiModel: editSetup.aiModel,
     };
   }
@@ -315,11 +301,32 @@ function SetupWorkspaceModalFormInner({
   const [scenario, setScenario] = useState<WorkspaceScenario>(snapshot.scenario);
   const [customScenario, setCustomScenario] = useState(snapshot.customScenario);
   const [competitors, setCompetitors] = useState(snapshot.competitors);
-  const [primaryRegion, setPrimaryRegion] = useState<PrimaryRegionCode>(snapshot.primaryRegion);
+  const [primaryRegions, setPrimaryRegions] = useState<PrimaryRegionCode[]>(snapshot.primaryRegions);
+  const [customPrimaryMarket, setCustomPrimaryMarket] = useState(snapshot.customPrimaryMarket);
   const [aiModel, setAiModel] = useState(snapshot.aiModel);
   const [saving, setSaving] = useState(false);
   const selectedScenario = scenario === CUSTOM_SCENARIO_VALUE ? customScenario.trim() : scenario;
   const idPrefix = mode === "new" ? "new-" : "edit-";
+  const togglePrimaryRegion = (value: PrimaryRegionCode) => {
+    setPrimaryRegions((prev) => {
+      if (prev.includes(value)) {
+        const next = prev.filter((v) => v !== value);
+        return next.length ? next : [normalizePrimaryRegionCode(undefined)];
+      }
+      return [...prev, value];
+    });
+  };
+
+  const effectivePrimaryRegion = (() => {
+    const values = Array.from(new Set(primaryRegions));
+    if (values.includes("india") && values.some((v) => ["uae-gcc", "saudi-arabia", "qatar", "kuwait", "oman", "bahrain"].includes(v))) {
+      return "uae-india";
+    }
+    if (values.includes("india")) return "india";
+    if (values.some((v) => ["uae-gcc", "saudi-arabia", "qatar", "kuwait", "oman", "bahrain"].includes(v))) return "uae-gcc";
+    if (values.includes("other")) return customPrimaryMarket.trim() ? "other" : "other";
+    return normalizePrimaryRegionCode(undefined);
+  })();
 
   const selectScenario = (value: WorkspaceScenario) => {
     setScenario(value);
@@ -340,8 +347,10 @@ function SetupWorkspaceModalFormInner({
         selectScenario={selectScenario}
         customScenario={customScenario}
         setCustomScenario={setCustomScenario}
-        primaryRegion={primaryRegion}
-        setPrimaryRegion={setPrimaryRegion}
+        primaryRegions={primaryRegions}
+        togglePrimaryRegion={togglePrimaryRegion}
+        customPrimaryMarket={customPrimaryMarket}
+        setCustomPrimaryMarket={setCustomPrimaryMarket}
         aiModel={aiModel}
         setAiModel={setAiModel}
         competitors={competitors}
@@ -362,7 +371,7 @@ function SetupWorkspaceModalFormInner({
               companyName: companyName.trim(),
               website: website.trim(),
               scenario: selectedScenario,
-              primaryRegion,
+              primaryRegion: effectivePrimaryRegion,
               workspaceOwnerName: workspace.profile.name,
               workspaceOwnerEmail: workspace.profile.email,
               aiModel,
@@ -370,7 +379,9 @@ function SetupWorkspaceModalFormInner({
             })
               .then(() => {
                 push(
-                  mode === "edit" ? "Workspace updated. AI flow reran setup research." : "Workspace saved. AI flow completed initial research.",
+                  mode === "edit"
+                    ? "Workspace updated. Run Strategy/Generate in Workflow when ready."
+                    : "Workspace saved. Start Strategy/Generate in Workflow when ready.",
                 );
                 onClose();
                 router.replace("/pipeline?tab=command");
@@ -381,10 +392,10 @@ function SetupWorkspaceModalFormInner({
           {saving ? (
             <>
               <Loader2 className="size-4 shrink-0 animate-spin" aria-hidden />
-              Starting AI flow...
+              Saving workspace...
             </>
           ) : (
-            "Save setup and start AI flow"
+            "Save workspace"
           )}
         </Button>
       </div>
@@ -419,13 +430,13 @@ function SetupWorkspaceModal({
   const description =
     mode === "new"
       ? "Add a company, market, and options below. Switch the active workspace from the list after saving."
-      : "Changes apply to this saved setup. Save to rerun the AI research flow for these details.";
+      : "Changes apply to this saved setup. Save now, then run Strategy/Generate from Workflow.";
 
   const canShowForm = mode === "new" || Boolean(editSetup);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[min(90vh,880px)] max-w-2xl overflow-y-auto rounded-2xl p-0 shadow-lg sm:max-w-2xl">
+      <DialogContent className="max-h-[min(94vh,940px)] max-w-5xl overflow-y-auto rounded-2xl p-0 shadow-lg sm:max-w-5xl">
         <DialogHeader className="space-y-1 border-b border-zinc-100 px-6 pb-4 pt-6 text-left dark:border-zinc-800 sm:px-8 sm:pt-8">
           <DialogTitle className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">{title}</DialogTitle>
           <DialogDescription className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">{description}</DialogDescription>
@@ -595,7 +606,7 @@ function WorkspaceSetupForm({
           {workspaceSetups.length === 0 && (
             <div className="rounded-2xl border border-dashed border-zinc-200 bg-zinc-50/50 p-6 text-center dark:border-zinc-700 dark:bg-zinc-900/30 md:col-span-2">
               <p className="text-sm font-medium text-zinc-800 dark:text-zinc-200">No saved setups yet</p>
-              <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">Create your first workspace to run the AI setup flow.</p>
+              <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">Create your first workspace, then start AI from Workflow.</p>
               <Button type="button" className="mt-4 rounded-xl bg-blue-600 text-white hover:bg-blue-700" onClick={openNewWorkspaceModal}>
                 New workspace
               </Button>

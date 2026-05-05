@@ -36,7 +36,6 @@ from agents import (
     get_openrouter_key_info_for_ui,
     run_analytics_agent,
     run_workspace_content_agent,
-    run_workspace_setup_master,
     run_workspace_search_agent,
     suggest_master_content_post,
 )
@@ -404,13 +403,26 @@ def default_workspace_snapshot(user: dict[str, Any] | None = None) -> dict[str, 
 
 def _normalize_primary_region(value: str | None) -> str:
     v = (value or "").strip().lower()
-    if v in {"uae-gcc", "india", "uae-india"}:
+    allowed = {"uae-gcc", "india", "uae-india", "saudi-arabia", "qatar", "kuwait", "oman", "bahrain", "other"}
+    if "," in v:
+        parts = [p.strip() for p in v.split(",") if p.strip()]
+        has_india = "india" in parts
+        has_gulf = any(p in {"uae-gcc", "saudi-arabia", "qatar", "kuwait", "oman", "bahrain"} for p in parts)
+        if has_india and has_gulf:
+            return "uae-india"
+        if has_india:
+            return "india"
+        if has_gulf:
+            return "uae-gcc"
+        if "other" in parts:
+            return "other"
+    if v in allowed:
         return v
     return "uae-india"
 
 
 def _default_timezone_for_region(region: str) -> str:
-    if region == "uae-gcc":
+    if region in {"uae-gcc", "saudi-arabia", "qatar", "kuwait", "oman", "bahrain"}:
         return "Asia/Dubai"
     if region in {"india", "uae-india"}:
         return "Asia/Kolkata"
@@ -2064,6 +2076,7 @@ def setup_workspace(
     db: Session = Depends(get_db),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
+    """Persist workspace metadata quickly; AI generation runs later from workflow actions."""
     workspace_id = str(user["id"])
     scenario = body.scenario.strip() or "b2b-saas"
     company_name = body.company_name.strip()
@@ -2119,49 +2132,12 @@ def setup_workspace(
         {"workspace_id": workspace_id},
     )
     _seed_demo_metrics(db, workspace_id)
-    db.commit()
-
-    competitor_inputs = normalize_competitor_inputs(body.competitors)
-    master_setup, _master_setup_model = run_workspace_setup_master(
-        workspace_id=workspace_id,
-        company_name=company_name,
-        website=website,
-        scenario=scenario,
-        competitors=competitor_inputs,
-        primary_region=primary_region,
-        ai_model=body.ai_model,
-    )
-    db.execute(
-        text(
-            "update flowpilot_workspace set master_setup_json = :j, updated_at = now() "
-            "where workspace_id = :workspace_id"
-        ),
-        {"j": json.dumps(master_setup, ensure_ascii=True), "workspace_id": workspace_id},
+    record_activity(
+        db,
+        workspace_id,
+        "Workspace saved. Run Strategy and Generate in Workflow to create AI research and content.",
     )
     db.commit()
-
-    try:
-        save_workspace_ai_flow(
-            db,
-            workspace_id=workspace_id,
-            company_name=company_name,
-            website=website,
-            scenario=scenario,
-            competitors=competitor_inputs,
-            ai_model=body.ai_model,
-            replace_content=True,
-            calendar_days=DEFAULT_WORKSPACE_CALENDAR_DAYS,
-            primary_region=primary_region,
-        )
-        db.commit()
-    except Exception:
-        logger.exception("Workspace AI flow failed")
-        db.rollback()
-        try:
-            record_activity(db, workspace_id, "AI flow could not complete automatically. Check AI configuration and rerun competitor research.")
-            db.commit()
-        except Exception:
-            db.rollback()
 
     return workspace_snapshot(db, workspace_id, user)
 
@@ -2550,48 +2526,53 @@ def publish_workspace_content(
     published_count = 0
     warnings: list[str] = []
     for content_id in body.content_ids[:50]:
-        row = _workspace_content_row(db, workspace_id, content_id)
-        if row is None:
-            warnings.append(f"Content {content_id} was not found")
-            continue
-        platform = str(row.get("selected_platform") or "").lower()
-        if platform not in {"linkedin", "instagram", "facebook"}:
-            warnings.append(f"{row['title']} has no supported platform selected")
-            continue
-        if not _publish_platform_connected(db, workspace_id, platform):
-            warnings.append(f"{row['title']}: connect {_required_integration_label(platform)} before publishing")
-            _insert_publishing_log(db, workspace_id, content_id, platform, "Failed")
-            continue
-        mp = str(row.get("media_preview") or "").strip()
-        if platform == "instagram" and not mp:
-            warnings.append(f"{row['title']}: Instagram requires image or video media")
-            _insert_publishing_log(db, workspace_id, content_id, platform, "Failed")
-            continue
-        result = publish_flowpilot_workspace_item(
-            db,
-            user_id=str(user["id"]),
-            workspace_id=workspace_id,
-            channel=platform,
-            content_text=str(row["content_text"]),
-            media_preview=mp or None,
-        )
-        post_url: str | None = None
-        if result.success and result.provider_response:
-            post_url = boost_url_for_target(
-                platform=platform,
-                response=result.provider_response,
-                meta_page_id_hint="",
+        try:
+            row = _workspace_content_row(db, workspace_id, content_id)
+            if row is None:
+                warnings.append(f"Content {content_id} was not found")
+                continue
+            title = str(row.get("title") or row.get("topic") or f"Content {content_id}")
+            platform = str(row.get("selected_platform") or "").lower()
+            if platform not in {"linkedin", "instagram", "facebook"}:
+                warnings.append(f"{title} has no supported platform selected")
+                continue
+            if not _publish_platform_connected(db, workspace_id, platform):
+                warnings.append(f"{title}: connect {_required_integration_label(platform)} before publishing")
+                _insert_publishing_log(db, workspace_id, content_id, platform, "Failed")
+                continue
+            mp = str(row.get("media_preview") or "").strip()
+            if platform == "instagram" and not mp:
+                warnings.append(f"{title}: Instagram requires image or video media")
+                _insert_publishing_log(db, workspace_id, content_id, platform, "Failed")
+                continue
+            result = publish_flowpilot_workspace_item(
+                db,
+                user_id=str(user["id"]),
+                workspace_id=workspace_id,
+                channel=platform,
+                content_text=str(row.get("content_text") or ""),
+                media_preview=mp or None,
             )
-        if result.success:
-            published_count += 1
-            db.execute(
-                text("update flowpilot_content set status = 'PUBLISHED', updated_at = now() where workspace_id = :workspace_id and id = :content_id"),
-                {"workspace_id": workspace_id, "content_id": content_id},
-            )
-            _insert_publishing_log(db, workspace_id, content_id, platform, "Success", post_url=post_url)
-        else:
-            warnings.append(f"{row['title']}: {result.message}")
-            _insert_publishing_log(db, workspace_id, content_id, platform, "Failed")
+            post_url: str | None = None
+            if result.success and result.provider_response:
+                post_url = boost_url_for_target(
+                    platform=platform,
+                    response=result.provider_response,
+                    meta_page_id_hint="",
+                )
+            if result.success:
+                published_count += 1
+                db.execute(
+                    text("update flowpilot_content set status = 'PUBLISHED', updated_at = now() where workspace_id = :workspace_id and id = :content_id"),
+                    {"workspace_id": workspace_id, "content_id": content_id},
+                )
+                _insert_publishing_log(db, workspace_id, content_id, platform, "Success", post_url=post_url)
+            else:
+                warnings.append(f"{title}: {result.message}")
+                _insert_publishing_log(db, workspace_id, content_id, platform, "Failed")
+        except Exception as exc:
+            logger.exception("Workspace publish failed for content_id=%s", content_id)
+            warnings.append(f"Content {content_id}: {str(exc)[:240]}")
     record_activity(db, workspace_id, f"Publish step completed: {published_count} item(s) published.")
     db.commit()
     snapshot = workspace_snapshot(db, workspace_id, user)
