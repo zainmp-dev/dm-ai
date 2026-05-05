@@ -42,6 +42,15 @@ function isSectionId(value: string | null): value is (typeof SECTIONS)[number]["
   return Boolean(value && SECTION_PARAM_IDS.includes(value as (typeof SECTIONS)[number]["id"]));
 }
 
+function linkedinProfileLink(accountUrl: string | null | undefined, accountHandle: string | null | undefined): string | null {
+  const direct = typeof accountUrl === "string" ? accountUrl.trim() : "";
+  if (direct) return direct;
+  const handle = typeof accountHandle === "string" ? accountHandle.trim() : "";
+  if (!handle || handle.startsWith("pending-")) return null;
+  // Fallback so users can still open their LinkedIn page when API vanity URL is unavailable.
+  return `https://www.linkedin.com/in/${encodeURIComponent(handle)}/`;
+}
+
 function SettingsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -144,6 +153,7 @@ function SettingsContent() {
   }
 
   const { linkedin, meta } = workspace.integrations;
+  const linkedinOpenUrl = linkedinProfileLink(linkedin.accountUrl, linkedin.accountHandle);
   const prefs = workspace.preferences;
   const activeSetup = activeWorkspaceId ? workspaceSetups.find((s) => s.id === activeWorkspaceId) : undefined;
   const displayCompany = activeSetup?.companyName?.trim() || workspace.companyName?.trim() || workspace.profile.company || "—";
@@ -381,14 +391,14 @@ function SettingsContent() {
                           {linkedin.accountName}
                           {linkedin.accountHandle ? ` · @${linkedin.accountHandle}` : null}
                         </p>
-                        {linkedin.accountUrl ? (
+                        {linkedinOpenUrl ? (
                           <a
-                            href={linkedin.accountUrl}
+                            href={linkedinOpenUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-1 font-medium text-blue-700 underline-offset-2 hover:text-blue-800 hover:underline dark:text-sky-300 dark:hover:text-sky-200"
                           >
-                            Open LinkedIn profile
+                            Open LinkedIn page
                             <ExternalLink className="size-3.5 shrink-0 opacity-70" aria-hidden />
                           </a>
                         ) : null}

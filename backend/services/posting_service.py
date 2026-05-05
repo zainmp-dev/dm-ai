@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
 
+import requests
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -22,6 +24,33 @@ def _looks_like_video_media(url: str) -> bool:
     return lowered.endswith((".mp4", ".mov", ".m4v", ".webm"))
 
 
+def _clean_post_text_hashtags(content_text: str, *, max_hashtags: int = 8) -> str:
+    """Keep only hashtags from AI content, dedupe, and cap count."""
+    text = (content_text or "").strip()
+    if not text:
+        return ""
+
+    found = re.findall(r"#([A-Za-z0-9_]{2,40})", text)
+    tags: list[str] = []
+    seen: set[str] = set()
+    for raw in found:
+        key = raw.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        tags.append(f"#{raw}")
+        if len(tags) >= max_hashtags:
+            break
+
+    body_without_tags = re.sub(r"(^|\s)#[A-Za-z0-9_]{2,40}\b", " ", text)
+    body = "\n".join(" ".join(line.split()) for line in body_without_tags.splitlines())
+    body = "\n".join(line for line in body.splitlines() if line.strip()).strip()
+    if not tags:
+        return body
+    spacer = "\n\n" if body else ""
+    return f"{body}{spacer}{' '.join(tags)}".strip()
+
+
 def _retry_json(method: str, url: str, *, timeout_seconds: int, log_context: str, attempts: int = 3, **kwargs: Any) -> dict[str, Any]:
     delay = 1.0
     for i in range(attempts):
@@ -36,21 +65,101 @@ def _retry_json(method: str, url: str, *, timeout_seconds: int, log_context: str
     raise RuntimeError(f"{log_context} failed")
 
 
+def _request_bytes(method: str, url: str, *, timeout_seconds: int, log_context: str, **kwargs: Any) -> tuple[bytes, str | None]:
+    try:
+        response = requests.request(method, url, timeout=timeout_seconds, **kwargs)
+        response.raise_for_status()
+    except requests.Timeout as exc:
+        raise RuntimeError(f"{log_context} timed out") from exc
+    except requests.RequestException as exc:
+        detail = exc.response.text[:500] if exc.response is not None else str(exc)
+        raise RuntimeError(f"{log_context} failed: {detail}") from exc
+    return response.content, response.headers.get("Content-Type")
+
+
+def _register_linkedin_image_asset(
+    *, access_token: str, author_urn: str, timeout_seconds: int
+) -> tuple[str, str]:
+    payload = {
+        "registerUploadRequest": {
+            "owner": author_urn,
+            "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
+            "serviceRelationships": [{"relationshipType": "OWNER", "identifier": "urn:li:userGeneratedContent"}],
+        }
+    }
+    data = _retry_json(
+        "POST",
+        "https://api.linkedin.com/v2/assets?action=registerUpload",
+        timeout_seconds=timeout_seconds,
+        log_context="linkedin register image upload",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "LinkedIn-Version": "202405",
+            "X-Restli-Protocol-Version": "2.0.0",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+    )
+    value = data.get("value") if isinstance(data, dict) else None
+    if not isinstance(value, dict):
+        raise RuntimeError("linkedin image upload registration failed")
+    asset = str(value.get("asset") or "").strip()
+    upload_mechanism = value.get("uploadMechanism") if isinstance(value, dict) else None
+    upload_req = (
+        upload_mechanism.get("com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest")
+        if isinstance(upload_mechanism, dict)
+        else None
+    )
+    upload_url = str(upload_req.get("uploadUrl") or "").strip() if isinstance(upload_req, dict) else ""
+    if not asset or not upload_url:
+        raise RuntimeError("linkedin image upload URL missing")
+    return asset, upload_url
+
+
+def _upload_linkedin_image_from_url(*, media_url: str, upload_url: str, timeout_seconds: int) -> None:
+    raw, media_type = _request_bytes("GET", media_url, timeout_seconds=timeout_seconds, log_context="download publish image")
+    if not raw:
+        raise RuntimeError("linkedin image is empty")
+    ct = (media_type or "").split(";", 1)[0].strip().lower()
+    if ct and not ct.startswith("image/"):
+        raise RuntimeError(f"linkedin image publish requires image URL, got '{ct}'")
+    try:
+        response = requests.put(
+            upload_url,
+            data=raw,
+            headers={"Content-Type": ct or "application/octet-stream"},
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+    except requests.Timeout as exc:
+        raise RuntimeError("linkedin image upload timed out") from exc
+    except requests.RequestException as exc:
+        detail = exc.response.text[:500] if exc.response is not None else str(exc)
+        raise RuntimeError(f"linkedin image upload failed: {detail}") from exc
+
+
 def _publish_to_linkedin(*, content: str, media_url: str | None, access_token: str, author_urn: str, timeout_seconds: int) -> dict[str, Any]:
+    cleaned_content = _clean_post_text_hashtags(content)[:3000]
     payload = {
         "author": author_urn,
         "lifecycleState": "PUBLISHED",
         "specificContent": {
             "com.linkedin.ugc.ShareContent": {
-                "shareCommentary": {"text": content[:3000]},
+                "shareCommentary": {"text": cleaned_content},
                 "shareMediaCategory": "NONE",
             }
         },
         "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
     }
     if media_url:
-        payload["specificContent"]["com.linkedin.ugc.ShareContent"]["shareMediaCategory"] = "ARTICLE"
-        payload["specificContent"]["com.linkedin.ugc.ShareContent"]["media"] = [{"status": "READY", "originalUrl": media_url}]
+        asset_urn, upload_url = _register_linkedin_image_asset(
+            access_token=access_token,
+            author_urn=author_urn,
+            timeout_seconds=timeout_seconds,
+        )
+        _upload_linkedin_image_from_url(media_url=media_url, upload_url=upload_url, timeout_seconds=timeout_seconds)
+        payload["specificContent"]["com.linkedin.ugc.ShareContent"]["shareMediaCategory"] = "IMAGE"
+        payload["specificContent"]["com.linkedin.ugc.ShareContent"]["media"] = [{"status": "READY", "media": asset_urn}]
     return _retry_json(
         "POST",
         "https://api.linkedin.com/v2/ugcPosts",
@@ -121,13 +230,29 @@ def _resolve_pending_linkedin_account(db: Session, *, account: dict[str, Any], t
     return account
 
 
-def _publish_to_meta_page(*, content: str, page_id: str, page_token: str, timeout_seconds: int) -> dict[str, Any]:
+def _publish_to_meta_page(
+    *,
+    content: str,
+    page_id: str,
+    page_token: str,
+    timeout_seconds: int,
+    media_url: str | None = None,
+) -> dict[str, Any]:
+    text_with_hashtags = _clean_post_text_hashtags(content)
+    if media_url:
+        return _retry_json(
+            "POST",
+            f"https://graph.facebook.com/v22.0/{page_id}/photos",
+            timeout_seconds=timeout_seconds,
+            log_context="meta page photo publish",
+            data={"url": media_url, "caption": text_with_hashtags, "access_token": page_token},
+        )
     return _retry_json(
         "POST",
         f"https://graph.facebook.com/v22.0/{page_id}/feed",
         timeout_seconds=timeout_seconds,
         log_context="meta page publish",
-        data={"message": content, "access_token": page_token},
+        data={"message": text_with_hashtags, "access_token": page_token},
     )
 
 
@@ -153,12 +278,13 @@ def _validate_meta_page_token(*, page_token: str, timeout_seconds: int) -> None:
 
 
 def _publish_to_instagram(*, content: str, image_url: str, ig_user_id: str, page_token: str, timeout_seconds: int) -> dict[str, Any]:
+    text_with_hashtags = _clean_post_text_hashtags(content)
     container = _retry_json(
         "POST",
         f"https://graph.facebook.com/v22.0/{ig_user_id}/media",
         timeout_seconds=timeout_seconds,
         log_context="meta instagram media create",
-        data={"image_url": image_url, "caption": content[:2200], "access_token": page_token},
+        data={"image_url": image_url, "caption": text_with_hashtags[:2200], "access_token": page_token},
     )
     creation_id = str(container.get("id") or "").strip()
     if not creation_id:
@@ -269,6 +395,7 @@ def publish_post(db: Session, *, post_id: str, user_id: str, workspace_id: str) 
                         page_id=page_id,
                         page_token=page_token,
                         timeout_seconds=s.request_timeout_seconds,
+                        media_url=str(post["media_url"]) if post.get("media_url") else None,
                     )
             else:
                 raise RuntimeError(f"unsupported platform: {platform}")
@@ -392,6 +519,7 @@ def publish_flowpilot_workspace_item(
             page_id=page_id,
             page_token=page_token,
             timeout_seconds=s.request_timeout_seconds,
+            media_url=resolved_media,
         )
         return PublishResult(True, "Published", provider_response=response)
     except Exception as exc:
