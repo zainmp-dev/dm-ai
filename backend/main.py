@@ -51,6 +51,7 @@ from routes.social_routes import router as social_router
 from services.boost_link_service import boost_url_for_target
 from services.oauth_service import linkedin_connect_url, meta_connect_url
 from utils.http_client import request_json
+from utils.rate_limit import check_rate_limit
 from utils.state_signing import encode_state, new_nonce, verify_state
 
 
@@ -2626,6 +2627,12 @@ def connect_linkedin(
     db: Session = Depends(get_db),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
+    client_ip = request.client.host if request.client else "unknown"
+    user_id = str(user["id"])
+    if not check_rate_limit(f"connect-linkedin:ip:{client_ip}", max_requests=8, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Too many LinkedIn connect attempts. Please wait a minute and retry.")
+    if not check_rate_limit(f"connect-linkedin:user:{user_id}", max_requests=5, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Too many LinkedIn connect attempts. Please wait a minute and retry.")
     workspace_id = str(user["id"])
     try:
         auth_url = linkedin_connect_url(
@@ -2646,6 +2653,12 @@ def connect_meta(
     db: Session = Depends(get_db),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
+    client_ip = request.client.host if request.client else "unknown"
+    user_id = str(user["id"])
+    if not check_rate_limit(f"connect-meta:ip:{client_ip}", max_requests=8, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Too many Meta connect attempts. Please wait a minute and retry.")
+    if not check_rate_limit(f"connect-meta:user:{user_id}", max_requests=5, window_seconds=60):
+        raise HTTPException(status_code=429, detail="Too many Meta connect attempts. Please wait a minute and retry.")
     workspace_id = str(user["id"])
     try:
         auth_url = meta_connect_url(

@@ -55,6 +55,16 @@ function SettingsContent() {
   const savePreferences = useWorkspaceStore((s) => s.savePreferences);
   const { push } = useToast();
   const [active, setActive] = useState<(typeof SECTIONS)[number]["id"]>("overview");
+  const [linkedinConnecting, setLinkedinConnecting] = useState(false);
+  const [metaConnecting, setMetaConnecting] = useState(false);
+
+  function formatConnectError(platform: "LinkedIn" | "Meta", error: unknown): string {
+    const raw = error instanceof Error ? error.message : "Could not reach the server.";
+    if (/\b429\b|rate[\s-]?limit/i.test(raw)) {
+      return `${platform} is rate-limited right now. Wait 2-5 minutes, then try again once.`;
+    }
+    return raw;
+  }
 
   useEffect(() => {
     const section = searchParams.get("section");
@@ -393,17 +403,19 @@ function SettingsContent() {
                       ? "border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-100 dark:hover:bg-emerald-900/30"
                       : "border-blue-200 bg-blue-600 text-white shadow-sm hover:bg-blue-700 dark:border-blue-700 dark:bg-blue-600 dark:text-white dark:hover:bg-blue-500",
                   )}
-                  onClick={() =>
+                  disabled={linkedinConnecting}
+                  onClick={() => {
+                    if (linkedinConnecting) return;
+                    setLinkedinConnecting(true);
                     void connectLinkedin("_self")
                       .then((ok) =>
                         push(ok ? "Redirecting to LinkedIn…" : "LinkedIn connect is unavailable right now.", { durationMs: 6000 }),
                       )
-                      .catch((e: unknown) =>
-                        push(e instanceof Error ? e.message : "Could not reach the server.", { durationMs: 9000 }),
-                      )
-                  }
+                      .catch((e: unknown) => push(formatConnectError("LinkedIn", e), { durationMs: 9000 }))
+                      .finally(() => setLinkedinConnecting(false));
+                  }}
                 >
-                  {linkedin.connected ? "Reconnect" : "Connect"}
+                  {linkedinConnecting ? "Connecting…" : linkedin.connected ? "Reconnect" : "Connect"}
                 </Button>
               </div>
 
@@ -476,17 +488,19 @@ function SettingsContent() {
                       ? "border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-100 dark:hover:bg-emerald-900/30"
                       : "border-blue-200 bg-blue-600 text-white shadow-sm hover:bg-blue-700 dark:border-blue-700 dark:bg-blue-600 dark:text-white dark:hover:bg-blue-500",
                   )}
-                  onClick={() =>
+                  disabled={metaConnecting}
+                  onClick={() => {
+                    if (metaConnecting) return;
+                    setMetaConnecting(true);
                     void connectMeta("_self")
                       .then((ok) =>
                         push(ok ? "Redirecting to Meta…" : "Meta connect is unavailable right now.", { durationMs: 6000 }),
                       )
-                      .catch((e: unknown) =>
-                        push(e instanceof Error ? e.message : "Could not reach the server.", { durationMs: 9000 }),
-                      )
-                  }
+                      .catch((e: unknown) => push(formatConnectError("Meta", e), { durationMs: 9000 }))
+                      .finally(() => setMetaConnecting(false));
+                  }}
                 >
-                  {meta.connected ? "Reconnect" : "Connect"}
+                  {metaConnecting ? "Connecting…" : meta.connected ? "Reconnect" : "Connect"}
                 </Button>
               </div>
             </CardContent>

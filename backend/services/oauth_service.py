@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlencode
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 OAUTH_STATE_TTL_SECONDS = 900
+_LINKEDIN_USERINFO_MAX_ATTEMPTS = 3
 
 
 def _normalize_origin(origin: str) -> str:
@@ -108,6 +110,22 @@ def _facebook_oauth_error_hint(exc: RuntimeError) -> str:
     if m:
         return f'Facebook reports: "{m.group(1)}"'
     return ""
+
+
+def _is_http_status_error(exc: RuntimeError, status_code: int) -> bool:
+    return f"({status_code})" in str(exc)
+
+
+def _friendly_linkedin_userinfo_error(exc: RuntimeError) -> str:
+    if _is_http_status_error(exc, 429):
+        return (
+            "LinkedIn temporarily rate-limited profile verification (429). "
+            "Please wait a few minutes and connect again. Avoid repeated reconnect clicks."
+        )
+    return (
+        "LinkedIn profile verification failed after OAuth. "
+        "Please try connect again. If it keeps failing, verify your LinkedIn app products/scopes and rate limits."
+    )
 
 
 def _preflight_meta_app_credentials(*, app_id: str, s: Any) -> None:
@@ -242,31 +260,53 @@ def linkedin_callback(db: Session, *, code: str, state: str, app_origin: str | N
     ids = parse_and_verify_state(db, state)
     redirect_uri = _resolved_linkedin_redirect_uri(app_origin=app_origin)
     logger.info("LinkedIn token exchange redirect_uri=%s", redirect_uri)
-    token = request_json(
-        "POST",
-        LINKEDIN_TOKEN_URL,
-        timeout_seconds=s.request_timeout_seconds,
-        log_context="linkedin access token",
-        data={
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": redirect_uri,
-            "client_id": s.linkedin_client_id,
-            "client_secret": s.linkedin_client_secret,
-        },
-    )
+    try:
+        token = request_json(
+            "POST",
+            LINKEDIN_TOKEN_URL,
+            timeout_seconds=s.request_timeout_seconds,
+            log_context="linkedin access token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "client_id": s.linkedin_client_id,
+                "client_secret": s.linkedin_client_secret,
+            },
+        )
+    except RuntimeError as exc:
+        if _is_http_status_error(exc, 429):
+            raise RuntimeError(
+                "LinkedIn token exchange is rate-limited (429). Please wait a few minutes and try again."
+            ) from exc
+        raise
     access_token = str(token.get("access_token") or "").strip()
     if not access_token:
         raise RuntimeError("LinkedIn callback failed: missing access token")
     expires_in = int(token.get("expires_in") or 3600)
     refresh_token = str(token.get("refresh_token") or "").strip() or None
-    profile = request_json(
-        "GET",
-        "https://api.linkedin.com/v2/userinfo",
-        timeout_seconds=s.request_timeout_seconds,
-        log_context="linkedin userinfo",
-        headers={"Authorization": f"Bearer {access_token}"},
-    )
+    profile: dict[str, Any] | None = None
+    last_userinfo_error: RuntimeError | None = None
+    for attempt in range(1, _LINKEDIN_USERINFO_MAX_ATTEMPTS + 1):
+        try:
+            profile = request_json(
+                "GET",
+                "https://api.linkedin.com/v2/userinfo",
+                timeout_seconds=s.request_timeout_seconds,
+                log_context="linkedin userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            break
+        except RuntimeError as exc:
+            last_userinfo_error = exc
+            if _is_http_status_error(exc, 429) and attempt < _LINKEDIN_USERINFO_MAX_ATTEMPTS:
+                # Backoff for LinkedIn APP+MEMBER throttle windows.
+                time.sleep(1.5 * attempt)
+                continue
+            raise RuntimeError(_friendly_linkedin_userinfo_error(exc)) from exc
+    if profile is None:
+        assert last_userinfo_error is not None
+        raise RuntimeError(_friendly_linkedin_userinfo_error(last_userinfo_error)) from last_userinfo_error
     account_id = str(profile.get("sub") or "").strip()
     account_name = str(profile.get("name") or profile.get("given_name") or "LinkedIn Account").strip()
     if not account_id:
@@ -340,18 +380,23 @@ def meta_callback(db: Session, *, code: str, state: str, app_origin: str | None 
     redirect_uri = _resolved_meta_redirect_uri(app_origin=app_origin)
     graph_base = _meta_graph_api_base(s)
     app_id = _normalize_meta_app_id(s.meta_app_id or "")
-    short = request_json(
-        "GET",
-        f"{graph_base}/oauth/access_token",
-        timeout_seconds=s.request_timeout_seconds,
-        log_context="meta oauth token",
-        params={
-            "client_id": app_id,
-            "client_secret": s.meta_app_secret,
-            "redirect_uri": redirect_uri,
-            "code": code,
-        },
-    )
+    try:
+        short = request_json(
+            "GET",
+            f"{graph_base}/oauth/access_token",
+            timeout_seconds=s.request_timeout_seconds,
+            log_context="meta oauth token",
+            params={
+                "client_id": app_id,
+                "client_secret": s.meta_app_secret,
+                "redirect_uri": redirect_uri,
+                "code": code,
+            },
+        )
+    except RuntimeError as exc:
+        if _is_http_status_error(exc, 429):
+            raise RuntimeError("Meta OAuth is rate-limited right now. Please wait a few minutes and reconnect.") from exc
+        raise
     token = str(short.get("access_token") or "").strip()
     if not token:
         raise RuntimeError("Meta callback failed: missing access token")
@@ -377,6 +422,11 @@ def meta_callback(db: Session, *, code: str, state: str, app_origin: str | None 
         params={"access_token": user_token, "fields": "id,name,access_token,instagram_business_account{id}"},
     )
     page_rows = pages.get("data") if isinstance(pages.get("data"), list) else []
+    if not page_rows:
+        raise RuntimeError(
+            "Meta connection succeeded but no Facebook Pages are available. "
+            "Use a Facebook Business Page and make sure your user is an admin in Meta Business Manager."
+        )
     primary_name = "Meta"
     primary_handle = ""
     primary_url: str | None = None
