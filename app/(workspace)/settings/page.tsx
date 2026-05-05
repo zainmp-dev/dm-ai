@@ -47,8 +47,12 @@ function linkedinProfileLink(accountUrl: string | null | undefined, accountHandl
   if (direct) return direct;
   const handle = typeof accountHandle === "string" ? accountHandle.trim() : "";
   if (!handle || handle.startsWith("pending-")) return null;
-  // Fallback so users can still open their LinkedIn page when API vanity URL is unavailable.
-  return `https://www.linkedin.com/in/${encodeURIComponent(handle)}/`;
+  // Use /in/{slug} only for likely vanity slugs; LinkedIn account ids are not valid public profile paths.
+  if (/^[a-z0-9-]{3,100}$/.test(handle) && /[a-z]/.test(handle)) {
+    return `https://www.linkedin.com/in/${encodeURIComponent(handle)}/`;
+  }
+  // Safe fallback: LinkedIn resolves this to the signed-in member profile context.
+  return "https://www.linkedin.com/me/";
 }
 
 function SettingsContent() {
