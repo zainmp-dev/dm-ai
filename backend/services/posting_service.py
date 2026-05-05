@@ -17,6 +17,11 @@ from utils.http_client import request_json
 logger = logging.getLogger(__name__)
 
 
+def _looks_like_video_media(url: str) -> bool:
+    lowered = url.lower().split("?", 1)[0]
+    return lowered.endswith((".mp4", ".mov", ".m4v", ".webm"))
+
+
 def _retry_json(method: str, url: str, *, timeout_seconds: int, log_context: str, attempts: int = 3, **kwargs: Any) -> dict[str, Any]:
     delay = 1.0
     for i in range(attempts):
@@ -363,6 +368,11 @@ def publish_flowpilot_workspace_item(
         if ch == "instagram":
             if not resolved_media:
                 return PublishResult(False, media_warning or "Instagram requires image media with a public HTTPS URL")
+            if _looks_like_video_media(resolved_media):
+                return PublishResult(
+                    False,
+                    "Instagram video publishing is not enabled yet. Please use an image URL for now.",
+                )
             if not ig_id:
                 return PublishResult(
                     False,

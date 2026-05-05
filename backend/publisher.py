@@ -7,6 +7,7 @@ import requests
 import re
 import time
 
+from config import fresh_settings
 from database import Content
 
 
