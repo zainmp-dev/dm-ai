@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import re
 import time
@@ -128,6 +130,22 @@ def _friendly_linkedin_userinfo_error(exc: RuntimeError) -> str:
     )
 
 
+def _decode_jwt_payload_unverified(jwt_token: str) -> dict[str, Any]:
+    parts = (jwt_token or "").split(".")
+    if len(parts) < 2:
+        return {}
+    payload_b64 = parts[1].strip()
+    if not payload_b64:
+        return {}
+    padding = "=" * ((4 - len(payload_b64) % 4) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode((payload_b64 + padding).encode("ascii")).decode("utf-8")
+        obj = json.loads(decoded)
+    except Exception:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
 def _preflight_meta_app_credentials(*, app_id: str, s: Any) -> None:
     """
     Ask Facebook for an app access token before sending the user to the OAuth dialog.
@@ -194,21 +212,49 @@ def _store_nonce(db: Session, *, nonce: str, user_id: str, workspace_id: str, tt
 
 
 def _consume_nonce(db: Session, *, nonce: str, user_id: str, workspace_id: str) -> bool:
-    row = db.execute(
+    """
+    Single-use CSRF nonce with a short replay grace window.
+
+    Why: OAuth providers and browsers can trigger duplicate callbacks (tab refresh, retry, StrictMode races).
+    We mark nonce as used, but allow a very short second callback for the same signed state+user+workspace
+    to make callback handling idempotent in production without broadly weakening CSRF protections.
+    """
+    fresh = db.execute(
         text(
             """
-            delete from flowpilot_oauth_nonce
-            where nonce = :nonce
-              and user_id = :user_id
-              and workspace_id = :workspace_id
-              and used_at is null
-              and expires_at > now()
+            update flowpilot_oauth_nonce
+               set used_at = now()
+             where nonce = :nonce
+               and user_id = :user_id
+               and workspace_id = :workspace_id
+               and used_at is null
+               and expires_at > now()
             returning nonce
             """
         ),
         {"nonce": nonce, "user_id": user_id, "workspace_id": workspace_id},
     ).first()
-    return row is not None
+    if fresh is not None:
+        return True
+
+    # Short idempotency window for duplicate callback delivery.
+    replay = db.execute(
+        text(
+            """
+            select nonce
+              from flowpilot_oauth_nonce
+             where nonce = :nonce
+               and user_id = :user_id
+               and workspace_id = :workspace_id
+               and expires_at > now()
+               and used_at is not null
+               and used_at > now() - interval '120 seconds'
+             limit 1
+            """
+        ),
+        {"nonce": nonce, "user_id": user_id, "workspace_id": workspace_id},
+    ).first()
+    return replay is not None
 
 
 def create_oauth_state(db: Session, *, user_id: str, workspace_id: str) -> str:
@@ -285,6 +331,7 @@ def linkedin_callback(db: Session, *, code: str, state: str, app_origin: str | N
         raise RuntimeError("LinkedIn callback failed: missing access token")
     expires_in = int(token.get("expires_in") or 3600)
     refresh_token = str(token.get("refresh_token") or "").strip() or None
+    id_token_claims = _decode_jwt_payload_unverified(str(token.get("id_token") or ""))
     profile: dict[str, Any] | None = None
     last_userinfo_error: RuntimeError | None = None
     for attempt in range(1, _LINKEDIN_USERINFO_MAX_ATTEMPTS + 1):
@@ -305,10 +352,17 @@ def linkedin_callback(db: Session, *, code: str, state: str, app_origin: str | N
                 continue
             raise RuntimeError(_friendly_linkedin_userinfo_error(exc)) from exc
     if profile is None:
-        assert last_userinfo_error is not None
-        raise RuntimeError(_friendly_linkedin_userinfo_error(last_userinfo_error)) from last_userinfo_error
+        # Fallback: OpenID token claims can identify the account when userinfo is throttled.
+        if id_token_claims:
+            profile = id_token_claims
+            logger.warning("LinkedIn userinfo unavailable; using id_token claims fallback")
+        else:
+            assert last_userinfo_error is not None
+            raise RuntimeError(_friendly_linkedin_userinfo_error(last_userinfo_error)) from last_userinfo_error
     account_id = str(profile.get("sub") or "").strip()
-    account_name = str(profile.get("name") or profile.get("given_name") or "LinkedIn Account").strip()
+    account_name = str(
+        profile.get("name") or profile.get("given_name") or profile.get("preferred_username") or profile.get("email") or "LinkedIn Account"
+    ).strip()
     if not account_id:
         raise RuntimeError("LinkedIn callback failed: userinfo missing account id")
     upsert_social_account(
