@@ -106,6 +106,10 @@ function SettingsContent() {
     if (showToast) {
       if (toast === "linkedin_connected") {
         push("LinkedIn connected. You can publish to LinkedIn from the pipeline.", { durationMs: oauthToastMs });
+      } else if (toast === "linkedin_connected_pending") {
+        push("LinkedIn connected. Profile details are syncing due to temporary LinkedIn throttling.", {
+          durationMs: oauthToastMs,
+        });
       } else if (toast === "linkedin_failed") {
         push(detail ? `LinkedIn connection failed: ${detail}` : "LinkedIn connection failed. Try Connect again.", {
           durationMs: oauthToastMs,

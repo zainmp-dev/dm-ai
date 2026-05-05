@@ -77,9 +77,14 @@ function CallbackView({
           const payload = (await res.json().catch(() => ({}))) as { detail?: string };
           throw new Error(payload.detail || "LinkedIn callback failed");
         }
+        const payload = (await res.json().catch(() => ({}))) as { profile_pending?: boolean };
         setStatus("ok");
-        setDetail("LinkedIn account connected");
-        window.location.assign("/settings?section=integrations&toast=linkedin_connected");
+        setDetail(payload.profile_pending ? "LinkedIn connected (profile syncing)" : "LinkedIn account connected");
+        window.location.assign(
+          payload.profile_pending
+            ? "/settings?section=integrations&toast=linkedin_connected_pending"
+            : "/settings?section=integrations&toast=linkedin_connected",
+        );
       })
       .catch((e: unknown) => {
         if (cancelled) return;

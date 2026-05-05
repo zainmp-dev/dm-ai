@@ -124,7 +124,11 @@ def auth_linkedin_callback(
         },
     )
     db.commit()
-    return {"ok": True, "workspace_id": info["workspace_id"]}
+    return {
+        "ok": True,
+        "workspace_id": info["workspace_id"],
+        "profile_pending": bool(info.get("profile_pending")),
+    }
 
 
 @router.get("/auth/meta/callback")

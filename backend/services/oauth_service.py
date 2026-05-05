@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -23,6 +24,13 @@ LINKEDIN_AUTH_URL = "https://www.linkedin.com/oauth/v2/authorization"
 LINKEDIN_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 OAUTH_STATE_TTL_SECONDS = 900
 _LINKEDIN_USERINFO_MAX_ATTEMPTS = 3
+# ADDED: OAuth callback duplicate suppression window (seconds).
+_LINKEDIN_CODE_CACHE_TTL_SECONDS = 600
+# ADDED: In-memory dedupe/result cache for OAuth authorization codes.
+_LINKEDIN_CODE_RESULT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+# ADDED: Per-code lock map to prevent concurrent duplicate callback processing.
+_LINKEDIN_CODE_LOCKS: dict[str, threading.Lock] = {}
+_LINKEDIN_CODE_LOCKS_GUARD = threading.Lock()
 
 
 def _normalize_origin(origin: str) -> str:
@@ -130,6 +138,56 @@ def _friendly_linkedin_userinfo_error(exc: RuntimeError) -> str:
     )
 
 
+# ADDED
+def _friendly_linkedin_rate_limit_error() -> str:
+    return "LinkedIn is temporarily rate-limiting. Please try again in a few minutes."
+
+
+# ADDED
+def _linkedin_cache_cleanup(now_ts: float | None = None) -> None:
+    ts = now_ts if now_ts is not None else time.time()
+    expired_codes = [k for k, (expires_at, _) in _LINKEDIN_CODE_RESULT_CACHE.items() if expires_at <= ts]
+    for k in expired_codes:
+        _LINKEDIN_CODE_RESULT_CACHE.pop(k, None)
+
+
+# ADDED
+def _linkedin_code_lock(code: str) -> threading.Lock:
+    with _LINKEDIN_CODE_LOCKS_GUARD:
+        lock = _LINKEDIN_CODE_LOCKS.get(code)
+        if lock is None:
+            lock = threading.Lock()
+            _LINKEDIN_CODE_LOCKS[code] = lock
+        return lock
+
+
+# ADDED
+def _linkedin_call_with_retry(
+    call,
+    *,
+    operation: str,
+    retry_delays_seconds: tuple[float, ...] = (1.0, 3.0, 5.0),
+):
+    for attempt in range(1, len(retry_delays_seconds) + 2):
+        try:
+            if attempt > 1:
+                logger.info("LinkedIn %s retry attempt=%s", operation, attempt - 1)
+            return call()
+        except RuntimeError as exc:
+            if not _is_http_status_error(exc, 429):
+                raise
+            if attempt > len(retry_delays_seconds):
+                raise
+            sleep_seconds = retry_delays_seconds[attempt - 1]
+            logger.warning(
+                "LinkedIn %s rate-limited (429), backing off %.1fs (attempt=%s)",
+                operation,
+                sleep_seconds,
+                attempt,
+            )
+            time.sleep(sleep_seconds)
+
+
 def _decode_jwt_payload_unverified(jwt_token: str) -> dict[str, Any]:
     parts = (jwt_token or "").split(".")
     if len(parts) < 2:
@@ -144,6 +202,32 @@ def _decode_jwt_payload_unverified(jwt_token: str) -> dict[str, Any]:
     except Exception:
         return {}
     return obj if isinstance(obj, dict) else {}
+
+
+def _linkedin_profile_from_me(*, access_token: str, timeout_seconds: int) -> dict[str, Any]:
+    me = request_json(
+        "GET",
+        "https://api.linkedin.com/v2/me",
+        timeout_seconds=timeout_seconds,
+        log_context="linkedin me profile fallback",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "LinkedIn-Version": "202405",
+            "X-Restli-Protocol-Version": "2.0.0",
+        },
+    )
+    account_id = str(me.get("id") or "").strip()
+    if not account_id:
+        return {}
+    # Name fields vary by app permissions and LinkedIn API behavior.
+    account_name = str(
+        me.get("localizedFirstName")
+        or me.get("firstName")
+        or me.get("localizedLastName")
+        or me.get("lastName")
+        or "LinkedIn Account"
+    ).strip()
+    return {"sub": account_id, "name": account_name}
 
 
 def _preflight_meta_app_credentials(*, app_id: str, s: Any) -> None:
@@ -303,105 +387,166 @@ def linkedin_connect_url(db: Session, *, user_id: str, workspace_id: str, app_or
 
 def linkedin_callback(db: Session, *, code: str, state: str, app_origin: str | None = None) -> dict[str, Any]:
     s = fresh_settings()
-    ids = parse_and_verify_state(db, state)
-    redirect_uri = _resolved_linkedin_redirect_uri(app_origin=app_origin)
-    logger.info("LinkedIn token exchange redirect_uri=%s", redirect_uri)
+    logger.info("LinkedIn OAuth callback triggered")
+    now_ts = time.time()
+    _linkedin_cache_cleanup(now_ts)
+    cached = _LINKEDIN_CODE_RESULT_CACHE.get(code)
+    if cached and cached[0] > now_ts:
+        logger.info("LinkedIn OAuth callback duplicate code detected, returning cached result")
+        return cached[1]
+    lock = _linkedin_code_lock(code)
+    if not lock.acquire(blocking=False):
+        logger.info("LinkedIn OAuth callback already processing for same code")
+        raise RuntimeError("LinkedIn callback is already processing. Please wait a moment and try again.")
     try:
-        token = request_json(
-            "POST",
-            LINKEDIN_TOKEN_URL,
-            timeout_seconds=s.request_timeout_seconds,
-            log_context="linkedin access token",
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-                "client_id": s.linkedin_client_id,
-                "client_secret": s.linkedin_client_secret,
-            },
-        )
-    except RuntimeError as exc:
-        if _is_http_status_error(exc, 429):
-            raise RuntimeError(
-                "LinkedIn token exchange is rate-limited (429). Please wait a few minutes and try again."
-            ) from exc
-        raise
-    access_token = str(token.get("access_token") or "").strip()
-    if not access_token:
-        raise RuntimeError("LinkedIn callback failed: missing access token")
-    expires_in = int(token.get("expires_in") or 3600)
-    refresh_token = str(token.get("refresh_token") or "").strip() or None
-    id_token_claims = _decode_jwt_payload_unverified(str(token.get("id_token") or ""))
-    profile: dict[str, Any] | None = None
-    last_userinfo_error: RuntimeError | None = None
-    for attempt in range(1, _LINKEDIN_USERINFO_MAX_ATTEMPTS + 1):
+        # ADDED: double-check cache after acquiring lock in case another worker completed first.
+        now_ts = time.time()
+        _linkedin_cache_cleanup(now_ts)
+        cached = _LINKEDIN_CODE_RESULT_CACHE.get(code)
+        if cached and cached[0] > now_ts:
+            logger.info("LinkedIn OAuth callback duplicate code detected after lock, returning cached result")
+            return cached[1]
+
+        ids = parse_and_verify_state(db, state)
+        redirect_uri = _resolved_linkedin_redirect_uri(app_origin=app_origin)
+        logger.info("LinkedIn token exchange redirect_uri=%s", redirect_uri)
+        logger.info("LinkedIn token exchange attempt started")
         try:
-            profile = request_json(
-                "GET",
-                "https://api.linkedin.com/v2/userinfo",
-                timeout_seconds=s.request_timeout_seconds,
-                log_context="linkedin userinfo",
-                headers={"Authorization": f"Bearer {access_token}"},
+            token = _linkedin_call_with_retry(
+                lambda: request_json(
+                    "POST",
+                    LINKEDIN_TOKEN_URL,
+                    timeout_seconds=s.request_timeout_seconds,
+                    log_context="linkedin access token",
+                    data={
+                        "grant_type": "authorization_code",
+                        "code": code,
+                        "redirect_uri": redirect_uri,
+                        "client_id": s.linkedin_client_id,
+                        "client_secret": s.linkedin_client_secret,
+                    },
+                ),
+                operation="token exchange",
             )
-            break
+            logger.info("LinkedIn token exchange success")
         except RuntimeError as exc:
-            last_userinfo_error = exc
-            if _is_http_status_error(exc, 429) and attempt < _LINKEDIN_USERINFO_MAX_ATTEMPTS:
-                # Backoff for LinkedIn APP+MEMBER throttle windows.
-                time.sleep(1.5 * attempt)
-                continue
+            logger.warning("LinkedIn token exchange failure: %s", exc)
+            if _is_http_status_error(exc, 429):
+                raise RuntimeError(_friendly_linkedin_rate_limit_error()) from exc
+            raise
+
+        access_token = str(token.get("access_token") or "").strip()
+        if not access_token:
+            raise RuntimeError("LinkedIn callback failed: missing access token")
+        expires_in = int(token.get("expires_in") or 3600)
+        refresh_token = str(token.get("refresh_token") or "").strip() or None
+        id_token_claims = _decode_jwt_payload_unverified(str(token.get("id_token") or ""))
+        profile: dict[str, Any] | None = None
+
+        logger.info("LinkedIn profile fetch attempt started")
+        try:
+            profile = _linkedin_call_with_retry(
+                lambda: request_json(
+                    "GET",
+                    "https://api.linkedin.com/v2/userinfo",
+                    timeout_seconds=s.request_timeout_seconds,
+                    log_context="linkedin userinfo",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                ),
+                operation="userinfo fetch",
+            )
+        except RuntimeError as exc:
+            if _is_http_status_error(exc, 429):
+                raise RuntimeError(_friendly_linkedin_rate_limit_error()) from exc
             raise RuntimeError(_friendly_linkedin_userinfo_error(exc)) from exc
-    if profile is None:
-        # Fallback: OpenID token claims can identify the account when userinfo is throttled.
-        if id_token_claims:
-            profile = id_token_claims
-            logger.warning("LinkedIn userinfo unavailable; using id_token claims fallback")
-        else:
-            assert last_userinfo_error is not None
-            raise RuntimeError(_friendly_linkedin_userinfo_error(last_userinfo_error)) from last_userinfo_error
-    account_id = str(profile.get("sub") or "").strip()
-    account_name = str(
-        profile.get("name") or profile.get("given_name") or profile.get("preferred_username") or profile.get("email") or "LinkedIn Account"
-    ).strip()
-    if not account_id:
-        raise RuntimeError("LinkedIn callback failed: userinfo missing account id")
-    upsert_social_account(
-        db,
-        user_id=ids["user_id"],
-        workspace_id=ids["workspace_id"],
-        platform="linkedin",
-        account_id=account_id,
-        account_name=account_name,
-        access_token=access_token,
-        refresh_token=refresh_token,
-        expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires_in),
-    )
-    account_url: str | None = None
-    vanity = ""
-    try:
-        me = request_json(
-            "GET",
-            "https://api.linkedin.com/v2/me?projection=(id,vanityName)",
-            timeout_seconds=s.request_timeout_seconds,
-            log_context="linkedin me vanity",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "LinkedIn-Version": "202405",
-                "X-Restli-Protocol-Version": "2.0.0",
-            },
+
+        if profile is None:
+            # Fallback: OpenID token claims can identify the account when userinfo is throttled.
+            if id_token_claims:
+                profile = id_token_claims
+                logger.warning("LinkedIn userinfo unavailable; using id_token claims fallback")
+            else:
+                try:
+                    profile = _linkedin_call_with_retry(
+                        lambda: _linkedin_profile_from_me(
+                            access_token=access_token,
+                            timeout_seconds=s.request_timeout_seconds,
+                        ),
+                        operation="/v2/me profile fetch",
+                    )
+                    if profile:
+                        logger.warning("LinkedIn userinfo unavailable; using /v2/me profile fallback")
+                except RuntimeError:
+                    profile = None
+                if not profile:
+                    # Last-resort production fallback: keep token connection alive even while profile endpoints
+                    # are temporarily throttled. We resolve the real member id later during publish/reconnect.
+                    pending_id = f"pending-{ids['user_id']}"
+                    profile = {"sub": pending_id, "name": "LinkedIn (profile pending)"}
+                    logger.warning(
+                        "LinkedIn profile endpoints unavailable; storing pending account id=%s",
+                        pending_id,
+                    )
+        account_id = str(profile.get("sub") or "").strip()
+        account_name = str(
+            profile.get("name")
+            or profile.get("given_name")
+            or profile.get("preferred_username")
+            or profile.get("email")
+            or "LinkedIn Account"
+        ).strip()
+        if not account_id:
+            raise RuntimeError("LinkedIn callback failed: userinfo missing account id")
+        upsert_social_account(
+            db,
+            user_id=ids["user_id"],
+            workspace_id=ids["workspace_id"],
+            platform="linkedin",
+            account_id=account_id,
+            account_name=account_name,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=expires_in),
         )
-        vanity = str(me.get("vanityName") or "").strip()
-        if vanity:
-            account_url = f"https://www.linkedin.com/in/{vanity}/"
-    except Exception:
-        logger.warning("LinkedIn /v2/me (vanity) unavailable; account link omitted", exc_info=True)
-    handle = vanity or account_id
-    return {
-        **ids,
-        "account_name": account_name,
-        "account_handle": handle,
-        "account_url": account_url,
-    }
+        account_url: str | None = None
+        vanity = ""
+        try:
+            me = _linkedin_call_with_retry(
+                lambda: request_json(
+                    "GET",
+                    "https://api.linkedin.com/v2/me?projection=(id,vanityName)",
+                    timeout_seconds=s.request_timeout_seconds,
+                    log_context="linkedin me vanity",
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "LinkedIn-Version": "202405",
+                        "X-Restli-Protocol-Version": "2.0.0",
+                    },
+                ),
+                operation="vanity fetch",
+            )
+            vanity = str(me.get("vanityName") or "").strip()
+            if vanity:
+                account_url = f"https://www.linkedin.com/in/{vanity}/"
+        except RuntimeError as exc:
+            if _is_http_status_error(exc, 429):
+                logger.warning("LinkedIn vanity fetch rate-limited; account link omitted")
+            else:
+                logger.warning("LinkedIn /v2/me (vanity) unavailable; account link omitted", exc_info=True)
+        handle = vanity or account_id
+        profile_pending = account_id.startswith("pending-")
+        response_payload = {
+            **ids,
+            "account_name": account_name,
+            "account_handle": handle,
+            "account_url": account_url,
+            "profile_pending": profile_pending,
+        }
+        # ADDED: cache successful callback result to avoid duplicate code re-processing.
+        _LINKEDIN_CODE_RESULT_CACHE[code] = (time.time() + _LINKEDIN_CODE_CACHE_TTL_SECONDS, response_payload)
+        return response_payload
+    finally:
+        lock.release()
 
 
 def meta_connect_url(db: Session, *, user_id: str, workspace_id: str, app_origin: str | None = None) -> str:

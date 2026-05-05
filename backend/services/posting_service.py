@@ -61,6 +61,61 @@ def _publish_to_linkedin(*, content: str, media_url: str | None, access_token: s
     )
 
 
+def _resolve_pending_linkedin_account(db: Session, *, account: dict[str, Any], timeout_seconds: int) -> dict[str, Any]:
+    account_id = str(account.get("account_id") or "").strip()
+    if not account_id.startswith("pending-"):
+        return account
+    token = str(account.get("access_token") or "").strip()
+    if not token:
+        return account
+    try:
+        me = _retry_json(
+            "GET",
+            "https://api.linkedin.com/v2/me",
+            timeout_seconds=timeout_seconds,
+            log_context="linkedin resolve pending profile",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "LinkedIn-Version": "202405",
+                "X-Restli-Protocol-Version": "2.0.0",
+            },
+        )
+    except RuntimeError as exc:
+        # Keep account usable for reconnect cycle; do not hard fail here.
+        logger.warning("Pending LinkedIn profile resolution failed: %s", str(exc)[:220])
+        return account
+    resolved_id = str(me.get("id") or "").strip()
+    if not resolved_id:
+        return account
+    resolved_name = str(
+        me.get("localizedFirstName") or me.get("firstName") or account.get("account_name") or "LinkedIn Account"
+    ).strip()
+    db.execute(
+        text(
+            """
+            update social_accounts
+               set account_id = :account_id,
+                   account_name = :account_name,
+                   updated_at = now()
+             where id = cast(:id as uuid)
+               and user_id = :user_id
+               and workspace_id = :workspace_id
+               and platform = 'linkedin'
+            """
+        ),
+        {
+            "id": str(account["id"]),
+            "user_id": str(account["user_id"]),
+            "workspace_id": str(account["workspace_id"]),
+            "account_id": resolved_id,
+            "account_name": resolved_name[:300],
+        },
+    )
+    account["account_id"] = resolved_id
+    account["account_name"] = resolved_name
+    return account
+
+
 def _publish_to_meta_page(*, content: str, page_id: str, page_token: str, timeout_seconds: int) -> dict[str, Any]:
     return _retry_json(
         "POST",
@@ -176,6 +231,11 @@ def publish_post(db: Session, *, post_id: str, user_id: str, workspace_id: str) 
                 raise RuntimeError("Account inactive or token expired. Please reconnect your account")
             response: dict[str, Any]
             if platform == "linkedin":
+                account = _resolve_pending_linkedin_account(
+                    db,
+                    account=account,
+                    timeout_seconds=s.request_timeout_seconds,
+                )
                 response = _publish_to_linkedin(
                     content=str(post["content"]),
                     media_url=post.get("media_url"),
@@ -279,6 +339,11 @@ def publish_flowpilot_workspace_item(
 
     try:
         if ch == "linkedin":
+            refreshed = _resolve_pending_linkedin_account(
+                db,
+                account=refreshed,
+                timeout_seconds=s.request_timeout_seconds,
+            )
             response = _publish_to_linkedin(
                 content=content_text,
                 media_url=resolved_media,

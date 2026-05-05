@@ -282,7 +282,9 @@ def run_token_maintenance(db: Session) -> int:
                     log_context="meta token health",
                     params={"access_token": token},
                 )
-        except Exception:
+        except Exception as exc:
+            if "(429)" in str(exc) or " 429" in str(exc) or "rate limit" in str(exc).lower():
+                continue
             mark_social_account_inactive(
                 db,
                 social_account_id=str(row["id"]),
