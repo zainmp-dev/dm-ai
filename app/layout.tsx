@@ -73,11 +73,11 @@ export default function RootLayout({
         suppressHydrationWarning
         className="min-h-full flex flex-col bg-background text-foreground"
       >
-        {/* Apply saved theme (or default dark) before first paint to avoid flash */}
+        {/* Apply saved theme before first paint to avoid flash — default is light */}
         <script
           suppressHydrationWarning
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('flow-theme');if(t==='light'){document.documentElement.classList.remove('dark')}else{document.documentElement.classList.add('dark');if(!t)localStorage.setItem('flow-theme','dark')}}catch(e){}})()`,
+            __html: `(function(){try{var t=localStorage.getItem('flow-theme');if(t==='dark'){document.documentElement.classList.add('dark')}else{document.documentElement.classList.remove('dark')}}catch(e){}})()`,
           }}
         />
         <script
