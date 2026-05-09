@@ -375,9 +375,8 @@ function Step2Content({
                 {/* thumbnail */}
                 <div className="size-12 shrink-0 overflow-hidden rounded-lg border border-[#e5e7eb] bg-[#f9fafb]">
                   <MediaPreviewBlock
-                    mediaUrl={item.mediaPreview}
+                    url={item.mediaPreview}
                     mediaType={item.mediaType}
-                    compact
                     className="size-full object-cover"
                   />
                 </div>
@@ -465,7 +464,7 @@ function Step3Review({
             {selectedContent.map((c) => (
               <div key={c.id} className="flex items-center gap-2.5 rounded-lg border border-[#e5e7eb] bg-white px-3 py-2">
                 <div className="size-8 shrink-0 overflow-hidden rounded-md border border-[#e5e7eb] bg-[#f9fafb]">
-                  <MediaPreviewBlock mediaUrl={c.mediaPreview} mediaType={c.mediaType} compact className="size-full object-cover" />
+                  <MediaPreviewBlock url={c.mediaPreview} mediaType={c.mediaType} className="size-full object-cover" />
                 </div>
                 <p className="min-w-0 flex-1 truncate text-[12px] font-medium text-[#374151]">{c.title}</p>
                 <ContentStatusBadge status={c.status} />
@@ -774,7 +773,7 @@ function AddContentDialog({
                     )}
                   >
                     <div className="size-10 shrink-0 overflow-hidden rounded-lg border border-[#e5e7eb] bg-[#f9fafb]">
-                      <MediaPreviewBlock mediaUrl={item.mediaPreview} mediaType={item.mediaType} compact className="size-full object-cover" />
+                      <MediaPreviewBlock url={item.mediaPreview} mediaType={item.mediaType} className="size-full object-cover" />
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className={cn("truncate text-[12.5px] font-semibold", assigned ? "text-[#1a56db]" : "text-[#111827]")}>
@@ -989,7 +988,7 @@ function CampaignDetail({
                 {/* thumbnail */}
                 <div className="aspect-[4/3] w-full overflow-hidden bg-[#f9fafb]">
                   <MediaPreviewBlock
-                    mediaUrl={item.mediaPreview}
+                    url={item.mediaPreview}
                     mediaType={item.mediaType}
                     className="h-full w-full object-cover"
                   />
