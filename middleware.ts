@@ -7,6 +7,8 @@ function isProtectedPath(pathname: string): boolean {
   if (pathname === "/") return false;
   if (PUBLIC_PATHS.has(pathname)) return false;
   if (pathname.startsWith("/api")) return false;
+  // Allow static public assets (images, fonts, manifests, etc.)
+  if (/\.(?:jpg|jpeg|png|gif|webp|svg|ico|woff2?|ttf|otf|json|txt|xml)$/i.test(pathname)) return false;
   return true;
 }
 

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useRef, useState } from "react";
-import { Eye, EyeOff, Lock, LogIn, Mail } from "lucide-react";
+import { ArrowLeft, Eye, EyeOff, Lock, LogIn, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -129,6 +129,13 @@ export default function LoginPage() {
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#f8fbff] p-4 text-[#0f172a]">
       <div className="pointer-events-none absolute -top-24 left-1/2 h-[24rem] w-[24rem] -translate-x-1/2 rounded-full bg-[#2563EB]/20 blur-[120px]" />
       <div className="pointer-events-none absolute bottom-0 right-0 h-[20rem] w-[20rem] rounded-full bg-[#60a5fa]/20 blur-[110px]" />
+      <Link
+        href="/"
+        className="absolute left-5 top-5 z-20 flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-[#64748b] shadow-sm transition-colors hover:bg-slate-50 hover:text-[#0f172a]"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        Home
+      </Link>
       <div className="w-full max-w-md">
       <Card className="relative z-10 w-full rounded-3xl border-slate-200 bg-white p-1 shadow-xl">
         <CardHeader className="pb-4 pt-8">
@@ -137,7 +144,9 @@ export default function LoginPage() {
               <LogIn className="h-5 w-5 text-[#0f172a]" />
             </div>
           </div>
-          <p className="text-center text-xs font-semibold uppercase tracking-[0.2em] text-[#64748b]">FlowPilot</p>
+          <div className="flex justify-center">
+            <Link href="/" className="text-xs font-semibold uppercase tracking-[0.2em] text-[#64748b] hover:text-[#0f172a] transition-colors">FlowPilot</Link>
+          </div>
           <CardTitle className="mt-2 text-center text-3xl font-semibold tracking-tight">Sign in with email</CardTitle>
           <CardDescription className="mx-auto max-w-xs text-center text-base text-[#64748b]">
             Log in to your workspace and continue your flow.

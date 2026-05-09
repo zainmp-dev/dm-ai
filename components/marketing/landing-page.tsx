@@ -5,19 +5,13 @@ import { motion } from "framer-motion";
 import {
   ArrowRight,
   BarChart3,
-  Bell,
-  Calendar,
   CheckCircle2,
   CheckSquare,
   FileText,
-  Filter,
   GitBranch,
   Globe,
   Layers,
   Lock,
-  MoreHorizontal,
-  Search,
-  Settings,
   Shield,
   Users,
 } from "lucide-react";
@@ -328,7 +322,7 @@ function HeroSection() {
           initial={{ opacity: 0, y: 22, scale: 0.99 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
           transition={{ duration: 0.7, delay: 0.18, ease: EASE }}
-          className="-mr-6 md:-mr-10"
+          className="-mr-6 md:-mr-10 pb-8 pl-6"
         >
           <ProductMockup />
         </motion.div>
@@ -339,127 +333,41 @@ function HeroSection() {
 
 function ProductMockup() {
   return (
-    <div className="overflow-hidden rounded-tl-2xl border border-[rgba(15,23,42,0.08)] bg-white shadow-[0_24px_80px_rgba(15,23,42,0.1),0_4px_16px_rgba(15,23,42,0.05)]">
-      {/* Window chrome */}
-      <div className="flex items-center gap-2 border-b border-[rgba(15,23,42,0.06)] bg-[#F8FAFC] px-4 py-2.5">
-        <span className="h-2.5 w-2.5 rounded-full bg-[#FC7070]" />
-        <span className="h-2.5 w-2.5 rounded-full bg-[#FDBC40]" />
-        <span className="h-2.5 w-2.5 rounded-full bg-[#34C759]" />
-        <span className="mx-auto max-w-[200px] flex-1 rounded bg-[#E8ECF0] px-3 py-1 text-center text-[11px] text-[#94A3B8]">
-          app.flowpilot.com/campaigns
-        </span>
+    <div className="relative">
+      {/* Back window: Social Connect (Integrations) — offset behind */}
+      <div className="absolute -bottom-6 -left-6 w-[88%] overflow-hidden rounded-2xl border border-[rgba(15,23,42,0.1)] bg-white shadow-[0_12px_48px_rgba(15,23,42,0.08)] opacity-80 scale-[0.97] origin-bottom-left z-0">
+        <MacWindowChrome url="flowpilot.officekithr.net/settings/integrations" />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/dashboard-integrations.jpg"
+          alt="FlowPilot Integrations — connect LinkedIn and Meta"
+          className="block w-full"
+        />
       </div>
 
-      {/* App shell */}
-      <div className="flex h-[420px] overflow-hidden">
-        {/* Sidebar */}
-        <aside className="flex w-[48px] flex-col items-center gap-1 border-r border-[rgba(15,23,42,0.06)] bg-white py-3">
-          {[
-            { Icon: Layers, active: true },
-            { Icon: CheckSquare, active: false },
-            { Icon: Calendar, active: false },
-            { Icon: BarChart3, active: false },
-            { Icon: Shield, active: false },
-          ].map(({ Icon, active }, i) => (
-            <div
-              key={i}
-              className={`flex h-8 w-8 items-center justify-center rounded-lg ${
-                active ? "bg-[#0B1020] text-white" : "text-[#94A3B8]"
-              }`}
-            >
-              <Icon className="h-3.5 w-3.5" />
-            </div>
-          ))}
-          <div className="mt-auto">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg text-[#C8D0DA]">
-              <Settings className="h-3.5 w-3.5" />
-            </div>
-          </div>
-        </aside>
-
-        {/* Main panel */}
-        <div className="flex flex-1 flex-col overflow-hidden">
-          {/* Panel header */}
-          <div className="flex items-center justify-between border-b border-[rgba(15,23,42,0.06)] px-4 py-3">
-            <div>
-              <p className="text-[13px] font-semibold text-[#0B1020]">Active Campaigns</p>
-              <p className="text-[11px] text-[#94A3B8]">4 active · 2 pending review</p>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <button className="flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(15,23,42,0.08)] text-[#94A3B8]">
-                <Filter className="h-3 w-3" />
-              </button>
-              <button className="flex h-7 w-7 items-center justify-center rounded-md border border-[rgba(15,23,42,0.08)] text-[#94A3B8]">
-                <Search className="h-3 w-3" />
-              </button>
-            </div>
-          </div>
-
-          {/* Table header */}
-          <div className="flex items-center gap-3 border-b border-[rgba(15,23,42,0.04)] bg-[#F8FAFC] px-4 py-2">
-            {["Campaign", "Status", "Channels", "Due", "Team"].map((h, i) => (
-              <span
-                key={h}
-                className={`text-[10px] font-medium uppercase tracking-[0.1em] text-[#94A3B8] ${
-                  i === 0 ? "flex-1" : i === 1 ? "w-[82px]" : i === 2 ? "w-[100px]" : i === 3 ? "w-[46px]" : "w-[56px]"
-                }`}
-              >
-                {h}
-              </span>
-            ))}
-          </div>
-
-          {/* Rows */}
-          <div className="flex-1 divide-y divide-[rgba(15,23,42,0.04)] overflow-auto">
-            {HERO_CAMPAIGNS.map((c) => (
-              <div
-                key={c.name}
-                className="flex items-center gap-3 px-4 py-3.5 transition-colors hover:bg-[#F8FAFC]"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[12px] font-medium text-[#0B1020]">{c.name}</p>
-                  <div className="mt-1.5 h-[3px] w-full max-w-[130px] overflow-hidden rounded-full bg-[#E8ECF0]">
-                    <div
-                      className="h-full rounded-full bg-[#2563EB]"
-                      style={{ width: `${c.progress}%`, opacity: c.progress === 100 ? 0.4 : 0.8 }}
-                    />
-                  </div>
-                </div>
-                <div className="w-[82px]">
-                  <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${c.statusStyle}`}>
-                    {c.status}
-                  </span>
-                </div>
-                <div className="w-[100px]">
-                  <p className="text-[11px] text-[#5B6475]">{c.channels}</p>
-                </div>
-                <div className="w-[46px]">
-                  <p className="text-[11px] text-[#5B6475]">{c.due}</p>
-                </div>
-                <div className="flex w-[56px] -space-x-1.5">
-                  {c.initials.slice(0, 3).map((ini) => (
-                    <div
-                      key={ini}
-                      className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-white bg-[#E2E8F0] text-[8px] font-semibold text-[#64748B]"
-                    >
-                      {ini[0]}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {/* Status bar */}
-          <div className="flex items-center justify-between border-t border-[rgba(15,23,42,0.06)] px-4 py-2">
-            <p className="text-[11px] text-[#94A3B8]">Showing 4 of 18 campaigns</p>
-            <div className="flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
-              <span className="text-[11px] font-medium text-[#5B6475]">3 need attention</span>
-            </div>
-          </div>
-        </div>
+      {/* Front window: Workflow — main focus */}
+      <div className="relative z-10 overflow-hidden rounded-2xl border border-[rgba(15,23,42,0.08)] bg-white shadow-[0_24px_80px_rgba(15,23,42,0.12),0_4px_16px_rgba(15,23,42,0.06)]">
+        <MacWindowChrome url="flowpilot.officekithr.net/workflow" />
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src="/dashboard-workflow.jpg"
+          alt="FlowPilot Workflow — end-to-end campaign pipeline"
+          className="block w-full"
+        />
       </div>
+    </div>
+  );
+}
+
+function MacWindowChrome({ url }: { url: string }) {
+  return (
+    <div className="flex items-center gap-2 border-b border-[rgba(15,23,42,0.06)] bg-[#F3F4F6] px-4 py-2.5">
+      <span className="h-2.5 w-2.5 rounded-full bg-[#FC7070]" />
+      <span className="h-2.5 w-2.5 rounded-full bg-[#FDBC40]" />
+      <span className="h-2.5 w-2.5 rounded-full bg-[#34C759]" />
+      <span className="mx-auto max-w-[240px] flex-1 rounded-md bg-white/80 px-3 py-1 text-center text-[11px] text-[#94A3B8] border border-[rgba(15,23,42,0.07)]">
+        {url}
+      </span>
     </div>
   );
 }
@@ -562,7 +470,7 @@ function DashboardSection() {
 
         <motion.div
           variants={fadeUp}
-          className="mt-10 overflow-hidden rounded-2xl border border-[rgba(15,23,42,0.08)] bg-white shadow-[0_20px_60px_rgba(15,23,42,0.08)]"
+          className="mt-10 overflow-hidden rounded-2xl border border-[rgba(15,23,42,0.08)] shadow-[0_24px_80px_rgba(15,23,42,0.1),0_4px_16px_rgba(15,23,42,0.05)]"
         >
           <FullDashboard />
         </motion.div>
@@ -572,248 +480,15 @@ function DashboardSection() {
 }
 
 function FullDashboard() {
-  const dashCampaigns = [
-    ...HERO_CAMPAIGNS,
-    {
-      name: "US Q2 Demand Gen — Wave 2",
-      status: "Published",
-      statusStyle: "bg-slate-50 text-slate-400 border-slate-200",
-      channels: "All Channels",
-      due: "Done",
-      initials: ["MK", "SC", "TN", "JP"],
-      progress: 100,
-    },
-  ];
-
   return (
-    <div className="flex h-[540px] overflow-hidden">
-      {/* Sidebar */}
-      <aside className="flex w-[196px] flex-col border-r border-[rgba(15,23,42,0.06)] bg-white p-3">
-        <div className="mb-5 flex items-center gap-2.5 px-2 pt-1">
-          <div className="h-6 w-6 rounded-md bg-[#0B1020]" />
-          <span className="text-[12px] font-semibold tracking-tight text-[#0B1020]">FlowPilot</span>
-        </div>
-
-        <div className="space-y-0.5">
-          {[
-            { label: "Campaigns", Icon: Layers, active: true },
-            { label: "Approvals", Icon: CheckSquare, active: false, badge: "3" },
-            { label: "Publishing", Icon: Calendar, active: false },
-            { label: "Analytics", Icon: BarChart3, active: false },
-            { label: "Governance", Icon: Shield, active: false },
-            { label: "Team", Icon: Users, active: false },
-          ].map(({ label, Icon, active, badge }) => (
-            <div
-              key={label}
-              className={`flex items-center justify-between rounded-lg px-3 py-2 ${
-                active ? "bg-[#F1F5F9] text-[#0B1020]" : "text-[#5B6475]"
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Icon className="h-3.5 w-3.5" />
-                <span className="text-[12px] font-medium">{label}</span>
-              </div>
-              {badge && (
-                <span className="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-[#2563EB] px-1 text-[9px] font-bold text-white">
-                  {badge}
-                </span>
-              )}
-            </div>
-          ))}
-        </div>
-
-        <div className="mt-auto flex items-center gap-2 rounded-lg px-2 py-2">
-          <div className="flex h-7 w-7 items-center justify-center rounded-full bg-[#2563EB] text-[10px] font-bold text-white">
-            MK
-          </div>
-          <div className="min-w-0">
-            <p className="text-[11px] font-semibold text-[#0B1020]">Maya Kim</p>
-            <p className="text-[10px] text-[#94A3B8]">Campaign Lead</p>
-          </div>
-        </div>
-      </aside>
-
-      {/* Main content */}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        {/* Topbar */}
-        <div className="flex items-center justify-between border-b border-[rgba(15,23,42,0.06)] px-5 py-3">
-          <p className="text-[14px] font-semibold text-[#0B1020]">Campaigns</p>
-          <div className="flex items-center gap-3">
-            <Bell className="h-4 w-4 text-[#C8D0DA]" />
-            <div className="h-4 w-px bg-[rgba(15,23,42,0.06)]" />
-            <button className="flex h-7 items-center gap-1.5 rounded-lg border border-[rgba(15,23,42,0.1)] bg-white px-3 text-[11px] font-medium text-[#0B1020] hover:bg-[#F8FAFC]">
-              + New Campaign
-            </button>
-          </div>
-        </div>
-
-        {/* Metrics strip */}
-        <div className="flex border-b border-[rgba(15,23,42,0.06)] bg-[#F8FAFC]">
-          {[
-            { label: "Active", val: "18" },
-            { label: "In Review", val: "4" },
-            { label: "Approved", val: "7" },
-            { label: "Scheduled", val: "11" },
-          ].map((m, i) => (
-            <div
-              key={m.label}
-              className={`flex-1 px-5 py-3 ${i < 3 ? "border-r border-[rgba(15,23,42,0.06)]" : ""}`}
-            >
-              <p className="text-[18px] font-semibold tracking-[-0.02em] text-[#0B1020]">{m.val}</p>
-              <p className="text-[10px] text-[#94A3B8]">{m.label}</p>
-            </div>
-          ))}
-        </div>
-
-        {/* Table */}
-        <div className="flex-1 overflow-auto">
-          <div className="flex items-center gap-3 border-b border-[rgba(15,23,42,0.04)] px-5 py-2">
-            {["Campaign", "Status", "Channels", "Owner", "Due", ""].map((h, i) => (
-              <span
-                key={`${h}-${i}`}
-                className={`text-[10px] font-medium uppercase tracking-[0.1em] text-[#94A3B8] ${
-                  i === 0
-                    ? "flex-1"
-                    : i === 1
-                    ? "w-[88px]"
-                    : i === 2
-                    ? "w-[100px]"
-                    : i === 3
-                    ? "w-[72px]"
-                    : i === 4
-                    ? "w-[52px]"
-                    : "w-[28px]"
-                }`}
-              >
-                {h}
-              </span>
-            ))}
-          </div>
-
-          <div className="divide-y divide-[rgba(15,23,42,0.04)]">
-            {dashCampaigns.map((c) => (
-              <div
-                key={c.name}
-                className="flex items-center gap-3 px-5 py-3.5 transition-colors hover:bg-[#F8FAFC]"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-[13px] font-medium text-[#0B1020]">{c.name}</p>
-                  <div className="mt-1.5 h-[3px] w-full max-w-[180px] overflow-hidden rounded-full bg-[#E8ECF0]">
-                    <div
-                      className="h-full rounded-full bg-[#2563EB]"
-                      style={{ width: `${c.progress}%`, opacity: c.progress === 100 ? 0.3 : 0.7 }}
-                    />
-                  </div>
-                </div>
-                <div className="w-[88px]">
-                  <span className={`rounded-full border px-2.5 py-0.5 text-[10px] font-medium ${c.statusStyle}`}>
-                    {c.status}
-                  </span>
-                </div>
-                <div className="w-[100px]">
-                  <p className="text-[11px] text-[#5B6475]">{c.channels}</p>
-                </div>
-                <div className="flex w-[72px] -space-x-1.5">
-                  {c.initials.slice(0, 3).map((ini) => (
-                    <div
-                      key={ini}
-                      className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-white bg-[#E2E8F0] text-[8px] font-semibold text-[#64748B]"
-                    >
-                      {ini[0]}
-                    </div>
-                  ))}
-                  {c.initials.length > 3 && (
-                    <div className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-white bg-[#F1F5F9] text-[8px] font-medium text-[#94A3B8]">
-                      +{c.initials.length - 3}
-                    </div>
-                  )}
-                </div>
-                <div className="w-[52px]">
-                  <p className="text-[11px] text-[#5B6475]">{c.due}</p>
-                </div>
-                <div className="flex w-[28px] justify-end">
-                  <button className="text-[#D1D9E0] hover:text-[#5B6475]">
-                    <MoreHorizontal className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Right panel */}
-      <aside className="hidden w-[212px] flex-col border-l border-[rgba(15,23,42,0.06)] bg-white xl:flex">
-        <div className="border-b border-[rgba(15,23,42,0.06)] px-4 py-3">
-          <p className="text-[12px] font-semibold text-[#0B1020]">Pending Approvals</p>
-          <p className="text-[10px] text-[#94A3B8]">3 items need review</p>
-        </div>
-
-        <div className="divide-y divide-[rgba(15,23,42,0.04)]">
-          {[
-            {
-              task: "Healthcare Legal Copy",
-              type: "Legal Review",
-              urgency: "Urgent",
-              urgencyStyle: "text-red-600 bg-red-50",
-              initials: "SC",
-              avatarBg: "bg-emerald-500",
-            },
-            {
-              task: "APAC Brand Deck v4",
-              type: "Brand Review",
-              urgency: "Today",
-              urgencyStyle: "text-amber-700 bg-amber-50",
-              initials: "TN",
-              avatarBg: "bg-violet-500",
-            },
-            {
-              task: "Q2 Exec Summary",
-              type: "Exec Sign-off",
-              urgency: "This week",
-              urgencyStyle: "text-slate-500 bg-slate-50",
-              initials: "JP",
-              avatarBg: "bg-blue-500",
-            },
-          ].map((item) => (
-            <div key={item.task} className="px-4 py-3">
-              <div className="flex items-start gap-2.5">
-                <div
-                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white ${item.avatarBg}`}
-                >
-                  {item.initials}
-                </div>
-                <div className="min-w-0">
-                  <p className="truncate text-[11px] font-semibold text-[#0B1020]">{item.task}</p>
-                  <p className="text-[10px] text-[#94A3B8]">{item.type}</p>
-                </div>
-              </div>
-              <div className="mt-2.5 flex items-center justify-between">
-                <span className={`rounded-full px-2 py-0.5 text-[9px] font-medium ${item.urgencyStyle}`}>
-                  {item.urgency}
-                </span>
-                <button className="text-[11px] font-medium text-[#2563EB]">Review →</button>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="mt-auto border-t border-[rgba(15,23,42,0.06)] px-4 py-4">
-          <p className="text-[11px] font-semibold text-[#0B1020]">Publishing Queue</p>
-          <div className="mt-2.5 space-y-1.5">
-            {[
-              { label: "14 posts scheduled today", dot: "bg-blue-500" },
-              { label: "6 regions · 3 channels", dot: "bg-emerald-500" },
-              { label: "Next publish in 22 min", dot: "bg-amber-400" },
-            ].map((item) => (
-              <div key={item.label} className="flex items-center gap-2">
-                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${item.dot}`} />
-                <span className="text-[10px] text-[#5B6475]">{item.label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </aside>
+    <div className="overflow-hidden rounded-2xl">
+      <MacWindowChrome url="flowpilot.officekithr.net/workflow" />
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src="/dashboard-workflow.jpg"
+        alt="FlowPilot Workflow — end-to-end campaign pipeline"
+        className="block w-full"
+      />
     </div>
   );
 }
@@ -1176,9 +851,9 @@ function Footer() {
 
       <div className="border-t border-[rgba(15,23,42,0.06)] px-6 py-5 md:px-10">
         <div className="mx-auto flex max-w-7xl items-center justify-between">
-          <p className="text-[12px] text-[#94A3B8]">© 2024 FlowPilot. All rights reserved.</p>
+          <p className="text-[12px] text-[#94A3B8]">© 2026 Flowpilot.officekithr.net. All rights reserved.</p>
           <div className="flex items-center gap-5 text-[12px] text-[#94A3B8]">
-            {["Privacy", "Terms", "Security"].map((l) => (
+            {["Privacy", "Terms", "Security"].map(() => (
               <a key={l} href="#" className="transition-colors hover:text-[#5B6475]">
                 {l}
               </a>

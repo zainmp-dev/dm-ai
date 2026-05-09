@@ -5,6 +5,7 @@ import "./globals.css";
 import { GlobalApiActivity } from "@/components/global-api-activity";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ToastProvider } from "@/components/ui/toast";
+import { GlobalThemeToggle } from "@/components/global-theme-toggle";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -98,6 +99,7 @@ export default function RootLayout({
         <ThemeProvider>
           <ToastProvider>
             <GlobalApiActivity />
+            <GlobalThemeToggle />
             {children}
           </ToastProvider>
         </ThemeProvider>
