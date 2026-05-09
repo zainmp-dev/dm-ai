@@ -3,19 +3,19 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 :root {
-  --background: #f5f7fb;
-  --foreground: #18181b;
-  --muted: #71717a;
+  --background: #f5f7fa;
+  --foreground: #111827;
+  --muted: #6b7280;
   --surface: #ffffff;
-  --surface-foreground: #18181b;
-  --border: #e4e4e7;
+  --surface-foreground: #111827;
+  --border: #e5e7eb;
 }
 
 .dark {
   --background: #09090b;
   --foreground: #fafafa;
   --muted: #a1a1aa;
-  --surface: #111214;
+  --surface: #18181b;
   --surface-foreground: #fafafa;
   --border: #27272a;
 }
@@ -40,6 +40,29 @@ body {
 
 .dark body {
   color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+  /* Prevent horizontal scroll bleed on all devices */
+  overflow-x: hidden;
+}
+
+/* Ensure all elements respect their container width */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+/* Reset min-width: auto on flex/grid items to prevent overflow */
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
+  height: auto;
 }
 
 button,

@@ -16,7 +16,16 @@ class EmailError(RuntimeError):
 
 
 def email_configured() -> bool:
-    return bool(settings.resend_api_key and settings.notification_to_email)
+    """Treat obvious placeholder keys (e.g. `re_xxxxxxxxx`) as 'not configured' so we do not
+    burn AI credits generating weekly content that can never be delivered."""
+    key = (settings.resend_api_key or "").strip()
+    if not key or not settings.notification_to_email:
+        return False
+    if key.lower().startswith("re_") and "xxxx" in key.lower():
+        return False
+    if len(key) < 16:
+        return False
+    return True
 
 
 def send_email(*, subject: str, html_body: str, to_email: str | None = None) -> None:

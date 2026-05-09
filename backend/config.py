@@ -65,13 +65,29 @@ class Settings:
     # default_factory: each new Settings() re-reads os.environ (so .env edits apply without stale class-level defaults)
     database_url: str = field(default_factory=lambda: _str_env("DATABASE_URL"))
     openrouter_api_key: str = field(default_factory=lambda: _str_env("OPENROUTER_API_KEY"))
+    openrouter_base_url: str = field(
+        default_factory=lambda: _str_env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1") or "https://openrouter.ai/api/v1"
+    )
     openrouter_model: str = field(default_factory=_openrouter_model_from_env)
+    openrouter_fast_model: str = field(default_factory=lambda: _str_env("FAST_MODEL", "openai/gpt-4o-mini") or "openai/gpt-4o-mini")
+    openrouter_smart_model: str = field(
+        default_factory=lambda: _str_env("SMART_MODEL", "anthropic/claude-sonnet-4") or "anthropic/claude-sonnet-4"
+    )
+    openrouter_vision_model: str = field(default_factory=lambda: _str_env("VISION_MODEL", "openai/gpt-4o") or "openai/gpt-4o")
+    openrouter_image_model: str = field(
+        default_factory=lambda: _str_env("IMAGE_MODEL", "openai/gpt-image-1") or "openai/gpt-image-1"
+    )
     openrouter_timeout_seconds: int = field(default_factory=lambda: _int_env("OPENROUTER_TIMEOUT_SECONDS", 45))
+    openrouter_retry_count: int = field(default_factory=lambda: _int_env("OPENROUTER_RETRY_COUNT", 2))
+    openrouter_cache_ttl_seconds: int = field(default_factory=lambda: _int_env("OPENROUTER_CACHE_TTL_SECONDS", 90))
+    openrouter_concurrency_limit: int = field(default_factory=lambda: _int_env("OPENROUTER_CONCURRENCY_LIMIT", 6))
     # Cap completion length so OpenRouter does not reserve a huge budget on each call (causes 402 when balance is small).
     # Lower OPENROUTER_MAX_TOKENS in .env only when credits are constrained. Agent 1/2 JSON needs room (512 truncates badly).
     openrouter_max_tokens: int = field(default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS", 8192))
     # Comma-separated OpenRouter model ids tried after the requested model and OPENROUTER_MODEL (quota/model errors only).
     openrouter_model_fallbacks: str = field(default_factory=lambda: _str_env("OPENROUTER_MODEL_FALLBACKS"))
+    # Comma-separated free OpenRouter model ids used as the last-resort chain when paid credits are exhausted (HTTP 402).
+    openrouter_free_fallbacks: str = field(default_factory=lambda: _str_env("OPENROUTER_FREE_FALLBACKS"))
 
     meta_graph_api_version: str = field(
         default_factory=lambda: _str_env("META_GRAPH_API_VERSION", "v22.0") or "v22.0"
@@ -121,6 +137,8 @@ class Settings:
     )
     oauth_state_secret: str = field(default_factory=lambda: _str_env("OAUTH_STATE_SECRET"))
     token_encryption_keys: str = field(default_factory=lambda: _str_env("TOKEN_ENCRYPTION_KEYS"))
+    google_ai_api_key: str = field(default_factory=lambda: _str_env("GOOGLE_AI_API_KEY"))
+    gemini_model: str = field(default_factory=lambda: _str_env("GEMINI_MODEL", "gemini-2.0-flash") or "gemini-2.0-flash")
     google_client_id: str = field(default_factory=lambda: _str_env("GOOGLE_CLIENT_ID"))
     google_client_secret: str = field(default_factory=lambda: _str_env("GOOGLE_CLIENT_SECRET"))
     google_redirect_uri: str = field(default_factory=lambda: _str_env("GOOGLE_REDIRECT_URI"))

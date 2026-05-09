@@ -1,6 +1,6 @@
 "use client";
 
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { startTransition, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { Calendar, CheckCircle2, Clock, Search } from "lucide-react";
 import { ContentStatusBadge } from "@/components/status-badge";
 import { MediaLocalDropzone } from "@/components/media-local-dropzone";
@@ -32,7 +32,7 @@ const PLATFORM_OPTIONS: { id: PublishingPlatform; label: string; disabled?: bool
   { id: "linkedin", label: "LinkedIn" },
   { id: "instagram", label: "Instagram" },
   { id: "facebook", label: "Facebook" },
-  { id: "twitter", label: "Twitter / X", disabled: true },
+  { id: "twitter", label: "Twitter / X" },
 ];
 const ACTIVE_PLATFORM_OPTIONS = PLATFORM_OPTIONS.filter((opt) => !opt.disabled);
 
@@ -59,6 +59,7 @@ function QueueThumb({ url, mediaType }: { url: string; mediaType: MediaType }) {
       {useVideo ? (
         <video src={safe} muted playsInline preload="metadata" className={`${shell} object-cover`} aria-hidden />
       ) : (
+        // eslint-disable-next-line @next/next/no-img-element
         <img src={safe} alt="" className={`${shell} object-cover`} loading="lazy" />
       )}
       {mediaType === "Carousel" ? (
@@ -148,7 +149,7 @@ export function ApprovalTab() {
   }, [content, deferredSearch, filter]);
 
   useEffect(() => {
-    setPage(1);
+    startTransition(() => setPage(1));
   }, [filter, deferredSearch, pageSize]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -581,23 +582,16 @@ export function ApprovalTab() {
                     {PLATFORM_OPTIONS.map((opt) => (
                       <label
                         key={opt.id}
-                        title={opt.disabled ? "Coming soon" : undefined}
-                        className={cn(
-                          "flex items-center gap-2.5 rounded-lg border px-3 py-2.5 text-sm",
-                          opt.disabled
-                            ? "cursor-not-allowed border-zinc-200/80 bg-zinc-100/80 text-zinc-400"
-                            : "cursor-pointer border-zinc-200 bg-white text-zinc-800 shadow-sm hover:border-zinc-300",
-                        )}
+                        className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-zinc-200 bg-white px-3 py-2.5 text-sm text-zinc-800 shadow-sm hover:border-zinc-300"
                       >
                         <input
                           type="checkbox"
                           className="size-4 rounded border-zinc-300 text-zinc-900"
                           checked={selectedPlatforms.includes(opt.id)}
-                          disabled={isReadonlyItem || opt.disabled}
+                          disabled={isReadonlyItem}
                           onChange={() => togglePlatform(opt.id)}
                         />
                         {opt.label}
-                        {opt.disabled ? <span className="text-xs text-zinc-400">Coming soon</span> : null}
                       </label>
                     ))}
                   </div>
@@ -684,18 +678,22 @@ export function ApprovalTab() {
                           return;
                         }
                       };
-                      void apply().then(() => {
-                        if (postNow) {
+                      void apply()
+                        .then(() => {
+                          if (postNow) {
+                            closeViewDialog();
+                            return;
+                          }
+                          if (allPlatformsChecked || selectedPlatforms.length > 1) {
+                            push(`Approved for ${selectedPlatforms.length} platforms.`);
+                          } else {
+                            push(`Approved for ${platformLabel(selectedPlatforms[0])}`);
+                          }
                           closeViewDialog();
-                          return;
-                        }
-                        if (allPlatformsChecked || selectedPlatforms.length > 1) {
-                          push(`Approved for ${selectedPlatforms.length} platforms.`);
-                        } else {
-                          push(`Approved for ${platformLabel(selectedPlatforms[0])}`);
-                        }
-                        closeViewDialog();
-                      });
+                        })
+                        .catch((err: unknown) => {
+                          push(apiErrorMessage(err));
+                        });
                     }}
                   >
                     <CheckCircle2 className="size-4 shrink-0" />

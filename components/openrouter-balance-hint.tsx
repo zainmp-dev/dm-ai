@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGetOpenrouterBalance, type OpenrouterBalance } from "@/lib/api";
 
 function formatUsd(n: number, maxFrac = 4) {
@@ -8,28 +8,62 @@ function formatUsd(n: number, maxFrac = 4) {
   return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: maxFrac });
 }
 
-export function OpenrouterBalanceHint() {
-  const [balance, setBalance] = useState<OpenrouterBalance | null>(null);
-  const [failed, setFailed] = useState(false);
-  const load = useCallback(async () => {
+// One in-flight balance fetch + 60s freshness cap shared across mounts (Strict-Mode + visibility events).
+const BALANCE_MIN_INTERVAL_MS = 60_000;
+let balanceInflight: Promise<OpenrouterBalance> | null = null;
+let lastBalanceAt = 0;
+let lastBalanceValue: OpenrouterBalance | null = null;
+
+async function fetchBalanceThrottled(force = false): Promise<OpenrouterBalance> {
+  if (balanceInflight) return balanceInflight;
+  const now = Date.now();
+  if (!force && lastBalanceValue && now - lastBalanceAt < BALANCE_MIN_INTERVAL_MS) {
+    return lastBalanceValue;
+  }
+  balanceInflight = (async () => {
     try {
       const data = await apiGetOpenrouterBalance();
+      lastBalanceValue = data;
+      lastBalanceAt = Date.now();
+      return data;
+    } finally {
+      balanceInflight = null;
+    }
+  })();
+  return balanceInflight;
+}
+
+export function OpenrouterBalanceHint() {
+  const [balance, setBalance] = useState<OpenrouterBalance | null>(lastBalanceValue);
+  const [failed, setFailed] = useState(false);
+  const mountedRef = useRef(true);
+
+  const load = useCallback(async (force = false) => {
+    try {
+      const data = await fetchBalanceThrottled(force);
+      if (!mountedRef.current) return;
       setBalance(data);
       setFailed(false);
     } catch {
+      if (!mountedRef.current) return;
       setFailed(true);
-      setBalance(null);
     }
   }, []);
 
   useEffect(() => {
-    void load();
+    mountedRef.current = true;
+    // Defer so GET /workspace wins the race on shell mount (OpenRouter /key can be slow).
+    const t = window.setTimeout(() => void load(false), 350);
+    return () => {
+      mountedRef.current = false;
+      window.clearTimeout(t);
+    };
   }, [load]);
 
   useEffect(() => {
-    const t = window.setInterval(() => void load(), 120_000);
+    const t = window.setInterval(() => void load(true), 120_000);
     const onVis = () => {
-      if (document.visibilityState === "visible") void load();
+      if (document.visibilityState === "visible") void load(false);
     };
     document.addEventListener("visibilitychange", onVis);
     return () => {

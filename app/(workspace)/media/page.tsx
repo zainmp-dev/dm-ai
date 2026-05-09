@@ -299,6 +299,7 @@ export default function MediaPage() {
                           onError={() => setBrokenPreview((p) => ({ ...p, [asset.id]: asset.mediaUrl }))}
                         />
                       ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
                         <img
                           key={asset.mediaUrl}
                           src={asset.mediaUrl}

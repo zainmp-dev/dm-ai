@@ -1,20 +1,19 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 
-const PUBLIC_PATHS = new Set([
-  "/login",
-  "/signup",
-  "/auth/callback",
-  "/linkedin/callback",
-  "/auth/meta/callback",
-]);
+const PUBLIC_PATHS = new Set(["/", "/login", "/signup", "/auth/callback", "/linkedin/callback", "/auth/meta/callback"]);
+
+function isProtectedPath(pathname: string): boolean {
+  if (pathname === "/") return false;
+  if (PUBLIC_PATHS.has(pathname)) return false;
+  if (pathname.startsWith("/api")) return false;
+  return true;
+}
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const token = request.cookies.get("flowpilot_token")?.value;
-  const isPublic = PUBLIC_PATHS.has(pathname);
-
-  if (!token && !isPublic) {
+  if (!token && isProtectedPath(pathname)) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 

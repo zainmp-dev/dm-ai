@@ -2,7 +2,7 @@
 
 import { format } from "date-fns";
 import Link from "next/link";
-import { useDeferredValue, useEffect, useMemo, useState } from "react";
+import { startTransition, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { ExternalLink, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -50,8 +50,10 @@ export function PublishingTab() {
   useEffect(() => {
     if (shellPending || !workspace) return;
     let cancelled = false;
-    setNativePostsLoaded(false);
-    setNativePostsError(null);
+    startTransition(() => {
+      setNativePostsLoaded(false);
+      setNativePostsError(null);
+    });
     void apiListNativeSocialPosts({ limit: 40 })
       .then((rows) => {
         if (!cancelled) {
@@ -493,6 +495,7 @@ export function PublishingTab() {
                       {isVideoAsset(contentItem.mediaPreview) ? (
                         <video src={contentItem.mediaPreview} className="h-28 w-44 rounded-lg object-cover" muted playsInline />
                       ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
                         <img src={contentItem.mediaPreview} alt="" className="h-28 w-44 rounded-lg object-cover" />
                       )}
                     </button>
@@ -526,6 +529,7 @@ export function PublishingTab() {
                 {isVideoAsset(activeContent.mediaPreview) ? (
                   <video src={activeContent.mediaPreview} controls className="max-h-[420px] w-full rounded-xl object-contain" />
                 ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
                   <img src={activeContent.mediaPreview} alt="" className="max-h-[420px] w-full rounded-xl object-contain" />
                 )}
               </div>

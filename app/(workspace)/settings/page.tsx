@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, startTransition, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Building2,
@@ -82,7 +82,7 @@ function SettingsContent() {
   useEffect(() => {
     const section = searchParams.get("section");
     if (isSectionId(section)) {
-      setActive(section);
+      startTransition(() => setActive(section));
     }
   }, [searchParams]);
 

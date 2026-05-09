@@ -16,6 +16,11 @@ from services.token_service import run_token_maintenance
 logger = logging.getLogger(__name__)
 WEEKLY_UPDATE_KEY = "weekly_agent_update"
 
+# Process-local backoff so a failing weekly agent does not retry every scheduler tick.
+# Without this, a 402 from OpenRouter spams logs and burns credits on every loop (60s).
+_WEEKLY_FAILURE_BACKOFF = timedelta(hours=1)
+_last_weekly_failure_at: datetime | None = None
+
 
 def publish_due_posts_once() -> None:
     if SessionLocal is None:
@@ -70,17 +75,21 @@ def refresh_expiring_social_tokens_once() -> None:
 
 
 def send_weekly_agent_update_once() -> None:
+    global _last_weekly_failure_at
     if SessionLocal is None:
         logger.error("Weekly update cannot run without DATABASE_URL")
         return
     if not email_configured():
-        logger.info("Weekly email skipped because Resend email settings are incomplete")
+        # Skip silently — email-less local dev should not poll OpenRouter on every tick.
+        return
+
+    now = datetime.now(timezone.utc)
+    if _last_weekly_failure_at is not None and now - _last_weekly_failure_at < _WEEKLY_FAILURE_BACKOFF:
         return
 
     db = SessionLocal()
     try:
         state = get_notification_state(db, WEEKLY_UPDATE_KEY)
-        now = datetime.now(timezone.utc)
         if state and state.last_sent_at and state.last_sent_at > now - timedelta(days=settings.weekly_update_interval_days):
             return
 
@@ -96,8 +105,14 @@ def send_weekly_agent_update_once() -> None:
         )
         if sent:
             update_notification_state(db, WEEKLY_UPDATE_KEY, now)
+            _last_weekly_failure_at = None
     except AgentError as exc:
-        logger.warning("Weekly agent update skipped: %s", exc)
+        # Record the failure timestamp so we do not retry the AI call for an hour.
+        _last_weekly_failure_at = now
+        logger.warning("Weekly agent update skipped (will retry in 1h): %s", str(exc)[:200])
+    except Exception:
+        _last_weekly_failure_at = now
+        logger.exception("Weekly agent update crashed; backing off for 1h")
     finally:
         db.close()
 

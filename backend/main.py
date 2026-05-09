@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from agents import (
     DEFAULT_WORKSPACE_CALENDAR_DAYS,
     AgentError,
+    _default_target_audience_line,
     generate_reviewed_content,
     generate_workspace_research,
     get_openrouter_key_info_for_ui,
@@ -44,6 +45,7 @@ from database import Content, create_many_content, get_all_content, get_content,
 from emailer import content_action_email, safe_send_email
 from publisher import publish_post
 from services.posting_service import publish_flowpilot_workspace_item
+from services.ai import AIServiceError, generate_carousel, generate_image_prompt
 from scheduler import scheduler_loop
 from routes.ads_routes import router as ads_router
 from routes.social_routes import router as social_router
@@ -63,7 +65,12 @@ def _http_for_agent_error(exc: AgentError) -> tuple[int, str]:
     msg = str(exc).strip()
     low = msg.lower()
     if '"code":402' in low or " 402" in low or "payment required" in low or "more credits" in low:
-        return 402, (msg[:650] + "…") if len(msg) > 650 else msg
+        # Show a concise, user-actionable message; keep the raw provider text out of the UI.
+        friendly = (
+            "OpenRouter is out of credits for the current AI model. Top up at "
+            "https://openrouter.ai/settings/credits or pick a cheaper model and try again."
+        )
+        return 402, friendly
     return 502, msg[:800] + "…" if len(msg) > 800 else msg
 
 
@@ -141,6 +148,19 @@ class WorkspaceSearchRequest(BaseModel):
     ai_model: str | None = Field(default=None, max_length=200)
 
 
+class CarouselRequest(BaseModel):
+    topic: str = Field(min_length=3, max_length=600)
+    brand_context: str | None = Field(default="", max_length=2000)
+    ai_model: str | None = Field(default=None, max_length=200)
+
+
+class ImagePromptRequest(BaseModel):
+    brief: str = Field(min_length=3, max_length=1200)
+    style: str | None = Field(default="photorealistic", max_length=120)
+    platform: str | None = Field(default="instagram", max_length=40)
+    ai_model: str | None = Field(default=None, max_length=200)
+
+
 class SignupRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     email: str = Field(min_length=3, max_length=320)
@@ -190,6 +210,7 @@ class StrategyRequest(BaseModel):
 class ContentLibraryRequest(BaseModel):
     action: str = Field(default="generate", max_length=20)
     content_id: str | None = Field(default=None, max_length=120)
+    content_ids: list[str] = Field(default_factory=list)
     title: str | None = Field(default=None, max_length=220)
     content_text: str | None = Field(default=None, max_length=5000)
     calendar_days: int | None = Field(default=10, ge=1, le=90)
@@ -452,6 +473,50 @@ def _normalize_scheduled_at_utc(db: Session, workspace_id: str, scheduled_at: da
     return dt.astimezone(timezone.utc)
 
 
+# In-process token cache so every authenticated request does not pay a Supabase round-trip
+# just to verify the bearer token. Tokens are opaque strings — caching by token value is safe.
+_AUTH_USER_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_AUTH_USER_CACHE_TTL_SECONDS = 60.0
+
+# Per-workspace AI generation locks. Each lock is a tuple (asyncio.Lock-equivalent flag, started_at).
+# `started_at` lets us auto-expire a stuck lock after _CONTENT_LOCK_TTL_SECONDS so a crashed
+# worker does not block all future generations forever.
+_CONTENT_GENERATION_LOCKS: dict[str, float] = {}
+_CONTENT_LOCK_TTL_SECONDS = 600.0  # free-model fallback flows can take 8-10 min; paid ≈ 60s
+
+
+def _try_acquire_content_lock(workspace_id: str) -> bool:
+    now = time.time()
+    started = _CONTENT_GENERATION_LOCKS.get(workspace_id)
+    if started is not None and now - started < _CONTENT_LOCK_TTL_SECONDS:
+        return False
+    _CONTENT_GENERATION_LOCKS[workspace_id] = now
+    return True
+
+
+def _release_content_lock(workspace_id: str) -> None:
+    _CONTENT_GENERATION_LOCKS.pop(workspace_id, None)
+
+
+def _auth_user_cache_get(token: str) -> dict[str, Any] | None:
+    row = _AUTH_USER_CACHE.get(token)
+    if not row:
+        return None
+    expires_at, user = row
+    if expires_at <= time.time():
+        _AUTH_USER_CACHE.pop(token, None)
+        return None
+    return user
+
+
+def _auth_user_cache_put(token: str, user: dict[str, Any]) -> None:
+    _AUTH_USER_CACHE[token] = (time.time() + _AUTH_USER_CACHE_TTL_SECONDS, user)
+    if len(_AUTH_USER_CACHE) > 1024:
+        # Prune oldest half when we grow too large to keep memory bounded.
+        for old_token in sorted(_AUTH_USER_CACHE, key=lambda t: _AUTH_USER_CACHE[t][0])[:512]:
+            _AUTH_USER_CACHE.pop(old_token, None)
+
+
 def get_current_user(authorization: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict[str, Any]:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -459,6 +524,10 @@ def get_current_user(authorization: str | None = Header(default=None), db: Sessi
     token = authorization.removeprefix("Bearer ").strip()
     if not token.startswith("flowpilot-"):
         raise HTTPException(status_code=401, detail="Invalid auth token")
+
+    cached = _auth_user_cache_get(token)
+    if cached is not None:
+        return cached
 
     user_id = token.removeprefix("flowpilot-").rsplit("-", 1)[0]
     row = db.execute(
@@ -468,26 +537,97 @@ def get_current_user(authorization: str | None = Header(default=None), db: Sessi
     if row is None:
         raise HTTPException(status_code=401, detail="Invalid auth token")
 
-    return dict(row)
+    user = dict(row)
+    _auth_user_cache_put(token, user)
+    return user
+
+
+# Single-shot workspace snapshot: one Postgres round-trip per GET /workspace instead of ~12.
+# Each subquery returns json/jsonb, which we deserialize on the Python side.
+_WORKSPACE_SNAPSHOT_SQL = text(
+    """
+    select
+      (select row_to_json(w) from flowpilot_workspace w where w.workspace_id = :wid) as workspace,
+      (select row_to_json(s) from flowpilot_strategy s where s.workspace_id = :wid) as strategy,
+      (select row_to_json(p) from flowpilot_profile p where p.workspace_id = :wid) as profile,
+      (select row_to_json(p) from flowpilot_preferences p where p.workspace_id = :wid) as preferences,
+      coalesce((select json_agg(row_to_json(c) order by c.name)
+        from flowpilot_competitors c where c.workspace_id = :wid), '[]'::json) as competitors,
+      coalesce((select json_agg(row_to_json(c)
+        order by coalesce(c.updated_at, c.created_at) desc nulls last, c.created_at desc)
+        from flowpilot_content c where c.workspace_id = :wid), '[]'::json) as content,
+      coalesce((select json_agg(row_to_json(l) order by l.captured_at desc)
+        from flowpilot_leads l where l.workspace_id = :wid), '[]'::json) as leads,
+      coalesce((select json_agg(row_to_json(a) order by a.created_at desc)
+        from flowpilot_activities a where a.workspace_id = :wid), '[]'::json) as activities,
+      coalesce((select json_agg(row_to_json(p) order by p.timestamp desc)
+        from flowpilot_publishing_log p where p.workspace_id = :wid), '[]'::json) as publishing_log,
+      coalesce((select json_agg(row_to_json(c) order by c.name)
+        from flowpilot_campaigns c where c.workspace_id = :wid), '[]'::json) as campaigns,
+      coalesce((select json_agg(row_to_json(p) order by p.updated_at desc)
+        from flowpilot_post_analytics p where p.workspace_id = :wid), '[]'::json) as post_analytics,
+      coalesce((select json_agg(json_build_object(
+          'platform', i.platform,
+          'connected', i.connected,
+          'account_name', i.account_name,
+          'account_handle', i.account_handle,
+          'account_url', i.account_url
+        )) from flowpilot_integrations i where i.workspace_id = :wid), '[]'::json) as integrations,
+      coalesce((select json_agg(json_build_object(
+          'name', e.name,
+          'engagement', e.engagement,
+          'reach', e.reach
+        ) order by e.position)
+        from flowpilot_engagement_series e where e.workspace_id = :wid), '[]'::json) as engagement_series,
+      coalesce((select json_agg(json_build_object(
+          'name', g.name,
+          'leads', g.leads
+        ) order by g.position)
+        from flowpilot_leads_growth g where g.workspace_id = :wid), '[]'::json) as leads_growth,
+      coalesce((select json_agg(json_build_object(
+          'id', m.id,
+          'name', m.name,
+          'media_type', m.media_type,
+          'media_url', m.media_url,
+          'created_at', m.created_at
+        ) order by m.created_at desc)
+        from flowpilot_media_library m where m.workspace_id = :wid), '[]'::json) as media_library
+    """
+)
+
+
+def _coerce_json_value(raw: Any) -> Any:
+    """Postgres json/jsonb arrives as already-parsed objects with psycopg, but as strings with some drivers."""
+    if raw is None:
+        return None
+    if isinstance(raw, (dict, list)):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+    return raw
 
 
 def workspace_snapshot(db: Session, workspace_id: str, user: dict[str, Any]) -> dict[str, Any]:
-    workspace = db.execute(
-        text("select * from flowpilot_workspace where workspace_id = :workspace_id"),
-        {"workspace_id": workspace_id},
-    ).mappings().first()
-    if workspace is None:
+    row = db.execute(_WORKSPACE_SNAPSHOT_SQL, {"wid": workspace_id}).mappings().first()
+    if row is None:
+        return default_workspace_snapshot(user)
+
+    workspace = _coerce_json_value(row["workspace"])
+    if not isinstance(workspace, dict):
         return default_workspace_snapshot(user)
 
     snapshot = default_workspace_snapshot(user)
     snapshot.update(
         {
-            "company_name": workspace["company_name"],
-            "company_website": workspace["company_website"],
-            "workspace_scenario": workspace["workspace_scenario"],
-            "primary_region": _normalize_primary_region(str(workspace.get("primary_region", "uae-india") or "uae-india")),
-            "workspace_configured": workspace["workspace_configured"],
-            "crm_last_bulk_status": workspace["crm_last_bulk_status"],
+            "company_name": workspace.get("company_name", ""),
+            "company_website": workspace.get("company_website", ""),
+            "workspace_scenario": workspace.get("workspace_scenario", "b2b-saas"),
+            "primary_region": _normalize_primary_region(str(workspace.get("primary_region") or "uae-india")),
+            "workspace_configured": bool(workspace.get("workspace_configured")),
+            "crm_last_bulk_status": workspace.get("crm_last_bulk_status", "Pending"),
         }
     )
 
@@ -500,94 +640,56 @@ def workspace_snapshot(db: Session, workspace_id: str, user: dict[str, Any]) -> 
     else:
         snapshot["master_setup"] = None
 
-    strategy = db.execute(
-        text("select * from flowpilot_strategy where workspace_id = :workspace_id"),
-        {"workspace_id": workspace_id},
-    ).mappings().first()
-    if strategy is not None:
-        sd = dict(strategy)
-        if sd.get("data_json"):
-            sd["strategy_blob_present"] = True
-            del sd["data_json"]
-        snapshot["strategy"] = sd
+    strategy = _coerce_json_value(row["strategy"])
+    if isinstance(strategy, dict):
+        if strategy.get("data_json"):
+            strategy["strategy_blob_present"] = True
+            strategy.pop("data_json", None)
+        snapshot["strategy"] = strategy
 
-    for key, table, order_by in (
-        ("competitors", "flowpilot_competitors", "name"),
-        ("content", "flowpilot_content", "coalesce(updated_at, created_at) desc nulls last, created_at desc"),
-        ("leads", "flowpilot_leads", "captured_at desc"),
-        ("activities", "flowpilot_activities", "created_at desc"),
-        ("publishing_log", "flowpilot_publishing_log", "timestamp desc"),
-        ("campaigns", "flowpilot_campaigns", "name"),
-        ("post_analytics", "flowpilot_post_analytics", "updated_at desc"),
-    ):
-        snapshot[key] = [
-            dict(row)
-            for row in db.execute(
-                text(f"select * from {table} where workspace_id = :workspace_id order by {order_by}"),
-                {"workspace_id": workspace_id},
-            ).mappings().all()
-        ]
+    for key in ("competitors", "content", "leads", "activities", "publishing_log", "campaigns", "post_analytics"):
+        items = _coerce_json_value(row[key])
+        snapshot[key] = items if isinstance(items, list) else []
 
-    profile = db.execute(
-        text("select name, email, company, timezone from flowpilot_profile where workspace_id = :workspace_id"),
-        {"workspace_id": workspace_id},
-    ).mappings().first()
-    if profile is not None:
-        snapshot["profile"] = dict(profile)
+    profile = _coerce_json_value(row["profile"])
+    if isinstance(profile, dict):
+        snapshot["profile"] = {
+            "name": str(profile.get("name") or ""),
+            "email": str(profile.get("email") or ""),
+            "company": str(profile.get("company") or ""),
+            "timezone": str(profile.get("timezone") or "Asia/Kolkata"),
+        }
 
-    preferences = db.execute(
-        text("select default_platform, quiet_hours_enabled, approval_digest from flowpilot_preferences where workspace_id = :workspace_id"),
-        {"workspace_id": workspace_id},
-    ).mappings().first()
-    if preferences is not None:
-        snapshot["preferences"] = dict(preferences)
+    preferences = _coerce_json_value(row["preferences"])
+    if isinstance(preferences, dict):
+        snapshot["preferences"] = {
+            "default_platform": str(preferences.get("default_platform") or "linkedin"),
+            "quiet_hours_enabled": bool(preferences.get("quiet_hours_enabled", True)),
+            "approval_digest": str(preferences.get("approval_digest") or "daily"),
+        }
 
     integrations = {
         "linkedin": {"connected": False, "account_name": None, "account_handle": None, "account_url": None},
         "meta": {"connected": False, "account_name": None, "account_handle": None, "account_url": None},
     }
-    for row in db.execute(
-        text(
-            "select platform, connected, account_name, account_handle, account_url "
-            "from flowpilot_integrations where workspace_id = :workspace_id"
-        ),
-        {"workspace_id": workspace_id},
-    ).mappings().all():
-        platform = str(row["platform"])
-        if platform in integrations:
-            integrations[platform] = {
-                "connected": row["connected"],
-                "account_name": row["account_name"],
-                "account_handle": row["account_handle"],
-                "account_url": row.get("account_url"),
-            }
+    integration_rows = _coerce_json_value(row["integrations"]) or []
+    if isinstance(integration_rows, list):
+        for entry in integration_rows:
+            if not isinstance(entry, dict):
+                continue
+            platform = str(entry.get("platform") or "")
+            if platform in integrations:
+                integrations[platform] = {
+                    "connected": bool(entry.get("connected")),
+                    "account_name": entry.get("account_name"),
+                    "account_handle": entry.get("account_handle"),
+                    "account_url": entry.get("account_url"),
+                }
     snapshot["integrations"] = integrations
 
-    snapshot["engagement_series"] = [
-        dict(row)
-        for row in db.execute(
-            text("select name, engagement, reach from flowpilot_engagement_series where workspace_id = :workspace_id order by position"),
-            {"workspace_id": workspace_id},
-        ).mappings().all()
-    ]
-    snapshot["leads_growth"] = [
-        dict(row)
-        for row in db.execute(
-            text("select name, leads from flowpilot_leads_growth where workspace_id = :workspace_id order by position"),
-            {"workspace_id": workspace_id},
-        ).mappings().all()
-    ]
-
-    snapshot["media_library"] = [
-        dict(row)
-        for row in db.execute(
-            text(
-                "select id, name, media_type, media_url, created_at from flowpilot_media_library "
-                "where workspace_id = :workspace_id order by created_at desc"
-            ),
-            {"workspace_id": workspace_id},
-        ).mappings().all()
-    ]
+    snapshot["engagement_series"] = _coerce_json_value(row["engagement_series"]) or []
+    snapshot["leads_growth"] = _coerce_json_value(row["leads_growth"]) or []
+    snapshot["media_library"] = _coerce_json_value(row["media_library"]) or []
 
     return snapshot
 
@@ -1370,6 +1472,210 @@ def _workspace_context(db: Session, workspace_id: str) -> dict[str, str]:
     }
 
 
+def _clean_text(v: Any, *, max_len: int) -> str:
+    return str(v or "").strip()[:max_len]
+
+
+def _clean_string_list(v: Any, *, max_items: int, item_max_len: int) -> list[str]:
+    if not isinstance(v, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in v:
+        s = _clean_text(item, max_len=item_max_len)
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _normalize_strategy_payload(raw: Any) -> dict[str, Any]:
+    data = raw if isinstance(raw, dict) else {}
+    target_raw = (
+        data.get("target_audience")
+        or data.get("targetAudience")
+        or data.get("audience")
+        or data.get("ideal_customer_profile")
+        or data.get("icp")
+        or data.get("primary_audience")
+        or data.get("target_customer")
+    )
+    if isinstance(target_raw, list):
+        target_audience = _clean_text("; ".join(str(x).strip() for x in target_raw if str(x).strip()), max_len=2000)
+    elif isinstance(target_raw, dict):
+        target_audience = _clean_text(
+            "; ".join(str(v).strip() for v in target_raw.values() if str(v).strip()),
+            max_len=2000,
+        )
+    else:
+        target_audience = _clean_text(target_raw, max_len=2000)
+
+    if not target_audience:
+        pos = data.get("positioning")
+        if isinstance(pos, dict):
+            target_audience = _clean_text(
+                pos.get("target_niche")
+                or pos.get("target niche")
+                or pos.get("ideal_customer")
+                or pos.get("primary_audience")
+                or pos.get("messaging_angle"),
+                max_len=2000,
+            )
+    if not target_audience:
+        cs = data.get("core_strategy")
+        if isinstance(cs, dict):
+            target_audience = _clean_text(
+                cs.get("target_audience") or cs.get("icp") or cs.get("audience") or cs.get("ideal_customer_profile"),
+                max_len=2000,
+            )
+    if not target_audience:
+        ps = data.get("product_summary")
+        if isinstance(ps, dict):
+            target_audience = _clean_text(ps.get("target_audience"), max_len=2000)
+    if not target_audience:
+        bp = data.get("buyer_personas") or data.get("buyer_personas_detail")
+        if isinstance(bp, list):
+            seg: list[str] = []
+            for item in bp[:12]:
+                if isinstance(item, dict):
+                    s = " ".join(
+                        str(item.get(k, "")).strip()
+                        for k in ("segment", "role", "title", "pain", "goal", "notes")
+                        if str(item.get(k, "")).strip()
+                    ).strip()
+                    if s:
+                        seg.append(s)
+                elif str(item).strip():
+                    seg.append(str(item).strip())
+            if seg:
+                target_audience = _clean_text("; ".join(seg), max_len=2000)
+
+    content_themes = _clean_string_list(data.get("content_themes"), max_items=20, item_max_len=300)
+    if not content_themes:
+        content_themes = _clean_string_list(data.get("content_pillars"), max_items=20, item_max_len=300)
+
+    platform_focus = [
+        p
+        for p in _clean_string_list(data.get("platform_focus"), max_items=10, item_max_len=50)
+        if p in {"linkedin", "instagram", "facebook"}
+    ]
+
+    market_gaps = _clean_string_list(data.get("market_gaps"), max_items=30, item_max_len=2000)
+    if not market_gaps:
+        company_study = data.get("company_study")
+        if isinstance(company_study, dict):
+            market_gaps = _clean_string_list(company_study.get("marketing_gap_issues"), max_items=30, item_max_len=2000)
+
+    return {
+        "target_audience": target_audience,
+        "content_themes": content_themes,
+        "platform_focus": platform_focus,
+        "market_gaps": market_gaps,
+    }
+
+
+def _normalize_competitor_rows(raw: Any) -> list[dict[str, Any]]:
+    # Match agents.TARGET_COMPETITOR_COUNT — keep the cap in one place if you raise it later.
+    target_count = 12
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw[: target_count * 2]:
+        if not isinstance(item, dict):
+            continue
+        name = _clean_text(item.get("name"), max_len=180)
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        row = {
+            "name": name,
+            "positioning": _clean_text(item.get("positioning"), max_len=1500),
+            "strengths": _clean_string_list(item.get("strengths"), max_items=10, item_max_len=500),
+            "weaknesses": _clean_string_list(item.get("weaknesses"), max_items=10, item_max_len=500),
+            "domain": _clean_text(item.get("domain"), max_len=500),
+            "market_rank": _clean_text(item.get("market_rank"), max_len=500),
+            "market_gap": _clean_text(item.get("market_gap"), max_len=2000),
+            "marketing_purpose": _clean_text(item.get("marketing_purpose"), max_len=2000),
+        }
+        out.append(row)
+        if len(out) >= target_count:
+            break
+    return out
+
+
+def _normalize_content_rows(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw[:90]:
+        if not isinstance(item, dict):
+            continue
+        title = _clean_text(item.get("title"), max_len=220)
+        content_text = _clean_text(item.get("content_text"), max_len=5000)
+        if not title or not content_text:
+            continue
+        media_type = _clean_text(item.get("media_type"), max_len=20)
+        if media_type not in {"Image", "Video", "Carousel"}:
+            media_type = "Image"
+        media_preview = _clean_text(item.get("media_preview"), max_len=2000)
+        out.append(
+            {
+                "title": title,
+                "content_text": content_text,
+                "media_type": media_type,
+                "media_preview": media_preview,
+            }
+        )
+    return out
+
+
+def _validate_research_payload(
+    research: dict[str, Any],
+    *,
+    company_name: str = "",
+    scenario: str = "b2b-saas",
+) -> None:
+    strategy = _normalize_strategy_payload(research.get("strategy"))
+    if not strategy["target_audience"]:
+        strategy = _normalize_strategy_payload(research)
+    if not strategy["target_audience"]:
+        al = research.get("agent1_locked")
+        if isinstance(al, dict):
+            ta_alt = _normalize_strategy_payload(al)["target_audience"]
+            if ta_alt:
+                strategy["target_audience"] = ta_alt
+    if not strategy["target_audience"]:
+        company_study = research.get("company_study")
+        if isinstance(company_study, dict):
+            strategy["target_audience"] = _clean_text(company_study.get("scenario_summary"), max_len=2000)
+    if not strategy["target_audience"]:
+        strategy["target_audience"] = _default_target_audience_line(company_name=company_name, scenario=scenario)
+    if len(strategy["market_gaps"]) < 1:
+        strategy["market_gaps"] = _clean_string_list(
+            (research.get("company_study") or {}).get("marketing_gap_issues")
+            if isinstance(research.get("company_study"), dict)
+            else [],
+            max_items=30,
+            item_max_len=2000,
+        )
+    if len(strategy["market_gaps"]) < 1:
+        raise AgentError("Strategy market gaps are insufficient; rerun strategy")
+    competitors = _normalize_competitor_rows(research.get("competitors"))
+    research["strategy"] = strategy
+    research["competitors"] = competitors
+    research["content"] = _normalize_content_rows(research.get("content"))
+
+
 def save_workspace_ai_flow(
     db: Session,
     *,
@@ -1395,6 +1701,7 @@ def save_workspace_ai_flow(
     ai_model_used = research.pop("_ai_model_used", None)
     ai_model_requested = research.pop("_ai_model_requested", None)
     ai_models_by_step = research.pop("_ai_models_by_step", None)
+    _validate_research_payload(research, company_name=company_name, scenario=scenario)
     strategy = research["strategy"]
     company_study = research.get("company_study", {})
     discovered_website = str(company_study.get("discovered_website", "")).strip()
@@ -1469,8 +1776,8 @@ def save_workspace_ai_flow(
             text("delete from flowpilot_post_analytics where workspace_id = :workspace_id"),
             {"workspace_id": workspace_id},
         )
-        for index, item in enumerate(research["content"][:90]):
-            media_preview = item["media_preview"] or f"https://picsum.photos/seed/{workspace_id}-{index}/800/450"
+        for item in research["content"][:90]:
+            media_preview = item["media_preview"]
             _insert_flowpilot_content_row(
                 db,
                 new_id=f"cnt-{uuid.uuid4().hex[:12]}",
@@ -1554,26 +1861,21 @@ def _strategy_output_bundle_from_db(db: Session, workspace_id: str) -> dict[str,
             continue
         strengths = _db_text_array_to_list(row["strengths"])
         weaknesses = _db_text_array_to_list(row["weaknesses"])
-        if not weaknesses:
-            weaknesses = ["Content differentiation opportunity"]
         mg = str(row.get("market_gap") or "").strip()
-        if not mg and weaknesses:
-            mg = weaknesses[0]
         competitors.append(
             {
                 "name": name[:180],
                 "domain": str(row.get("domain") or "").strip()[:300],
-                "positioning": str(row.get("positioning") or "").strip() or "Market alternative to benchmark against.",
-                "market_rank": str(row.get("market_rank") or "").strip() or "Qualitative estimate — validate in market",
-                "market_gap": mg or "Differentiation opportunity vs. this player",
-                "marketing_purpose": str(row.get("marketing_purpose") or "").strip()
-                or "Grow category presence and win qualified demand",
-                "strengths": strengths or ["Recognized market presence"],
+                "positioning": str(row.get("positioning") or "").strip(),
+                "market_rank": str(row.get("market_rank") or "").strip(),
+                "market_gap": mg,
+                "marketing_purpose": str(row.get("marketing_purpose") or "").strip(),
+                "strengths": strengths,
                 "weaknesses": weaknesses,
             }
         )
 
-    gap_issues = market_gaps[:5] if market_gaps else ["Saved strategy gaps — refresh research for more detail."]
+    gap_issues = market_gaps[:5]
 
     bundle: dict[str, Any] = {
         "company_study": {
@@ -1583,9 +1885,9 @@ def _strategy_output_bundle_from_db(db: Session, workspace_id: str) -> dict[str,
         },
         "strategy": {
             "target_audience": str(strategy_row["target_audience"] or "").strip(),
-            "content_themes": themes or ["Proof-led education", "Customer pain point breakdowns"],
-            "platform_focus": platform_focus or ["linkedin", "instagram", "facebook"],
-            "market_gaps": market_gaps or gap_issues,
+            "content_themes": themes,
+            "platform_focus": platform_focus,
+            "market_gaps": market_gaps,
         },
         "competitors": competitors,
     }
@@ -1650,9 +1952,12 @@ def append_workspace_generated_content(
         calendar_days=calendar_days,
         primary_region=_normalize_primary_region(primary_region),
     )
+    content_rows = _normalize_content_rows(content_rows)
+    if not content_rows:
+        raise AgentError("Content generation returned no valid rows")
 
-    for index, item in enumerate(content_rows[:90]):
-        media_preview = item.get("media_preview") or f"https://picsum.photos/seed/{workspace_id}-{uuid.uuid4().hex[:8]}-{index}/800/450"
+    for item in content_rows[:90]:
+        media_preview = item.get("media_preview", "")
         _insert_flowpilot_content_row(
             db,
             new_id=f"cnt-{uuid.uuid4().hex[:12]}",
@@ -1676,13 +1981,26 @@ def append_workspace_generated_content(
     return used_model
 
 
+_DB_INIT_DONE = False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _DB_INIT_DONE
     # Uvicorn --reload (especially on Windows) can leave a half-reloaded app missing some
     # @app.* routes while others still register; re-bind idempotently on every startup.
     _bind_media_routes_if_missing()
     user_media_dir().mkdir(parents=True, exist_ok=True)
-    init_db()
+    if not _DB_INIT_DONE:
+        try:
+            init_db()
+            _DB_INIT_DONE = True
+        except Exception as exc:
+            # Log but keep the server alive — tables were already created on a prior run.
+            # Requests that need the DB will fail individually; the pool will reconnect on retry.
+            logging.getLogger("uvicorn.error").warning(
+                "init_db skipped at startup (DB unavailable — will retry on next restart): %s", exc
+            )
     stop_event = asyncio.Event()
     scheduler_task = asyncio.create_task(scheduler_loop(stop_event))
     try:
@@ -2180,12 +2498,14 @@ def strategy(
         logger.exception("Strategy research failed")
         raise HTTPException(status_code=500, detail="Strategy research failed") from exc
 
+    used = research.get("ai_model_used") or ""
     return {
         "strategy": research["strategy"],
         "competitors": research["competitors"],
-        "ai_model_used": research.get("ai_model_used"),
+        "ai_model_used": used or None,
         "ai_model_requested": body.ai_model,
         "ai_models_by_step": research.get("ai_models_by_step"),
+        "used_free_model": ":free" in used,
     }
 
 
@@ -2199,6 +2519,14 @@ def workspace_content(
     created_content_id: str | None = None
     ai_model_used_for_response: str | None = None
     if body.action == "generate":
+        # Reject overlapping generations: each AI flow takes 30-180s; a duplicate click or
+        # Strict-Mode double-mount would otherwise launch a second flow that doubles load
+        # and trips OpenRouter free-model rate limits.
+        if not _try_acquire_content_lock(workspace_id):
+            raise HTTPException(
+                status_code=409,
+                detail="An AI generation is already running for this workspace. Wait for it to finish before starting another.",
+            )
         context = _workspace_context(db, workspace_id)
         has_strategy = (
             db.execute(
@@ -2247,6 +2575,8 @@ def workspace_content(
             db.rollback()
             logger.exception("Content generation failed")
             raise HTTPException(status_code=500, detail="Content generation failed") from exc
+        finally:
+            _release_content_lock(workspace_id)
     elif body.action == "suggest":
         context = _workspace_context(db, workspace_id)
         if not (context.get("company_name") or "").strip():
@@ -2382,6 +2712,41 @@ def workspace_content(
         )
         record_activity(db, workspace_id, "A content draft was removed from the library.")
         db.commit()
+    elif body.action == "bulk_delete":
+        raw_ids = body.content_ids[:500]
+        deduped_ids: list[str] = []
+        seen: set[str] = set()
+        for cid in raw_ids:
+            val = str(cid or "").strip()
+            if not val or val in seen:
+                continue
+            seen.add(val)
+            deduped_ids.append(val)
+        if not deduped_ids:
+            raise HTTPException(status_code=400, detail="content_ids is required for bulk_delete")
+        db.execute(
+            text(
+                "delete from flowpilot_post_analytics "
+                "where workspace_id = :workspace_id and content_id = any(:content_ids)"
+            ),
+            {"workspace_id": workspace_id, "content_ids": deduped_ids},
+        )
+        db.execute(
+            text(
+                "delete from flowpilot_publishing_log "
+                "where workspace_id = :workspace_id and content_id = any(:content_ids)"
+            ),
+            {"workspace_id": workspace_id, "content_ids": deduped_ids},
+        )
+        db.execute(
+            text(
+                "delete from flowpilot_content "
+                "where workspace_id = :workspace_id and id = any(:content_ids)"
+            ),
+            {"workspace_id": workspace_id, "content_ids": deduped_ids},
+        )
+        record_activity(db, workspace_id, f"Removed {len(deduped_ids)} content drafts in bulk.")
+        db.commit()
     else:
         raise HTTPException(status_code=400, detail="Unsupported content action")
 
@@ -2391,6 +2756,7 @@ def workspace_content(
     if ai_model_used_for_response:
         out["ai_model_used"] = ai_model_used_for_response
         out["ai_model_requested"] = body.ai_model
+        out["used_free_model"] = ":free" in (ai_model_used_for_response or "")
     return out
 
 
@@ -2926,6 +3292,31 @@ def analyze_content(body: AnalyticsRequest) -> dict[str, Any]:
     try:
         return run_analytics_agent(body.content, body.likes, body.comments, body.reach, body.ai_model)
     except AgentError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/ai/carousel")
+def ai_carousel(body: CarouselRequest, _user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    try:
+        return generate_carousel(
+            topic=body.topic,
+            brand_context=(body.brand_context or "").strip(),
+            preferred_model=body.ai_model,
+        )
+    except AIServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/ai/image-prompt")
+def ai_image_prompt(body: ImagePromptRequest, _user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    try:
+        return generate_image_prompt(
+            brief=body.brief,
+            style=(body.style or "photorealistic").strip(),
+            platform=(body.platform or "instagram").strip(),
+            preferred_model=body.ai_model,
+        )
+    except AIServiceError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 

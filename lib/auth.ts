@@ -8,21 +8,29 @@ export interface AuthUser {
 
 export function getAuthToken(): string | null {
   if (typeof window === "undefined") return null;
-  return localStorage.getItem(TOKEN_KEY);
+  const fromSession = sessionStorage.getItem(TOKEN_KEY);
+  if (fromSession) return fromSession;
+  const cookieToken = document.cookie
+    .split("; ")
+    .find((chunk) => chunk.startsWith(`${TOKEN_KEY}=`))
+    ?.split("=")[1];
+  return cookieToken ? decodeURIComponent(cookieToken) : null;
 }
 
 export function setAuthSession(token: string, user: AuthUser) {
   if (typeof window === "undefined") return;
-  localStorage.setItem(TOKEN_KEY, token);
+  sessionStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USER_KEY, JSON.stringify(user));
-  document.cookie = `flowpilot_token=${encodeURIComponent(token)}; path=/; max-age=86400; samesite=lax`;
+  const secureFlag = window.location.protocol === "https:" ? "; secure" : "";
+  document.cookie = `flowpilot_token=${encodeURIComponent(token)}; path=/; max-age=86400; samesite=lax${secureFlag}`;
 }
 
 export function clearAuthSession() {
   if (typeof window === "undefined") return;
-  localStorage.removeItem(TOKEN_KEY);
+  sessionStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
-  document.cookie = "flowpilot_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; samesite=lax";
+  const secureFlag = window.location.protocol === "https:" ? "; secure" : "";
+  document.cookie = `flowpilot_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; samesite=lax${secureFlag}`;
 }
 
 export function getAuthUser(): AuthUser | null {

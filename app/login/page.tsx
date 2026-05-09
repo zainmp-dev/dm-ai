@@ -2,14 +2,13 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 import { Eye, EyeOff, Lock, LogIn, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
-import { HeaderThemeControl } from "@/components/header-theme-control";
 import { apiErrorMessage, apiLogin, apiStartOAuth } from "@/lib/api";
 import { setAuthSession } from "@/lib/auth";
 import axios from "axios";
@@ -54,18 +53,19 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<"" | "google" | "facebook">("");
   const trimmedEmail = email.trim();
 
   const handleLogin = () => {
     if (!EMAIL_REGEX.test(trimmedEmail)) {
-      push("Please enter a valid email address.");
+      push("Please enter a valid email address.", { kind: "error" });
       return;
     }
 
     if (!PASSWORD_REGEX.test(password)) {
-      push("Password must be at least 6 characters and include letters and numbers.");
+      push("Password must be at least 6 characters and include letters and numbers.", { kind: "error" });
       return;
     }
 
@@ -73,19 +73,23 @@ export default function LoginPage() {
     void apiLogin({ email: trimmedEmail, password })
       .then((res) => {
         setAuthSession(res.token, res.user);
-        push("Logged in");
+        push("Welcome back.", { kind: "success" });
         // Avoid an extra post-login workspace fetch here; dashboard loads what it needs.
         router.replace("/dashboard");
       })
       .catch((error: unknown) => {
         if (axios.isAxiosError(error)) {
+          if (error.code === "ECONNABORTED" || !error.response) {
+            push("Server is slow to respond — please try again in a few seconds.", { kind: "error" });
+            return;
+          }
           const detail = error.response?.data?.detail;
           if (typeof detail === "string" && detail.trim()) {
-            push(detail);
+            push(detail, { kind: "error" });
             return;
           }
         }
-        push("Invalid credentials. Create an account first if this is your first login.");
+        push("Invalid credentials. Create an account first if this is your first login.", { kind: "error" });
       })
       .finally(() => setLoading(false));
   };
@@ -109,29 +113,33 @@ export default function LoginPage() {
         window.location.assign(auth_url);
       })
       .catch((error: unknown) => {
-        push(apiErrorMessage(error) || "Unable to start social sign-in.");
+        push(apiErrorMessage(error) || "Unable to start social sign-in.", { kind: "error" });
       })
       .finally(() => setOauthLoading(""));
   };
 
+  const handleTogglePassword = () => {
+    setShowPassword((prev) => !prev);
+    requestAnimationFrame(() => {
+      passwordInputRef.current?.focus();
+    });
+  };
+
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-gradient-to-b from-sky-200/70 via-sky-100/70 to-zinc-100 p-4 dark:from-zinc-950 dark:via-zinc-950 dark:to-zinc-900">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.6),_transparent_60%)] dark:bg-none" />
-      <div className="pointer-events-none absolute -bottom-16 left-1/2 h-[28rem] w-[28rem] -translate-x-1/2 rounded-full border border-white/50 dark:border-zinc-700/30" />
-      <div className="pointer-events-none absolute -bottom-10 left-1/2 h-[22rem] w-[22rem] -translate-x-1/2 rounded-full border border-white/50 dark:border-zinc-700/30" />
-      <div className="absolute right-4 top-4 z-10">
-        <HeaderThemeControl />
-      </div>
-      <Card className="relative z-10 w-full max-w-md rounded-3xl border-white/70 bg-white/65 p-1 shadow-2xl backdrop-blur-lg dark:border-zinc-800 dark:bg-zinc-900/85">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#f8fbff] p-4 text-[#0f172a]">
+      <div className="pointer-events-none absolute -top-24 left-1/2 h-[24rem] w-[24rem] -translate-x-1/2 rounded-full bg-[#2563EB]/20 blur-[120px]" />
+      <div className="pointer-events-none absolute bottom-0 right-0 h-[20rem] w-[20rem] rounded-full bg-[#60a5fa]/20 blur-[110px]" />
+      <div className="w-full max-w-md">
+      <Card className="relative z-10 w-full rounded-3xl border-slate-200 bg-white p-1 shadow-xl">
         <CardHeader className="pb-4 pt-8">
           <div className="mb-4 flex items-center justify-center">
-            <div className="rounded-2xl border border-zinc-200/70 bg-white/80 p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
-              <LogIn className="h-5 w-5 text-zinc-700 dark:text-zinc-100" />
+            <div className="rounded-2xl border border-white/20 bg-white/10 p-3 shadow-sm">
+              <LogIn className="h-5 w-5 text-[#0f172a]" />
             </div>
           </div>
-          <p className="text-center text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">FlowPilot</p>
+          <p className="text-center text-xs font-semibold uppercase tracking-[0.2em] text-[#64748b]">FlowPilot</p>
           <CardTitle className="mt-2 text-center text-3xl font-semibold tracking-tight">Sign in with email</CardTitle>
-          <CardDescription className="mx-auto max-w-xs text-center text-base">
+          <CardDescription className="mx-auto max-w-xs text-center text-base text-[#64748b]">
             Log in to your workspace and continue your flow.
           </CardDescription>
         </CardHeader>
@@ -142,7 +150,7 @@ export default function LoginPage() {
               Email
             </Label>
             <div className="relative">
-              <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b]" />
               <Input
                 id="login-email"
                 type="email"
@@ -150,7 +158,7 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="Email"
                 autoComplete="email"
-                className="h-11 rounded-xl border-white/80 bg-white/75 pl-10 dark:border-zinc-700 dark:bg-zinc-800/80"
+                className="h-11 rounded-xl border-slate-200 bg-white pl-10 text-[#0f172a] placeholder:text-[#94a3b8]"
               />
             </div>
           </div>
@@ -159,21 +167,31 @@ export default function LoginPage() {
               Password
             </Label>
             <div className="relative">
-              <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b]" />
               <Input
+                ref={passwordInputRef}
                 id="login-password"
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Password"
-                className="h-11 rounded-xl border-white/80 bg-white/75 pl-10 pr-10 dark:border-zinc-700 dark:bg-zinc-800/80"
+                className="h-11 rounded-xl border-slate-200 bg-white pl-10 pr-10 text-[#0f172a] placeholder:text-[#94a3b8]"
                 autoComplete="current-password"
               />
               <button
                 type="button"
-                onClick={() => setShowPassword((prev) => !prev)}
-                className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  handleTogglePassword();
+                }}
+                className="absolute inset-y-0 right-0 z-30 flex w-11 cursor-pointer items-center justify-center text-[#64748b] transition-colors hover:text-[#0f172a]"
                 aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-pressed={showPassword}
               >
                 {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
@@ -182,30 +200,30 @@ export default function LoginPage() {
           <div className="flex justify-end">
             <button
               type="button"
-              className="text-sm text-zinc-600 hover:text-zinc-900 hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
-              onClick={() => push("Forgot password flow coming soon")}
+              className="text-sm text-[#64748b] hover:text-[#0f172a] hover:underline"
+              onClick={() => push("Forgot password flow is being rolled out.", { kind: "info" })}
             >
               Forgot password?
             </button>
           </div>
           <Button
             type="submit"
-            className="h-11 w-full rounded-xl bg-zinc-950 text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-zinc-200"
+            className="h-11 w-full rounded-xl bg-[#2563EB] text-white hover:bg-[#1d4ed8]"
             disabled={loading || !trimmedEmail || !password.trim()}
           >
             {loading ? "Signing in..." : "Sign in"}
           </Button>
           <div className="pt-1">
             <div className="flex items-center gap-3">
-              <div className="h-px flex-1 bg-zinc-300/70 dark:bg-zinc-700" />
-              <p className="text-xs text-zinc-500">Or sign in with</p>
-              <div className="h-px flex-1 bg-zinc-300/70 dark:bg-zinc-700" />
+              <div className="h-px flex-1 bg-slate-200" />
+              <p className="text-xs text-[#64748b]">Or sign in with</p>
+              <div className="h-px flex-1 bg-slate-200" />
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2">
               <Button
                 type="button"
                 variant="outline"
-                className="rounded-xl bg-white/60 dark:bg-zinc-800/70"
+                className="rounded-xl border-slate-200 bg-white"
                 disabled={loading || Boolean(oauthLoading)}
                 aria-label="Sign in with Google"
                 onClick={() => handleOAuthStart("google")}
@@ -215,7 +233,7 @@ export default function LoginPage() {
               <Button
                 type="button"
                 variant="outline"
-                className="rounded-xl bg-white/60 dark:bg-zinc-800/70"
+                className="rounded-xl border-slate-200 bg-white"
                 disabled={loading || Boolean(oauthLoading)}
                 aria-label="Sign in with Facebook"
                 onClick={() => handleOAuthStart("facebook")}
@@ -224,18 +242,19 @@ export default function LoginPage() {
               </Button>
             </div>
             {oauthLoading ? (
-              <p className="mt-2 text-center text-xs text-zinc-500 dark:text-zinc-400">Redirecting to {oauthLoading}…</p>
+              <p className="mt-2 text-center text-xs text-[#64748b]">Redirecting to {oauthLoading}…</p>
             ) : null}
           </div>
-          <p className="text-center text-sm text-zinc-500">
+          <p className="text-center text-sm text-[#64748b]">
             No account?{" "}
-            <Link href="/signup" className="font-medium text-zinc-900 hover:underline dark:text-zinc-100">
+            <Link href="/signup" className="font-medium text-[#0f172a] hover:underline">
               Create account
             </Link>
           </p>
           </form>
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }

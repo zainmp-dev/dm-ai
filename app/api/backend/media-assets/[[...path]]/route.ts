@@ -9,18 +9,16 @@ export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 export const runtime = "nodejs";
 
-type RouteContext = { params: Promise<{ path?: string[] }> };
-
 function proxy(request: NextRequest) {
   return proxyToFastapi(request, undefined, API_PREFIX);
 }
 
-export async function GET(request: NextRequest, _context: RouteContext) {
+export async function GET(request: NextRequest) {
   return proxy(request);
 }
-export async function HEAD(request: NextRequest, _context: RouteContext) {
+export async function HEAD(request: NextRequest) {
   return proxy(request);
 }
-export async function OPTIONS(request: NextRequest, _context: RouteContext) {
+export async function OPTIONS(request: NextRequest) {
   return proxy(request);
 }

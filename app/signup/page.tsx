@@ -2,19 +2,25 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 import { Eye, EyeOff, Lock, Mail, UserRound, UserRoundPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
-import { HeaderThemeControl } from "@/components/header-theme-control";
+import axios from "axios";
 import { apiErrorMessage, apiSignup, apiStartOAuth } from "@/lib/api";
 import { setAuthSession } from "@/lib/auth";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PASSWORD_REGEX = /^(?=.*[A-Za-z])(?=.*\d).{6,}$/;
+
+function getPasswordEstimate(score: number) {
+  if (score <= 2) return "Estimated crack time: minutes to hours";
+  if (score <= 4) return "Estimated crack time: days to weeks";
+  return "Estimated crack time: months+";
+}
 
 function GoogleIcon() {
   return (
@@ -54,24 +60,43 @@ export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<"" | "google" | "facebook">("");
   const trimmedName = name.trim();
   const trimmedEmail = email.trim();
+  const passwordStrength =
+    (password.length >= 6 ? 1 : 0) +
+    (/[A-Z]/.test(password) ? 1 : 0) +
+    (/[a-z]/.test(password) ? 1 : 0) +
+    (/\d/.test(password) ? 1 : 0) +
+    (/[^A-Za-z0-9]/.test(password) ? 1 : 0);
+  const passwordStrengthLabel =
+    password.length === 0 ? "" : passwordStrength <= 2 ? "Weak" : passwordStrength <= 4 ? "Medium" : "Strong";
+  const passwordStrengthBarColor =
+    password.length === 0 ? "#cbd5e1" : passwordStrength <= 2 ? "#ef4444" : passwordStrength <= 4 ? "#eab308" : "#10b981";
+  const passwordStrengthBarWidth = password.length === 0 ? "0%" : `${Math.max(passwordStrength, 1) * 20}%`;
+
+  const handleTogglePassword = () => {
+    setShowPassword((prev) => !prev);
+    requestAnimationFrame(() => {
+      passwordInputRef.current?.focus();
+    });
+  };
 
   const handleSignup = () => {
     if (!trimmedName) {
-      push("Please enter your name.");
+      push("Please enter your name.", { kind: "error" });
       return;
     }
 
     if (!EMAIL_REGEX.test(trimmedEmail)) {
-      push("Please enter a valid email address.");
+      push("Please enter a valid email address.", { kind: "error" });
       return;
     }
 
     if (!PASSWORD_REGEX.test(password)) {
-      push("Password must be at least 6 characters and include letters and numbers.");
+      push("Password must be at least 6 characters and include letters and numbers.", { kind: "error" });
       return;
     }
 
@@ -79,10 +104,16 @@ export default function SignupPage() {
     void apiSignup({ name: trimmedName, email: trimmedEmail, password })
       .then((res) => {
         setAuthSession(res.token, res.user);
-        push("Account created");
+        push("Account created successfully.", { kind: "success" });
         router.replace("/workspace-setup");
       })
-      .catch((error: unknown) => push(apiErrorMessage(error) || "Unable to create account"))
+      .catch((error: unknown) => {
+        if (axios.isAxiosError(error) && (error.code === "ECONNABORTED" || !error.response)) {
+          push("Server is slow to respond — please try again in a few seconds.", { kind: "error" });
+          return;
+        }
+        push(apiErrorMessage(error) || "Unable to create account", { kind: "error" });
+      })
       .finally(() => setLoading(false));
   };
 
@@ -105,29 +136,26 @@ export default function SignupPage() {
         window.location.assign(auth_url);
       })
       .catch((error: unknown) => {
-        push(apiErrorMessage(error) || "Unable to start social sign-up.");
+        push(apiErrorMessage(error) || "Unable to start social sign-up.", { kind: "error" });
       })
       .finally(() => setOauthLoading(""));
   };
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-gradient-to-b from-sky-200/70 via-sky-100/70 to-zinc-100 p-4 dark:from-zinc-950 dark:via-zinc-950 dark:to-zinc-900">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.6),_transparent_60%)] dark:bg-none" />
-      <div className="pointer-events-none absolute -bottom-16 left-1/2 h-[28rem] w-[28rem] -translate-x-1/2 rounded-full border border-white/50 dark:border-zinc-700/30" />
-      <div className="pointer-events-none absolute -bottom-10 left-1/2 h-[22rem] w-[22rem] -translate-x-1/2 rounded-full border border-white/50 dark:border-zinc-700/30" />
-      <div className="absolute right-4 top-4 z-10">
-        <HeaderThemeControl />
-      </div>
-      <Card className="relative z-10 w-full max-w-md rounded-3xl border-white/70 bg-white/65 p-1 shadow-2xl backdrop-blur-lg dark:border-zinc-800 dark:bg-zinc-900/85">
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#f8fbff] p-4 text-[#0f172a]">
+      <div className="pointer-events-none absolute -top-24 left-1/2 h-[24rem] w-[24rem] -translate-x-1/2 rounded-full bg-[#2563EB]/20 blur-[120px]" />
+      <div className="pointer-events-none absolute bottom-0 right-0 h-[20rem] w-[20rem] rounded-full bg-[#60a5fa]/20 blur-[110px]" />
+      <div className="w-full max-w-md">
+      <Card className="relative z-10 w-full rounded-3xl border-slate-200 bg-white p-1 shadow-xl">
         <CardHeader className="pb-4 pt-8">
           <div className="mb-4 flex items-center justify-center">
-            <div className="rounded-2xl border border-zinc-200/70 bg-white/80 p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-800">
-              <UserRoundPlus className="h-5 w-5 text-zinc-700 dark:text-zinc-100" />
+            <div className="rounded-2xl border border-white/20 bg-white/10 p-3 shadow-sm">
+              <UserRoundPlus className="h-5 w-5 text-[#0f172a]" />
             </div>
           </div>
-          <p className="text-center text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500">FlowPilot</p>
+          <p className="text-center text-xs font-semibold uppercase tracking-[0.2em] text-[#64748b]">FlowPilot</p>
           <CardTitle className="mt-2 text-center text-3xl font-semibold tracking-tight">Create account</CardTitle>
-          <CardDescription className="mx-auto max-w-xs text-center text-base">Set up your workspace in seconds.</CardDescription>
+          <CardDescription className="mx-auto max-w-xs text-center text-base text-[#64748b]">Set up your workspace in seconds.</CardDescription>
         </CardHeader>
         <CardContent>
           <form className="space-y-4 pb-8" onSubmit={handleSignupSubmit}>
@@ -136,14 +164,14 @@ export default function SignupPage() {
               Name
             </Label>
             <div className="relative">
-              <UserRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <UserRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b]" />
               <Input
                 id="signup-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Name"
                 autoComplete="name"
-                className="h-11 rounded-xl border-white/80 bg-white/75 pl-10 dark:border-zinc-700 dark:bg-zinc-800/80"
+                className="h-11 rounded-xl border-slate-200 bg-white pl-10 text-[#0f172a] placeholder:text-[#94a3b8]"
               />
             </div>
           </div>
@@ -152,7 +180,7 @@ export default function SignupPage() {
               Email
             </Label>
             <div className="relative">
-              <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b]" />
               <Input
                 id="signup-email"
                 type="email"
@@ -160,7 +188,7 @@ export default function SignupPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="Email"
                 autoComplete="email"
-                className="h-11 rounded-xl border-white/80 bg-white/75 pl-10 dark:border-zinc-700 dark:bg-zinc-800/80"
+                className="h-11 rounded-xl border-slate-200 bg-white pl-10 text-[#0f172a] placeholder:text-[#94a3b8]"
               />
             </div>
           </div>
@@ -169,45 +197,71 @@ export default function SignupPage() {
               Password
             </Label>
             <div className="relative">
-              <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
+              <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b]" />
               <Input
+                ref={passwordInputRef}
                 id="signup-password"
                 type={showPassword ? "text" : "password"}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Password"
-                className="h-11 rounded-xl border-white/80 bg-white/75 pl-10 pr-10 dark:border-zinc-700 dark:bg-zinc-800/80"
+                className="h-11 rounded-xl border-slate-200 bg-white pl-10 pr-10 text-[#0f172a] placeholder:text-[#94a3b8]"
                 autoComplete="new-password"
               />
               <button
                 type="button"
-                onClick={() => setShowPassword((prev) => !prev)}
-                className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  handleTogglePassword();
+                }}
+                className="absolute inset-y-0 right-0 z-30 flex w-11 cursor-pointer items-center justify-center text-[#64748b] transition-colors hover:text-[#0f172a]"
                 aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-pressed={showPassword}
               >
                 {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
           </div>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">Use at least 6 characters with letters and numbers.</p>
+          <div className="space-y-1.5">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+              <div
+                className="h-full rounded-full transition-all duration-300 ease-out"
+                style={{
+                  width: passwordStrengthBarWidth,
+                  backgroundColor: passwordStrengthBarColor,
+                }}
+              />
+            </div>
+            <p className="text-xs text-[#64748b]">
+              {password.length === 0
+                ? "Use 6+ characters with letters and numbers."
+                : `Password strength: ${passwordStrengthLabel}.`}
+            </p>
+            {password.length > 0 ? <p className="text-xs text-[#64748b]">{getPasswordEstimate(passwordStrength)}</p> : null}
+          </div>
           <Button
             type="submit"
-            className="h-11 w-full rounded-xl bg-zinc-950 text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-zinc-200"
+            className="h-11 w-full rounded-xl bg-[#2563EB] text-white hover:bg-[#1d4ed8]"
             disabled={loading || !trimmedName || !trimmedEmail || !password.trim()}
           >
             {loading ? "Creating account..." : "Create account"}
           </Button>
           <div className="pt-1">
             <div className="flex items-center gap-3">
-              <div className="h-px flex-1 bg-zinc-300/70 dark:bg-zinc-700" />
-              <p className="text-xs text-zinc-500">Or sign up with</p>
-              <div className="h-px flex-1 bg-zinc-300/70 dark:bg-zinc-700" />
+              <div className="h-px flex-1 bg-slate-200" />
+              <p className="text-xs text-[#64748b]">Or sign up with</p>
+              <div className="h-px flex-1 bg-slate-200" />
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2">
               <Button
                 type="button"
                 variant="outline"
-                className="rounded-xl bg-white/60 dark:bg-zinc-800/70"
+                className="rounded-xl border-slate-200 bg-white"
                 disabled={loading || Boolean(oauthLoading)}
                 aria-label="Sign up with Google"
                 onClick={() => handleOAuthStart("google")}
@@ -217,7 +271,7 @@ export default function SignupPage() {
               <Button
                 type="button"
                 variant="outline"
-                className="rounded-xl bg-white/60 dark:bg-zinc-800/70"
+                className="rounded-xl border-slate-200 bg-white"
                 disabled={loading || Boolean(oauthLoading)}
                 aria-label="Sign up with Facebook"
                 onClick={() => handleOAuthStart("facebook")}
@@ -226,18 +280,19 @@ export default function SignupPage() {
               </Button>
             </div>
             {oauthLoading ? (
-              <p className="mt-2 text-center text-xs text-zinc-500 dark:text-zinc-400">Redirecting to {oauthLoading}…</p>
+              <p className="mt-2 text-center text-xs text-[#64748b]">Redirecting to {oauthLoading}…</p>
             ) : null}
           </div>
-          <p className="text-center text-sm text-zinc-500">
+          <p className="text-center text-sm text-[#64748b]">
             Already have an account?{" "}
-            <Link href="/login" className="font-medium text-zinc-900 hover:underline dark:text-zinc-100">
+            <Link href="/login" className="font-medium text-[#0f172a] hover:underline">
               Sign in
             </Link>
           </p>
           </form>
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }

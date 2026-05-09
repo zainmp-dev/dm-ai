@@ -1,10 +1,13 @@
 "use client";
 
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useMemo } from "react";
 import type { ReactNode } from "react";
+import { Toaster, toast } from "sonner";
 
-type ToastItem = { id: string; title: string };
-export type ToastPushOptions = { durationMs?: number };
+export type ToastPushOptions = {
+  durationMs?: number;
+  kind?: "success" | "error" | "info";
+};
 
 const ToastContext = createContext<{ push: (title: string, options?: ToastPushOptions) => void } | null>(null);
 
@@ -13,14 +16,19 @@ const MIN_TOAST_MS = 1500;
 const MAX_TOAST_MS = 30_000;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toasts, setToasts] = useState<ToastItem[]>([]);
-
   const push = useCallback((title: string, options?: ToastPushOptions) => {
-    const id = `${Date.now()}-${Math.random()}`;
     const raw = options?.durationMs ?? DEFAULT_TOAST_MS;
     const durationMs = Math.min(MAX_TOAST_MS, Math.max(MIN_TOAST_MS, raw));
-    setToasts((items) => [...items, { id, title }]);
-    setTimeout(() => setToasts((items) => items.filter((item) => item.id !== id)), durationMs);
+    const kind = options?.kind ?? "info";
+    if (kind === "success") {
+      toast.success(title, { duration: durationMs });
+      return;
+    }
+    if (kind === "error") {
+      toast.error(title, { duration: durationMs });
+      return;
+    }
+    toast(title, { duration: durationMs });
   }, []);
 
   const value = useMemo(() => ({ push }), [push]);
@@ -28,20 +36,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div
-        className="pointer-events-none fixed right-4 top-4 z-[220] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2"
-        aria-live="polite"
-        aria-relevant="additions"
-      >
-        {toasts.map((toast) => (
-          <div
-            key={toast.id}
-            className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-800 shadow-lg ring-1 ring-black/5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-          >
-            {toast.title}
-          </div>
-        ))}
-      </div>
+      <Toaster
+        richColors
+        position="top-right"
+        toastOptions={{
+          style: {
+            background: "rgba(15, 23, 42, 0.86)",
+            border: "1px solid rgba(255,255,255,0.12)",
+            color: "#f8fafc",
+            backdropFilter: "blur(14px)",
+          },
+        }}
+      />
     </ToastContext.Provider>
   );
 }

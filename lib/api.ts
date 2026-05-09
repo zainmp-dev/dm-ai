@@ -26,6 +26,13 @@ import type {
 
 const API_PREFIX = (process.env.NEXT_PUBLIC_API_PREFIX || "/api/backend").replace(/\/+$/, "");
 
+/** Default cap so hung proxies do not block the UI forever; AI routes override below. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
+const AUTH_REQUEST_TIMEOUT_MS = 10_000;
+const OPENROUTER_BALANCE_TIMEOUT_MS = 10_000;
+const AI_LONG_REQUEST_TIMEOUT_MS = 300_000;
+const WORKSPACE_SEARCH_TIMEOUT_MS = 120_000;
+
 declare module "axios" {
   interface AxiosRequestConfig {
     skipGlobalLoading?: boolean;
@@ -36,7 +43,26 @@ declare module "axios" {
 
 const apiClient = axios.create({
   baseURL: API_PREFIX,
+  withCredentials: true,
+  timeout: DEFAULT_REQUEST_TIMEOUT_MS,
 });
+
+async function withAiRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i <= retries; i += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!axios.isAxiosError(err)) throw err;
+      const status = err.response?.status;
+      const transient = status === 408 || status === 429 || (typeof status === "number" && status >= 500);
+      if (!transient || i >= retries) break;
+      await new Promise((resolve) => setTimeout(resolve, 250 * (i + 1)));
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error("AI request failed");
+}
 
 function requestPathKey(config: InternalAxiosRequestConfig): string {
   const raw = (config.url || "").split("?")[0];
@@ -84,6 +110,7 @@ function classifyGlobalLoading(config: InternalAxiosRequestConfig): FlowApiLoadi
   if (path.endsWith("/content") && method === "POST") {
     const action = extractContentAction(config.data);
     if (action === "generate" || action === "suggest" || action === "delete") return "skip";
+    if (action === "bulk_delete") return "delete";
   }
   if (path.endsWith("/publish") || path.endsWith("/cron/run")) return "publish";
   if (
@@ -112,6 +139,7 @@ function resolveProcessLabel(config: InternalAxiosRequestConfig): string {
     if (action === "create") return "Creating content";
     if (action === "update") return "Updating content";
     if (action === "delete") return "Removing content";
+    if (action === "bulk_delete") return "Deleting all content";
     return "Saving content";
   }
   if (path.endsWith("/approve")) return "Approving content";
@@ -200,16 +228,32 @@ apiClient.interceptors.response.use(
 
 /** FastAPI/axios: surface `detail` for user-visible errors. */
 export function apiErrorMessage(error: unknown): string {
+  const fallback = "Something went wrong. Please try again.";
   if (axios.isAxiosError(error)) {
+    const code = (error as { code?: string }).code;
+    if (error.code === "ECONNABORTED" || code === "ECONNABORTED") {
+      return "Request timed out. Start the API backend (see README) or check your network, then try again.";
+    }
+    if (error.code === "ERR_NETWORK" || code === "ERR_NETWORK" || !error.response) {
+      return "Cannot reach the server. Ensure the backend is running and NEXT_PUBLIC_API_PREFIX is correct.";
+    }
+    const status = error.response?.status;
     const data = error.response?.data;
     if (data && typeof data === "object" && "detail" in data) {
       const d = (data as { detail: unknown }).detail;
-      if (typeof d === "string") return d;
+      if (typeof d === "string") {
+        const detail = d.trim();
+        if (!detail) return fallback;
+        const sensitive = /traceback|exception|stack|token|secret|password|sql|internal/i.test(detail);
+        if (sensitive || (typeof status === "number" && status >= 500)) return fallback;
+        return detail;
+      }
     }
+    if (typeof status === "number" && status >= 500) return fallback;
     if (error.message) return error.message;
   }
-  if (error instanceof Error) return error.message;
-  return "Request failed";
+  if (error instanceof Error) return error.message || fallback;
+  return fallback;
 }
 
 export type OpenrouterBalance = {
@@ -228,25 +272,34 @@ export type OpenrouterBalance = {
 
 /** OpenRouter GET /v1/key via backend — credits for the server API key (shared by all models). */
 export async function apiGetOpenrouterBalance(): Promise<OpenrouterBalance> {
-  const { data } = await apiClient.get<OpenrouterBalance>("/openrouter/balance", { skipGlobalLoading: true });
+  const { data } = await apiClient.get<OpenrouterBalance>("/openrouter/balance", {
+    skipGlobalLoading: true,
+    timeout: OPENROUTER_BALANCE_TIMEOUT_MS,
+  });
   return data;
 }
 
 export async function apiGetWorkspace(): Promise<WorkspaceSnapshot> {
-  const { data } = await apiClient.get<Record<string, unknown>>("/workspace");
+  const { data } = await apiClient.get<Record<string, unknown>>("/workspace", { skipGlobalLoading: true });
   const raw = data;
   return normalizeWorkspace(raw);
 }
 
 export async function apiWorkspaceSearch(body: { query: string; aiModel?: string }) {
-  const { data } = await apiClient.post<{
-    answer: string;
-    ai_model_used?: string;
-    ai_model_requested?: string | null;
-  }>("/workspace/search", {
-    query: body.query,
-    ai_model: body.aiModel,
-  });
+  const { data } = await withAiRetry(() =>
+    apiClient.post<{
+      answer: string;
+      ai_model_used?: string;
+      ai_model_requested?: string | null;
+    }>(
+      "/workspace/search",
+      {
+        query: body.query,
+        ai_model: body.aiModel,
+      },
+      { timeout: WORKSPACE_SEARCH_TIMEOUT_MS },
+    ),
+  );
   return {
     answer: data.answer,
     aiModelUsed: data.ai_model_used,
@@ -255,12 +308,18 @@ export async function apiWorkspaceSearch(body: { query: string; aiModel?: string
 }
 
 export async function apiSignup(body: { name: string; email: string; password: string }) {
-  const { data } = await apiClient.post<{ token: string; user: { name: string; email: string } }>("/signup", body);
+  const { data } = await apiClient.post<{ token: string; user: { name: string; email: string } }>("/signup", body, {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
   return data;
 }
 
 export async function apiLogin(body: { email: string; password: string }) {
-  const { data } = await apiClient.post<{ token: string; user: { name: string; email: string } }>("/login", body);
+  const { data } = await apiClient.post<{ token: string; user: { name: string; email: string } }>("/login", body, {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
   return data;
 }
 
@@ -269,11 +328,15 @@ export async function apiStartOAuth(body: {
   intent?: "login" | "signup";
   appOrigin?: string;
 }) {
-  const { data } = await apiClient.post<{ auth_url: string }>("/auth/oauth/start", {
-    provider: body.provider,
-    intent: body.intent || "login",
-    app_origin: body.appOrigin,
-  });
+  const { data } = await apiClient.post<{ auth_url: string }>(
+    "/auth/oauth/start",
+    {
+      provider: body.provider,
+      intent: body.intent || "login",
+      app_origin: body.appOrigin,
+    },
+    { skipGlobalLoading: true, timeout: AUTH_REQUEST_TIMEOUT_MS },
+  );
   return data;
 }
 
@@ -298,13 +361,18 @@ export async function apiPostStrategy(
     ai_model_used?: string | null;
     ai_model_requested?: string | null;
     ai_models_by_step?: { strategy?: string; content?: string };
-  }>("/strategy", {
-    company_name: companyName,
-    website,
-    ai_model: aiModel,
-    competitors,
-    scenario,
-  });
+    used_free_model?: boolean;
+  }>(
+    "/strategy",
+    {
+      company_name: companyName,
+      website,
+      ai_model: aiModel,
+      competitors,
+      scenario,
+    },
+    { timeout: AI_LONG_REQUEST_TIMEOUT_MS },
+  );
   return data;
 }
 
@@ -317,9 +385,26 @@ export type MasterContentSuggestion = {
   suggested_platform?: string;
 };
 
+type PostContentResponse = {
+  content: Record<string, unknown>[];
+  created_content_id?: string;
+  suggestion?: MasterContentSuggestion;
+  /** Present for action "suggest" when a model completed (may differ from requested after fallback). */
+  ai_model_used?: string;
+  ai_model_requested?: string | null;
+  /** True when the system fell back to a free OpenRouter model (paid model ran out of credits). */
+  used_free_model?: boolean;
+};
+
+// Each /content?action=generate run takes 30-180s on free models. Without dedupe, React Strict
+// Mode (dev), retry-on-mount, or accidental double-clicks fire concurrent flows that double the
+// load and trip OpenRouter free-model rate limits. Share one in-flight promise per workspace.
+let generateContentInflight: Promise<PostContentResponse> | null = null;
+
 export async function apiPostContent(body: {
-  action: "generate" | "update" | "create" | "suggest" | "delete";
+  action: "generate" | "update" | "create" | "suggest" | "delete" | "bulk_delete";
   contentId?: string;
+  contentIds?: string[];
   title?: string;
   contentText?: string;
   calendarDays?: number;
@@ -332,9 +417,13 @@ export async function apiPostContent(body: {
   aiModel?: string;
   suggestHint?: string;
 }) {
+  if (body.action === "generate" && generateContentInflight) {
+    return generateContentInflight;
+  }
   const payload: Record<string, unknown> = {
     action: body.action,
     content_id: body.contentId,
+    content_ids: body.contentIds,
     title: body.title,
     content_text: body.contentText,
     calendar_days: body.calendarDays,
@@ -354,15 +443,20 @@ export async function apiPostContent(body: {
   } else if (body.scheduledAt != null && body.scheduledAt !== "") {
     payload.scheduled_at = body.scheduledAt;
   }
-  const { data } = await apiClient.post<{
-    content: Record<string, unknown>[];
-    created_content_id?: string;
-    suggestion?: MasterContentSuggestion;
-    /** Present for action "suggest" when a model completed (may differ from requested after fallback). */
-    ai_model_used?: string;
-    ai_model_requested?: string | null;
-  }>("/content", payload);
-  return data;
+  const longRunning = body.action === "generate" || body.action === "suggest";
+  const request = apiClient
+    .post<PostContentResponse>("/content", payload, {
+      timeout: longRunning ? AI_LONG_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS,
+    })
+    .then((res) => res.data);
+
+  if (body.action === "generate") {
+    generateContentInflight = request.finally(() => {
+      generateContentInflight = null;
+    });
+    return generateContentInflight;
+  }
+  return request;
 }
 
 export async function apiApprove(contentId: string, platforms: PublishingPlatform[]) {
@@ -470,18 +564,46 @@ export async function apiRunCronCycle() {
 }
 
 export async function apiAnalyzeContent(body: { content: string; likes: number; comments: number; reach: number; aiModel?: string }) {
-  const { data } = await apiClient.post<{
-    performance_summary: string;
-    what_worked: string[];
-    what_failed: string[];
-    improvements: string[];
-  }>("/analytics/analyze", {
-    content: body.content,
-    likes: body.likes,
-    comments: body.comments,
-    reach: body.reach,
-    ai_model: body.aiModel,
-  });
+  const { data } = await withAiRetry(() =>
+    apiClient.post<{
+      performance_summary: string;
+      what_worked: string[];
+      what_failed: string[];
+      improvements: string[];
+    }>("/analytics/analyze", {
+      content: body.content,
+      likes: body.likes,
+      comments: body.comments,
+      reach: body.reach,
+      ai_model: body.aiModel,
+    }),
+  );
+  return data;
+}
+
+export async function apiGenerateCarousel(body: { topic: string; brandContext?: string; aiModel?: string }) {
+  const { data } = await withAiRetry(() =>
+    apiClient.post<{ title: string; slides: { heading: string; description: string; imagePrompt: string }[]; _ai_model_used?: string }>(
+      "/ai/carousel",
+      {
+        topic: body.topic,
+        brand_context: body.brandContext,
+        ai_model: body.aiModel,
+      },
+    ),
+  );
+  return data;
+}
+
+export async function apiGenerateImagePrompt(body: { brief: string; style?: string; platform?: string; aiModel?: string }) {
+  const { data } = await withAiRetry(() =>
+    apiClient.post<{ image_prompt: string; _ai_model_used?: string }>("/ai/image-prompt", {
+      brief: body.brief,
+      style: body.style,
+      platform: body.platform,
+      ai_model: body.aiModel,
+    }),
+  );
   return data;
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import type { PublishingPlatform } from "@/lib/types";
@@ -9,7 +9,7 @@ const OPTIONS: { id: PublishingPlatform; label: string; description: string; dis
   { id: "linkedin", label: "LinkedIn", description: "Professional feed and company updates" },
   { id: "instagram", label: "Instagram", description: "Visual storytelling and reels" },
   { id: "facebook", label: "Facebook", description: "Community posts and mixed media" },
-  { id: "twitter", label: "Twitter / X", description: "Short-form updates and real-time threads", disabled: true },
+  { id: "twitter", label: "Twitter / X", description: "Short-form updates and real-time threads" },
 ];
 
 const ACTIVE_OPTIONS = OPTIONS.filter((opt) => !opt.disabled);
@@ -29,7 +29,7 @@ export function PlatformSelectDialog({
   const allChecked = useMemo(() => selected.length === ACTIVE_OPTIONS.length, [selected]);
 
   useEffect(() => {
-    if (open) setSelected([]);
+    if (open) startTransition(() => setSelected([]));
   }, [open]);
 
   const toggleOption = (id: PublishingPlatform) => {
@@ -61,24 +61,18 @@ export function PlatformSelectDialog({
             <input type="checkbox" checked={allChecked} onChange={(e) => toggleAll(e.target.checked)} />
             <span>
               <span className="block font-medium">All platforms</span>
-              <span className="block text-xs text-zinc-500">LinkedIn, Instagram, and Facebook in one step</span>
+              <span className="block text-xs text-zinc-500">LinkedIn, Instagram, Facebook, and Twitter / X in one step</span>
             </span>
           </label>
           {OPTIONS.map((opt) => (
             <label
               key={opt.id}
-              title={opt.disabled ? "Coming soon" : undefined}
-              className={`flex items-start gap-2 rounded-2xl border px-4 py-3 text-left transition ${
-                opt.disabled ? "cursor-not-allowed border-zinc-200 bg-zinc-50 opacity-60" : "border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50"
-              }`}
+              className="flex items-start gap-2 rounded-2xl border border-zinc-200 bg-white px-4 py-3 text-left transition hover:border-zinc-300 hover:bg-zinc-50"
             >
-              <input type="checkbox" className="mt-1" checked={selected.includes(opt.id)} disabled={opt.disabled} onChange={() => toggleOption(opt.id)} />
+              <input type="checkbox" className="mt-1" checked={selected.includes(opt.id)} onChange={() => toggleOption(opt.id)} />
               <span>
                 <p className="font-medium text-zinc-900">{opt.label}</p>
-                <p className="text-xs font-normal text-zinc-500">
-                  {opt.description}
-                  {opt.disabled ? " (Coming soon)" : ""}
-                </p>
+                <p className="text-xs font-normal text-zinc-500">{opt.description}</p>
               </span>
             </label>
           ))}

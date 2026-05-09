@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Search, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -15,7 +15,7 @@ type WorkspaceAiSearchProps = {
   workspaceConfigured: boolean;
 };
 
-export function WorkspaceAiSearch({ selectedAiModel, workspaceConfigured }: WorkspaceAiSearchProps) {
+export function WorkspaceAiSearch({ selectedAiModel }: WorkspaceAiSearchProps) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [answer, setAnswer] = useState("");

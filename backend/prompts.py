@@ -56,7 +56,7 @@ class BrandContext:
                 f"Target Audience: {self.target_audience}",
                 f"Tone: {self.tone}",
                 f"Region: {self.region}",
-                f"Website: {self.website or 'Not provided'}",
+                f"Website: {self.website}",
                 f"Competitors: {json.dumps(self.competitors, ensure_ascii=True)}",
                 f"Goals: {', '.join(self.goals)}",
             ]
@@ -135,7 +135,7 @@ IMPORTANT:
 
 ━━━━━━━━ INPUT ━━━━━━━━
 Company Name: {company_name}
-Website: {website or "Not provided"}
+Website: {website}
 Industry / Scenario: {industry_scenario}
 Primary region code: {primary_region_code}
 Region (human-readable): {region_display}
@@ -322,7 +322,7 @@ Infer the product category and buyer context from the company website, scenario,
 
 INPUT:
 Company Name: {context.brand_name}
-Website: {context.website or "Not provided"}
+Website: {context.website}
 Scenario: {context.industry}
 Primary region code (ground regional buyer reality in your analysis): {region}
 {seed_line}
@@ -345,23 +345,35 @@ STEP 1: PRODUCT UNDERSTANDING
 ---
 
 STEP 2: COMPETITOR ANALYSIS
-- Identify real vendors/platforms that buyers in this region actually shortlist for the same use case (no invented archetypes)
-- For EACH competitor, name a specific product or company (publicly known), not "Established leader" or "Alternative 2"
-- For EACH competitor:
-- Strengths
-- Weaknesses
-- Pricing perception
-- Target audience
-- UX issues
+- Identify 10–12 REAL named vendors/platforms that buyers in this region actually shortlist for the same use case (no invented archetypes, no placeholders).
+- For EACH competitor, name a specific product or company (publicly known), not "Established leader" or "Alternative 2".
+- For EACH competitor return:
+  - name (real brand)
+  - domain (root marketing URL)
+  - positioning (one sentence on how they sell themselves)
+  - strengths (≥ 2 concrete bullets)
+  - weaknesses (≥ 2 concrete bullets)
+  - pricing_perception
+  - target_audience
+  - ux_issues
+  - market_rank (rough sense, e.g. "category leader", "fast-growing challenger", "regional incumbent")
+  - market_gap (what THIS competitor specifically does NOT solve well — must be different from the strengths)
+  - marketing_purpose (the dominant marketing wedge they push, e.g. "compliance-first messaging")
 
 ---
 
-STEP 3: MARKET GAP ANALYSIS
-Find REAL gaps in the market for the inferred category:
+STEP 3: MARKET GAP ANALYSIS (WEBSITE-VS-COMPETITOR REFERRAL COMPARE)
+Compare the COMPANY's own website ({{website echo}}) against the competitor set from STEP 2 and surface gaps that map back to THIS company's marketing — do not produce generic category gaps.
+For each gap explain:
+- The gap (what is missing or weak in the market / on this company's site)
+- Which competitors already cover it (name them) and which do not
+- Why this matters for buyers in the stated region
+Find REAL gaps:
 - What users complain about in this product class
 - What competitors are NOT solving
 - What is overpriced / overcomplicated
 - Missing capabilities for target customer segments (e.g. SMEs when relevant)
+- Messaging or proof gaps on THIS company's website vs. how the leaders frame the same value
 
 ---
 
@@ -421,9 +433,9 @@ Return ONLY a valid JSON object matching STEP 7 exactly (plus rich nested conten
 Depth and specificity (research-grade, not one-liners):
 - "product_summary": object with at minimum: target_audience (minimum 3 full sentences naming buyer roles and pains), core_features (at least 5 distinct strings), value_proposition (minimum 4 sentences tying differentiation to ROI or outcomes), pricing_positioning (low|mid|premium AND a one-sentence justification), website (marketing URL echo if inferable).
 - Include "scenario_fit" optional string explaining how scenario + region shape GTM here.
-Each item in "competitors": name, strengths (array of AT LEAST TWO concrete bullets each referencing real differentiation), weaknesses (same), pricing_perception, target_audience, ux_issues, domain — no generic labels; each field must carry specific detail (not "... TBD").
-The "competitors" array MUST contain at least 4 distinct real vendor/product names appropriate to the website, scenario, and region. Never return "competitors": [] and never use placeholder names.
-"market_gaps": AT LEAST 6 distinct insight strings grounded in STEP 3.
+Each item in "competitors": name, domain, positioning, strengths (array of AT LEAST TWO concrete bullets each referencing real differentiation), weaknesses (same), pricing_perception, target_audience, ux_issues, market_rank, market_gap, marketing_purpose — no generic labels; each field must carry specific detail (not "... TBD").
+The "competitors" array MUST contain BETWEEN 10 AND 12 distinct real vendor/product names appropriate to the website, scenario, and region. Fewer than 10 is unacceptable. Never return "competitors": [] and never use placeholder names.
+"market_gaps": AT LEAST 8 distinct insight strings grounded in STEP 3 — each gap MUST reference at least one competitor by name and explain how THIS company's website currently treats (or misses) that angle.
 "marketing_trends": AT LEAST 4 strings naming concrete channels or tactics peers use.
 "user_pain_points" must contain EXACTLY 15 objects — each category (string), problem (minimum 140 characters of detail), notes (when useful).
 """
@@ -449,7 +461,7 @@ Your job: list REAL products or companies that buyers in the target region actua
 
 INPUT (use all of it):
 - Company: {company_name}
-- Website: {website or "Not provided"}
+- Website: {website}
 - Scenario / industry: {scenario}
 - Region label: {region_label}
 - Region code: {primary_region_code}
@@ -457,11 +469,12 @@ INPUT (use all of it):
 - Partial competitor rows already found (may be empty): {partial_competitors_json}
 
 RULES:
-- Return 4 to 8 competitors as a JSON array of objects
-- Each object: name, strengths (array of strings), weaknesses (array), pricing_perception (string), target_audience (string), ux_issues (string), domain (string — marketing site host only, e.g. example.com, or "" if unknown)
+- Return 10 to 12 competitors as a JSON array of objects (fewer than 10 is unacceptable)
+- Each object: name, domain (marketing site host, e.g. example.com, or "" if unknown), positioning (one sentence), strengths (array of strings), weaknesses (array), pricing_perception (string), target_audience (string), ux_issues (string), market_rank (string e.g. "category leader" / "fast-growing challenger" / "regional incumbent"), market_gap (what this competitor specifically does NOT solve well), marketing_purpose (their dominant marketing wedge)
 - Use specific vendor/product names; do NOT use labels like "Market leader", "Low-cost option", "Competitor A"
 - Base choices on the category implied by the website and scenario and what is commonly evaluated in the stated region
 - If user seeds name real vendors, include them with full detail (do not drop them)
+- Append the partial rows already found AS-IS, then add additional real vendors until the array has at least 10 items.
 
 OUTPUT:
 Return ONLY a valid JSON array. No markdown, no surrounding object, no explanation.
@@ -559,6 +572,9 @@ Create:
 STEP 7: CALENDAR POSTS (scheduling)
 Generate exactly {calendar_days} publish-ready social posts in "calendar_posts".
 Rotate platforms across days (linkedin | instagram | facebook). One post per array item.
+Every post MUST be grounded in the locked JSON inputs (pain points, audience, market gaps, and positioning).
+Do not write generic advice that could apply to any company.
+Use concrete use-case language tied to the product/context from the locked JSON.
 Each calendar post object MUST have:
 - platform: linkedin|instagram|facebook
 - title: internal label (not the hook)
@@ -567,7 +583,9 @@ Each calendar post object MUST have:
 - cta: one specific action
 - hashtags: 3–6 plain tags (no # prefix in strings)
 - media_type: Image|Video|Carousel
-- media_preview_prompt: direct https URL only (e.g. https://picsum.photos/seed/<unique-word>/800/450 or a real Unsplash image URL; if Video, a real mp4/webm URL)
+- media_preview_prompt: direct https URL OR empty string "" when unsure
+  - Never use placeholder, random stock, or unrelated URLs
+  - If provided, URL must visually match the post's topic and platform intent
 
 ---
 
@@ -588,6 +606,7 @@ Return ONLY a valid JSON object. No markdown fences.
 IMPORTANT:
 - Content must directly solve user problems from the locked JSON
 - Avoid generic content
+- Reject irrelevant ideas: if a post does not map to a real pain point or audience need from input, replace it.
 - Make it actionable and realistic
 - "calendar_posts" length must be exactly {calendar_days} — use non-null arrays; never leave "calendar_posts" or "social_posts" empty, truncated, or null (the app requires these posts to save content).
 """
@@ -759,10 +778,12 @@ post draft for immediate scheduling.
      and adjust any line that drifts.
 
 5. MEDIA:
-   - media_type: Image (default), Carousel (step-by-step), or Video (motion
-     content only).
+   - media_type: Choose the best fit — Image, Carousel (step-by-step tips or
+     listicles), or Video (demos, testimonials, reels, tutorials).
+     Vary the format across posts; do not default to Image every time.
    - media_preview_prompt: A direct https image URL that visually fits this
-     post. Use https://picsum.photos/seed/<unique-descriptive-word>/800/450
+     post (used as poster/thumbnail for Video and cover for Carousel).
+     Use https://picsum.photos/seed/<unique-descriptive-word>/800/450
      or a real Unsplash URL. Must start with https://.
 
 6. QUALITY GATE — before returning, verify:

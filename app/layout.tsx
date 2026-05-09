@@ -44,12 +44,17 @@ export const metadata: Metadata = {
     description:
       "Plan and ship social content with AI: research, drafts, approvals, scheduling, and publishing—LinkedIn, Instagram, Facebook.",
     locale: "en_US",
+    url: "/",
   },
   twitter: {
-    card: "summary",
+    card: "summary_large_image",
     title: "FlowPilot — AI marketing & content workspace",
     description:
       "Plan and ship social content with AI: research, drafts, approvals, scheduling, and publishing.",
+  },
+  robots: {
+    index: true,
+    follow: true,
   },
 };
 
@@ -58,8 +63,6 @@ export default function RootLayout({
 }: Readonly<{
   children: ReactNode;
 }>) {
-  const themeInitScript = `(function(){try{var t=localStorage.getItem("flow-theme");if(t==="dark")document.documentElement.classList.add("dark");else document.documentElement.classList.remove("dark");}catch(e){document.documentElement.classList.remove("dark");}})();`;
-
   return (
     <html
       lang="en"
@@ -70,7 +73,28 @@ export default function RootLayout({
         suppressHydrationWarning
         className="min-h-full flex flex-col bg-background text-foreground"
       >
-        <script suppressHydrationWarning dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+        {/* Apply saved theme (or default dark) before first paint to avoid flash */}
+        <script
+          suppressHydrationWarning
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem('flow-theme');if(t==='light'){document.documentElement.classList.remove('dark')}else{document.documentElement.classList.add('dark');if(!t)localStorage.setItem('flow-theme','dark')}}catch(e){}})()`,
+          }}
+        />
+        <script
+          type="application/ld+json"
+          suppressHydrationWarning
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@type": "SoftwareApplication",
+              name: "FlowPilot",
+              applicationCategory: "BusinessApplication",
+              operatingSystem: "Web",
+              description:
+                "AI-powered multi-tenant platform for strategy, content creation, approvals, scheduling, and social publishing.",
+            }),
+          }}
+        />
         <ThemeProvider>
           <ToastProvider>
             <GlobalApiActivity />

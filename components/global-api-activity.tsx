@@ -13,8 +13,10 @@ function headlineFor(kind: FlowApiLoadingKind): string {
       return "Publishing";
     case "ai":
       return "AI processing";
+    case "delete":
+      return "Deleting";
     default:
-      return "Syncing";
+      return "Loading";
   }
 }
 
@@ -58,47 +60,46 @@ export function GlobalApiActivity() {
 
   const isAi = headlineKind === "ai";
   const isPublish = headlineKind === "publish";
-  const showBlockingOverlay = isAi || isPublish;
+  const isDelete = headlineKind === "delete";
+  const isDefault = !isAi && !isPublish && !isDelete;
+  const showBlockingOverlay = isAi || isPublish || isDelete;
 
   const barTrack = cn(
     isAi && "bg-violet-100/90 dark:bg-violet-950/40",
     isPublish && "bg-emerald-100/90 dark:bg-emerald-950/40",
-    !isAi && !isPublish && "bg-zinc-200/90 dark:bg-zinc-800/90",
+    isDelete && "bg-red-100/90 dark:bg-red-950/40",
+    isDefault && "bg-blue-100/80 dark:bg-blue-950/40",
   );
 
   const barFill = cn(
-    isAi &&
-      "flow-gemini-bar-shimmer bg-gradient-to-r from-violet-700 via-fuchsia-500 to-violet-400 shadow-sm shadow-violet-500/25",
-    isPublish &&
-      "bg-gradient-to-r from-emerald-600 via-teal-500 to-emerald-400 shadow-sm shadow-emerald-500/20",
-    !isAi &&
-      !isPublish &&
-      "bg-gradient-to-r from-zinc-600 to-zinc-400 dark:from-zinc-400 dark:to-zinc-500",
+    isAi && "flow-gemini-bar-shimmer bg-gradient-to-r from-violet-700 via-fuchsia-500 to-violet-400 shadow-sm shadow-violet-500/25",
+    isPublish && "bg-gradient-to-r from-emerald-600 via-teal-500 to-emerald-400 shadow-sm shadow-emerald-500/20",
+    isDelete && "bg-gradient-to-r from-red-600 via-rose-500 to-red-400 shadow-sm shadow-red-500/25",
+    isDefault && "bg-gradient-to-r from-blue-600 via-blue-500 to-blue-400 shadow-sm shadow-blue-500/25",
   );
 
   const cardShell = cn(
     "pointer-events-none w-full max-w-[min(calc(100vw-2rem),24rem)] rounded-[1.35rem] border px-8 py-9 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.18)] backdrop-blur-xl dark:shadow-[0_25px_50px_-12px_rgba(0,0,0,0.45)]",
-    isAi &&
-      "border-violet-200/70 bg-white/[0.97] ring-1 ring-violet-200/40 dark:border-violet-500/25 dark:bg-zinc-950/92 dark:ring-violet-500/15",
-    isPublish &&
-      "border-emerald-200/75 bg-white/[0.97] ring-1 ring-emerald-200/35 dark:border-emerald-500/25 dark:bg-zinc-950/92 dark:ring-emerald-500/12",
-    !isAi &&
-      !isPublish &&
-      "border-zinc-200/85 bg-white/[0.97] ring-1 ring-zinc-200/50 dark:border-zinc-600/45 dark:bg-zinc-950/92 dark:ring-zinc-700/40",
+    isAi && "border-violet-200/70 bg-white/[0.97] ring-1 ring-violet-200/40 dark:border-violet-500/25 dark:bg-zinc-950/92 dark:ring-violet-500/15",
+    isPublish && "border-emerald-200/75 bg-white/[0.97] ring-1 ring-emerald-200/35 dark:border-emerald-500/25 dark:bg-zinc-950/92 dark:ring-emerald-500/12",
+    isDelete && "border-red-200/70 bg-white/[0.97] ring-1 ring-red-200/40 dark:border-red-500/25 dark:bg-zinc-950/92 dark:ring-red-500/15",
+    isDefault && "border-blue-200/70 bg-white/[0.97] ring-1 ring-blue-200/40 dark:border-blue-500/20 dark:bg-zinc-950/92 dark:ring-blue-500/15",
   );
 
   const titleClass = cn(
     "text-[1.05rem] font-semibold leading-snug tracking-tight",
     isAi && "text-violet-950 dark:text-violet-100",
     isPublish && "text-emerald-950 dark:text-emerald-50",
-    !isAi && !isPublish && "text-zinc-900 dark:text-zinc-50",
+    isDelete && "text-red-950 dark:text-red-100",
+    isDefault && "text-blue-950 dark:text-blue-50",
   );
 
   const pctClass = cn(
     "text-[1.65rem] font-semibold tabular-nums leading-none tracking-tight",
     isAi && "bg-gradient-to-br from-violet-700 to-fuchsia-500 bg-clip-text text-transparent dark:from-violet-300 dark:to-fuchsia-300",
     isPublish && "text-emerald-600 dark:text-teal-300",
-    !isAi && !isPublish && "text-zinc-800 dark:text-zinc-100",
+    isDelete && "text-red-600 dark:text-red-300",
+    isDefault && "text-blue-600 dark:text-blue-300",
   );
 
   return (
@@ -113,7 +114,8 @@ export function GlobalApiActivity() {
           "h-1 w-full overflow-hidden",
           isAi && "bg-violet-200/50 dark:bg-violet-900/50",
           isPublish && "bg-emerald-200/55 dark:bg-emerald-900/45",
-          !isAi && !isPublish && "bg-zinc-200/90 dark:bg-zinc-700/80",
+          isDelete && "bg-red-200/55 dark:bg-red-900/45",
+          isDefault && "bg-blue-100/80 dark:bg-blue-900/40",
         )}
       >
         <div
@@ -135,7 +137,11 @@ export function GlobalApiActivity() {
                     ? `${activeCount} operations in progress`
                     : workspaceSearch
                       ? "Searching your workspace…"
-                      : `${headlineFor(headlineKind)} — stay on this page`}
+                      : isDelete
+                        ? "Removing items — please wait"
+                        : isDefault
+                          ? "Saving changes — please wait"
+                          : `${headlineFor(headlineKind)} — stay on this page`}
                 </p>
               </div>
 
@@ -151,7 +157,8 @@ export function GlobalApiActivity() {
                         "ml-0.5 text-base font-bold tabular-nums",
                         isAi && "text-violet-400/80 dark:text-violet-300/70",
                         isPublish && "text-emerald-400/90 dark:text-emerald-400/80",
-                        !isAi && !isPublish && "text-zinc-400 dark:text-zinc-500",
+                        isDelete && "text-red-400/90 dark:text-red-400/80",
+                        isDefault && "text-blue-400/80 dark:text-blue-400/70",
                       )}
                     >
                       %

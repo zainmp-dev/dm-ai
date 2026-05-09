@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -26,6 +27,8 @@ from prompts import (
     strategy_agent_prompt,
     workspace_search_prompt,
 )
+from services.ai import AIServiceError, ai_service
+from services.ai.ai_service import _is_free_model
 
 
 class AgentError(RuntimeError):
@@ -35,7 +38,10 @@ class AgentError(RuntimeError):
 logger = logging.getLogger(__name__)
 
 # Default batch size for workspace strategy + Agent 2 calendar posts (override via API `calendar_days`, max 90).
-DEFAULT_WORKSPACE_CALENDAR_DAYS = 10
+DEFAULT_WORKSPACE_CALENDAR_DAYS = 14
+# Target named-competitor count for Agent 1 + discovery sub-agent (real vendors only, no placeholders).
+TARGET_COMPETITOR_COUNT = 12
+MIN_COMPETITOR_COUNT = 10
 
 _MAX_HASHTAGS_BY_PLATFORM: dict[str, int] = {
     "instagram": 8,
@@ -334,98 +340,73 @@ def _parse_openrouter_affordable_max_tokens(error_body: str) -> int | None:
 
 
 def _openrouter_single_model(model: str, prompt: str) -> str:
-    if not settings.openrouter_api_key:
-        raise AgentError("OPENROUTER_API_KEY is not configured")
-
-    # Do not force a 128 floor: low OPENROUTER_MAX_TOKENS must be honored so tiny balances can succeed.
-    max_tokens = max(1, min(settings.openrouter_max_tokens, 32768))
-    last_detail = ""
-    # 402 when balance is low: OpenRouter reserves budget from max_tokens; retry with their stated cap or half.
-    for attempt in range(16):
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": SYSTEM_PROMPT,
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.7,
-            "max_tokens": max_tokens,
-        }
-
-        try:
-            response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {settings.openrouter_api_key}",
-                    "Content-Type": "application/json",
-                    "X-Title": "FlowPilot",
-                },
-                json=payload,
-                timeout=settings.openrouter_timeout_seconds,
-            )
-        except requests.Timeout as exc:
-            raise AgentError("OpenRouter request timed out") from exc
-        except requests.RequestException as exc:
-            detail = exc.response.text[:500] if exc.response is not None else str(exc)
-            raise AgentError(f"OpenRouter request failed: {detail}") from exc
-
-        if response.status_code == 200:
-            try:
-                data = response.json()
-                return str(data["choices"][0]["message"]["content"]).strip()
-            except (KeyError, IndexError, TypeError, ValueError) as exc:
-                raise AgentError("OpenRouter returned an unexpected response shape") from exc
-
-        detail = (response.text or "")[:1200]
-        last_detail = detail
-        if response.status_code == 402:
-            affordable = _parse_openrouter_affordable_max_tokens(detail)
-            if affordable is not None:
-                capped = max(1, min(max_tokens, affordable))
-                if capped < max_tokens:
-                    logger.warning(
-                        "OpenRouter 402: reducing max_tokens for model %s from %s to %s (account credit limit)",
-                        model,
-                        max_tokens,
-                        capped,
-                    )
-                    max_tokens = capped
-                    continue
-            if max_tokens > 1:
-                halved = max(1, max_tokens // 2)
-                if halved < max_tokens:
-                    logger.warning(
-                        "OpenRouter 402: halving max_tokens for model %s %s -> %s",
-                        model,
-                        max_tokens,
-                        halved,
-                    )
-                    max_tokens = halved
-                    continue
-        raise AgentError(f"OpenRouter request failed: {detail[:500]}")
-
-    raise AgentError(f"OpenRouter request failed after credit retries: {last_detail[:500]}")
+    try:
+        result = ai_service.retry_request(
+            prompt=prompt,
+            preferred_model=model,
+            max_tokens=settings.openrouter_max_tokens,
+            temperature=0.7,
+            prefer_gemini=False,
+        )
+        return result.text
+    except AIServiceError as exc:
+        raise AgentError(str(exc)) from exc
 
 
 def call_openrouter_with_fallback(
     prompt: str,
     preferred_model: str | None = None,
 ) -> tuple[str, str]:
-    last: AgentError | None = None
-    for model in _openrouter_model_chain(preferred_model):
+    """Call OpenRouter only (no Gemini). Used by all agents except strategy."""
+    try:
+        result = ai_service.retry_request(
+            prompt=prompt,
+            preferred_model=preferred_model,
+            max_tokens=settings.openrouter_max_tokens,
+            temperature=0.7,
+            prefer_gemini=False,
+        )
+        return result.text, result.model_used
+    except AIServiceError as exc:
+        raise AgentError(str(exc)) from exc
+
+
+def call_gemini_with_openrouter_fallback(
+    prompt: str,
+    preferred_openrouter_model: str | None = None,
+) -> tuple[str, str]:
+    """Try Gemini first; fall back to OpenRouter if Gemini is unconfigured or fails.
+
+    Used exclusively by the strategy agent so the heavy strategy prompt always
+    hits Gemini (fast, free quota) before spending OpenRouter credits.
+    """
+    gemini_key = (getattr(settings, "google_ai_api_key", "") or "").strip()
+    if gemini_key:
         try:
-            return _openrouter_single_model(model, prompt), model
-        except AgentError as e:
-            last = e
-            if not _is_transient_openrouter_error(e):
-                raise
-            logger.warning("OpenRouter model %s failed; trying next model. %s", model, e)
-    if last is not None:
-        raise last
-    raise AgentError("No OpenRouter models in fallback chain")
+            result = ai_service.gemini_request(
+                prompt=prompt,
+                max_tokens=settings.openrouter_max_tokens,
+                temperature=0.7,
+            )
+            return result.text, result.model_used
+        except AIServiceError as exc:
+            logger.warning(
+                "agents.strategy gemini_failed status=%s err=%s — falling back to OpenRouter",
+                exc.status_code,
+                str(exc)[:300],
+            )
+    # Gemini not configured or failed — go to OpenRouter.
+    try:
+        result = ai_service.retry_request(
+            prompt=prompt,
+            preferred_model=preferred_openrouter_model,
+            max_tokens=settings.openrouter_max_tokens,
+            temperature=0.7,
+            prefer_gemini=False,
+        )
+        return result.text, result.model_used
+    except AIServiceError as exc:
+        raise AgentError(str(exc)) from exc
 
 
 def get_openrouter_key_info_for_ui() -> dict[str, Any]:
@@ -792,8 +773,20 @@ def generate_workspace_research(
     calendar_days: int = DEFAULT_WORKSPACE_CALENDAR_DAYS,
     primary_region: str = "uae-india",
 ) -> dict[str, Any]:
+    flow_started = time.time()
+    logger.info(
+        "agents.flow start company=%s scenario=%s region=%s days=%s requested_model=%s",
+        (company_name or "")[:60],
+        scenario,
+        primary_region,
+        calendar_days,
+        ai_model or "(auto)",
+    )
+
     strategy_model: str | None = None
     try:
+        agent_started = time.time()
+        logger.info("agents.flow agent=strategy step=start")
         strategy_result, strategy_model = run_workspace_strategy_agent(
             company_name=company_name,
             website=website,
@@ -802,12 +795,23 @@ def generate_workspace_research(
             ai_model=ai_model,
             primary_region=primary_region,
         )
-    except AgentError:
-        return _fallback_workspace_research(company_name, website, scenario, competitors)
+        logger.info(
+            "agents.flow agent=strategy step=ok elapsed_ms=%s model=%s competitors=%s",
+            int((time.time() - agent_started) * 1000),
+            strategy_model,
+            _count_named_competitors(strategy_result),
+        )
+    except AgentError as exc:
+        logger.warning("agents.flow agent=strategy step=fail err=%s", str(exc)[:200])
+        # Do not silently return synthetic strategy data; callers should surface a clear
+        # failure so users can retry with a working model/key and get real Agent outputs.
+        raise AgentError(f"Workspace strategy generation failed: {exc}") from exc
 
     content_model: str | None = None
     content_extras: dict[str, Any] = {}
     try:
+        agent_started = time.time()
+        logger.info("agents.flow agent=content step=start days=%s", calendar_days)
         content_result, content_model, content_extras = run_workspace_content_agent(
             company_name=company_name,
             website=website,
@@ -818,8 +822,28 @@ def generate_workspace_research(
             calendar_days=calendar_days,
             primary_region=primary_region,
         )
-    except AgentError:
-        content_result = _fallback_workspace_research(company_name, website, scenario, competitors)["content"]
+        logger.info(
+            "agents.flow agent=content step=ok elapsed_ms=%s model=%s posts=%s",
+            int((time.time() - agent_started) * 1000),
+            content_model,
+            len(content_result),
+        )
+    except AgentError as exc:
+        logger.warning("agents.flow agent=content step=fail err=%s — running recovery", str(exc)[:200])
+        recovery_started = time.time()
+        content_result = _recover_calendar_posts_from_strategy_llm(
+            strategy_result,
+            company_name=company_name,
+            scenario=scenario,
+            calendar_days=calendar_days,
+            ai_model=ai_model,
+        )
+        logger.info(
+            "agents.flow agent=content_recovery step=%s elapsed_ms=%s posts=%s",
+            "ok" if content_result else "empty",
+            int((time.time() - recovery_started) * 1000),
+            len(content_result),
+        )
         content_model = None
         content_extras = {}
 
@@ -828,6 +852,14 @@ def generate_workspace_research(
     normalized["_ai_model_used"] = content_model or strategy_model
     normalized["_ai_model_requested"] = ai_model
     normalized["_ai_models_by_step"] = {"strategy": strategy_model or "", "content": content_model or ""}
+    logger.info(
+        "agents.flow done elapsed_ms=%s strategy_model=%s content_model=%s posts=%s competitors=%s",
+        int((time.time() - flow_started) * 1000),
+        strategy_model,
+        content_model,
+        len(content_result) if isinstance(content_result, list) else 0,
+        len(normalized.get("competitors", [])),
+    )
     return normalized
 
 
@@ -848,11 +880,13 @@ def run_workspace_strategy_agent(
         region=workspace_region_label(primary_region),
     )
     prompt = strategy_agent_prompt(context, primary_region_code=primary_region)
-    raw, used_model = call_openrouter_with_fallback(prompt, ai_model)
+    logger.info("agents.strategy llm=start prompt_chars=%s provider=gemini_first", len(prompt))
+    raw, used_model = call_gemini_with_openrouter_fallback(prompt, preferred_openrouter_model=ai_model)
     result = _extract_json(raw, preferred_model=ai_model)
     if not isinstance(result, dict):
         raise AgentError("Workspace strategy agent did not return a JSON object")
     _hydrate_workspace_strategy_from_agent1(result, website=context.website)
+    competitors_before = _count_named_competitors(result)
     _ensure_competitors_researched(
         result,
         company_name=company_name,
@@ -862,6 +896,13 @@ def run_workspace_strategy_agent(
         primary_region=primary_region,
         ai_model=ai_model,
     )
+    competitors_after = _count_named_competitors(result)
+    if competitors_after > competitors_before:
+        logger.info(
+            "agents.strategy sub=competitor_discovery added=%s total=%s",
+            competitors_after - competitors_before,
+            competitors_after,
+        )
     if "competitors" not in result and isinstance(result.get("competitor_insights"), list):
         result["competitors"] = result["competitor_insights"]
     if "company_study" in result and isinstance(result["company_study"], dict):
@@ -872,6 +913,63 @@ def run_workspace_strategy_agent(
                 gaps,
             )
     return result, used_model
+
+
+def _trim_strategy_for_content_prompt(strategy_output: dict[str, Any]) -> dict[str, Any]:
+    """Compact Agent-1 JSON for Agent-2: keeps only what the content/calendar generation needs.
+
+    Full Agent-1 output is often 15-20k chars (company_study, marketing_trends, full competitor
+    rows, etc). Free OpenRouter models (gpt-oss / gemma) take 60-120 s to read that much
+    context. This helper trims to ~3-5k chars while preserving every field the prompt cites.
+    """
+    if not isinstance(strategy_output, dict):
+        return {}
+
+    strategy = strategy_output.get("strategy") if isinstance(strategy_output.get("strategy"), dict) else {}
+    company_study = strategy_output.get("company_study") if isinstance(strategy_output.get("company_study"), dict) else {}
+    positioning = strategy_output.get("positioning") if isinstance(strategy_output.get("positioning"), dict) else {}
+    core_strategy = strategy_output.get("core_strategy") if isinstance(strategy_output.get("core_strategy"), dict) else {}
+    product_summary = strategy_output.get("product_summary") if isinstance(strategy_output.get("product_summary"), dict) else {}
+
+    pain_raw = strategy_output.get("user_pain_points")
+    pain_points: list[str] = []
+    if isinstance(pain_raw, list):
+        for item in pain_raw[:8]:
+            if isinstance(item, dict):
+                problem = str(item.get("problem") or item.get("pain") or "").strip()
+                if problem:
+                    pain_points.append(problem[:240])
+            elif str(item).strip():
+                pain_points.append(str(item).strip()[:240])
+
+    competitors_full = strategy_output.get("competitors") if isinstance(strategy_output.get("competitors"), list) else []
+    competitors_lite: list[dict[str, str]] = []
+    for item in competitors_full[:5]:
+        if not isinstance(item, dict):
+            continue
+        competitors_lite.append(
+            {
+                "name": str(item.get("name") or "").strip()[:120],
+                "positioning": str(item.get("positioning") or "").strip()[:240],
+                "market_gap": str(item.get("market_gap") or "").strip()[:240],
+            }
+        )
+
+    return {
+        "target_audience": _workspace_strategy_target_audience_line(strategy_output)[:1200],
+        "content_themes": _string_list(strategy.get("content_themes"), [])[:8],
+        "platform_focus": _string_list(strategy.get("platform_focus"), [])[:5],
+        "market_gaps": _string_list(strategy.get("market_gaps") or company_study.get("marketing_gap_issues"), [])[:8],
+        "user_pain_points": pain_points,
+        "positioning": {
+            "value_prop": str(positioning.get("messaging_angle") or product_summary.get("value_proposition") or "").strip()[:600],
+            "differentiator": str(positioning.get("unique_positioning") or core_strategy.get("differentiator") or "").strip()[:600],
+        },
+        "company_study": {
+            "scenario_summary": str(company_study.get("scenario_summary") or "").strip()[:800],
+        },
+        "competitors": competitors_lite,
+    }
 
 
 def run_workspace_content_agent(
@@ -894,7 +992,11 @@ def run_workspace_content_agent(
         target_audience=target_audience,
         region=workspace_region_label(primary_region),
     )
-    prompt = content_agent_prompt(context, strategy_output, calendar_days)
+    # Floor the calendar so content library is always > 12 even when the UI sends a smaller number.
+    effective_days = max(int(calendar_days or 0), DEFAULT_WORKSPACE_CALENDAR_DAYS)
+    trimmed_strategy = _trim_strategy_for_content_prompt(strategy_output)
+    prompt = content_agent_prompt(context, trimmed_strategy, effective_days)
+    logger.info("agents.content llm=start prompt_chars=%s", len(prompt))
     raw, model_used = call_openrouter_with_fallback(prompt, ai_model)
     parsed = _extract_json(raw, preferred_model=ai_model)
     extras: dict[str, Any] = {}
@@ -915,7 +1017,7 @@ def run_workspace_content_agent(
             parsed,
             company_name=company_name,
             scenario=scenario,
-            calendar_days=calendar_days,
+            calendar_days=effective_days,
         )
     elif isinstance(parsed, list):
         post_items = parsed
@@ -923,24 +1025,56 @@ def run_workspace_content_agent(
         raise AgentError("Workspace content agent did not return a JSON object or array")
 
     if not post_items:
-        post_items = _synthetic_calendar_posts_from_strategy(
-            strategy_output, company_name=company_name, scenario=scenario, calendar_days=calendar_days
+        logger.info("agents.content sub=recovery reason=empty_calendar_posts")
+        post_items = _recover_calendar_posts_from_strategy_llm(
+            strategy_output,
+            company_name=company_name,
+            scenario=scenario,
+            calendar_days=effective_days,
+            ai_model=ai_model,
         )
-
     if not post_items:
         raise AgentError("Workspace content agent returned no calendar posts")
 
-    try:
-        rraw, review_used = call_openrouter_with_fallback(
-            review_agent_prompt(context, post_items),
-            ai_model,
-        )
-        reviewed = _extract_json(rraw, preferred_model=ai_model)
-        if isinstance(reviewed, list) and len(reviewed) > 0:
-            post_items = reviewed
-            model_used = review_used
-    except AgentError:
-        pass
+    # Optional review pass: skip when running on a free model (rate-limited, slow) or when
+    # we only have a tiny calendar — saves an extra 5-30s without hurting quality much.
+    skip_review_reason: str | None = None
+    if _is_free_model(model_used):
+        skip_review_reason = "free_model_rate_limit"
+    elif len(post_items) < 4:
+        skip_review_reason = "small_calendar"
+
+    if skip_review_reason:
+        logger.info("agents.review step=skip reason=%s posts=%s", skip_review_reason, len(post_items))
+    else:
+        review_started = time.time()
+        logger.info("agents.review step=start posts=%s", len(post_items))
+        try:
+            rraw, review_used = call_openrouter_with_fallback(
+                review_agent_prompt(context, post_items),
+                ai_model,
+            )
+            reviewed = _extract_json(rraw, preferred_model=ai_model)
+            if isinstance(reviewed, list) and len(reviewed) > 0:
+                post_items = reviewed
+                model_used = review_used
+                logger.info(
+                    "agents.review step=ok elapsed_ms=%s model=%s posts=%s",
+                    int((time.time() - review_started) * 1000),
+                    review_used,
+                    len(reviewed),
+                )
+            else:
+                logger.info(
+                    "agents.review step=skip reason=invalid_response elapsed_ms=%s",
+                    int((time.time() - review_started) * 1000),
+                )
+        except AgentError as exc:
+            logger.info(
+                "agents.review step=skip reason=error elapsed_ms=%s err=%s",
+                int((time.time() - review_started) * 1000),
+                str(exc)[:120],
+            )
 
     result = post_items
     content: list[dict[str, str]] = []
@@ -951,8 +1085,8 @@ def run_workspace_content_agent(
         content_text = str(item.get("content_text") or item.get("content") or "").strip()
         hook = str(item.get("hook", "")).strip()
         cta = str(item.get("cta", "")).strip()
-        platform_raw = str(item.get("platform", "linkedin")).strip().lower()
-        platform = platform_raw if platform_raw in {"linkedin", "instagram", "facebook"} else "linkedin"
+        platform_raw = str(item.get("platform", "")).strip().lower()
+        platform = platform_raw if platform_raw in {"linkedin", "instagram", "facebook"} else ""
         if not content_text and hook:
             content_text = hook
         if hook and not content_text.startswith(hook):
@@ -960,18 +1094,10 @@ def run_workspace_content_agent(
         if cta and cta not in content_text:
             content_text = f"{content_text}\n\n{cta}"
         tag_list = _string_list(item.get("hashtags"), [])
-        if not _dedupe_hashtag_list(tag_list):
-            tag_list = fallback_social_hashtags_from_setup(
-                platform=platform,
-                industry=scenario,
-                brand_name=company_name,
-                strategy_bundle=strategy_output,
-                primary_region=primary_region,
-            )
-        content_text = merge_social_hashtags_into_body(content_text, tag_list, platform=platform)
+        content_text = merge_social_hashtags_into_body(content_text, tag_list, platform=platform or "linkedin")
         if not title or not content_text:
             continue
-        media_type = str(item.get("media_type", "Image")).strip()
+        media_type = str(item.get("media_type", "")).strip()
         if media_type not in {"Image", "Video", "Carousel"}:
             media_type = "Image"
         content.append(
@@ -1026,10 +1152,6 @@ def _suggest_looks_image_only_url(url: str) -> bool:
     return False
 
 
-# Short public sample used when the model asks for Video but returns an image URL.
-DEFAULT_SUGGEST_VIDEO_URL = "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4"
-
-
 def _coerce_llm_media_url(raw: str) -> str:
     """Extract a fetchable URL from model output; drop prose-only 'prompt' text."""
     s = (raw or "").strip().strip('"`').strip("'")
@@ -1054,20 +1176,20 @@ def _finalize_workspace_content_media(
     index: int,
     seed_key: str,
 ) -> tuple[str, str]:
-    """Return (media_type, media_preview) safe for browsers (<img>/<video>)."""
+    """Return (media_type, media_preview) normalized from model output only.
+
+    Preserves the AI-assigned media_type (Video/Carousel/Image). For Video and
+    Carousel the LLM typically returns an image URL as a thumbnail/poster — that
+    is intentional and we keep it. We only clear the URL if it is completely
+    unparseable; we never downgrade the media_type just because the URL looks
+    like a static image.
+    """
     mt = media_type if media_type in {"Image", "Video", "Carousel"} else "Image"
     url = _coerce_llm_media_url(raw_preview)
-    digest = hashlib.md5(f"{seed_key}:{index}".encode(), usedforsecurity=False).hexdigest()[:12]
-    if mt == "Video":
-        if not url:
-            url = DEFAULT_SUGGEST_VIDEO_URL
-        elif _suggest_looks_image_only_url(url) and not _data_url_video_hint(url):
-            mt = "Image"
-        elif not _suggest_looks_video_url(url) and not _data_url_video_hint(url):
-            url = DEFAULT_SUGGEST_VIDEO_URL
-    else:
-        if not url.startswith("https://") and not url.startswith("data:image/"):
-            url = f"https://picsum.photos/seed/{digest}/800/450"
+    # Keep any valid https URL regardless of media_type — image URLs double as
+    # poster frames for Video and cover slides for Carousel.
+    if not url.startswith("https://") and not url.startswith("data:"):
+        url = ""
     return mt, url
 
 
@@ -1109,47 +1231,24 @@ def suggest_master_content_post(
     content_text = _suggest_json_str(result.get("content_text") or result.get("content"))
     if not title or not content_text:
         raise AgentError("AI returned an empty title or body")
-    out_platform = str(result.get("platform") or default_platform or "linkedin").strip().lower()
+    out_platform = str(result.get("platform") or default_platform or "").strip().lower()
     if out_platform not in {"linkedin", "instagram", "facebook"}:
-        out_platform = "linkedin"
+        out_platform = ""
     media_type = _suggest_json_str(result.get("media_type", "Image")) or "Image"
     if media_type not in {"Image", "Video", "Carousel"}:
-        media_type = "Image"
-    if media_type == "Carousel":
         media_type = "Image"
     media_preview = _suggest_json_str(
         result.get("media_preview") or result.get("media_preview_prompt") or "",
     )
     if media_preview.startswith("http://"):
         media_preview = "https://" + media_preview[7:]
-    seed = hashlib.md5(f"{workspace_id}:{title}".encode(), usedforsecurity=False).hexdigest()[:12]
-    if not media_preview.startswith("https://") and not (
-        media_preview.startswith("data:image/") or _data_url_video_hint(media_preview)
-    ):
-        media_preview = f"https://picsum.photos/seed/{seed}/800/450"
-        media_type = "Image"
-    if media_type == "Video":
-        if _suggest_looks_image_only_url(media_preview) and not _data_url_video_hint(media_preview):
-            # Prefer showing the model's image in the UI instead of swapping to a stock video.
-            media_type = "Image"
-        elif not _suggest_looks_video_url(media_preview):
-            media_preview = DEFAULT_SUGGEST_VIDEO_URL
-    if not (media_preview or "").strip() or (media_preview or "").strip().lower() in ("null", "none"):
-        media_preview = f"https://picsum.photos/seed/{seed}/800/450"
-        media_type = "Image"
-    if not (str(media_preview).strip().startswith("https://") or str(media_preview).strip().startswith("data:")):
-        media_preview = f"https://picsum.photos/seed/{seed}/800/450"
-        media_type = "Image"
+    # Accept any https/data URL as a preview — for Video and Carousel the image
+    # serves as poster/thumbnail; do not downgrade the format just because the
+    # LLM returned a static image URL.
+    if not media_preview.startswith("https://") and not media_preview.startswith("data:"):
+        media_preview = ""
     tag_list = _string_list(result.get("hashtags"), [])
-    if not _dedupe_hashtag_list(tag_list):
-        tag_list = fallback_social_hashtags_from_setup(
-            platform=out_platform,
-            industry=scenario,
-            brand_name=company_name,
-            strategy_bundle=strategy_snapshot,
-            primary_region=primary_region,
-        )
-    content_text = merge_social_hashtags_into_body(content_text, tag_list, platform=out_platform)
+    content_text = merge_social_hashtags_into_body(content_text, _dedupe_hashtag_list(tag_list), platform=out_platform or "linkedin")
     return (
         {
             "title": title[:220],
@@ -1262,7 +1361,7 @@ def _merge_discovered_competitors(
             continue
         seen.add(k)
         cur.append(item)
-    result["competitors"] = cur[:10]
+    result["competitors"] = cur[:TARGET_COMPETITOR_COUNT]
 
 
 def _run_competitor_discovery_llm(
@@ -1334,9 +1433,11 @@ def _ensure_competitors_researched(
             seen.add(k)
             cur.append(row)
     if cur:
-        result["competitors"] = cur[:10]
+        result["competitors"] = cur[:TARGET_COMPETITOR_COUNT]
         _coerce_workspace_competitors_in_place(result)
-    if _count_named_competitors(result) >= 3:
+    # Trigger discovery whenever we are below the target so users always get 10-12 real vendors —
+    # not just when the strategy agent returned (almost) nothing.
+    if _count_named_competitors(result) >= MIN_COMPETITOR_COUNT:
         return
     try:
         _run_competitor_discovery_llm(
@@ -1397,7 +1498,7 @@ def _coerce_workspace_competitors_in_place(result: dict[str, Any]) -> None:
         positioning = str(item.get("positioning", "")).strip()
         if not positioning:
             bits = [b for b in (pricing, ctaud) if b]
-            positioning = " · ".join(bits) if bits else f"{name} — category benchmark."
+            positioning = " · ".join(bits)
         d_raw = str(item.get("domain", "") or item.get("website", "") or "").strip()
         if d_raw and "://" in d_raw:
             d_raw = _host_from_user_website(d_raw) or d_raw
@@ -1406,16 +1507,15 @@ def _coerce_workspace_competitors_in_place(result: dict[str, Any]) -> None:
                 "name": name[:180],
                 "domain": d_raw[:300],
                 "positioning": positioning[:1500],
-                "market_rank": str(item.get("market_rank", "")).strip() or "Category benchmark",
-                "market_gap": str(item.get("market_gap", "")).strip()
-                or (weaknesses[0] if weaknesses else f"Positioning headroom for our brand vs {name}"),
-                "marketing_purpose": str(item.get("marketing_purpose", "")).strip() or "Defend and grow category demand",
-                "strengths": strengths or ["Recognized category presence"],
-                "weaknesses": weaknesses or ["Typical in-category tradeoffs from public reviews"],
+                "market_rank": str(item.get("market_rank", "")).strip(),
+                "market_gap": str(item.get("market_gap", "")).strip() or (weaknesses[0] if weaknesses else ""),
+                "marketing_purpose": str(item.get("marketing_purpose", "")).strip(),
+                "strengths": strengths,
+                "weaknesses": weaknesses,
             }
         )
     if coerced:
-        result["competitors"] = coerced[:10]
+        result["competitors"] = coerced[:TARGET_COMPETITOR_COUNT]
 
 
 def _count_named_competitors(result: dict[str, Any]) -> int:
@@ -1431,13 +1531,35 @@ def _count_named_competitors(result: dict[str, Any]) -> int:
     )
 
 
+def _is_generic_competitor_text(value: str) -> bool:
+    s = (value or "").strip().lower()
+    if not s:
+        return False
+    markers = (
+        "market alternative",
+        "qualitative estimate",
+        "validate in market",
+        "differentiation opportunity",
+        "recognized market presence",
+        "typical in-category",
+        "category benchmark",
+        "positioning headroom",
+    )
+    return any(m in s for m in markers)
+
+
+def _default_target_audience_line(*, company_name: str, scenario: str) -> str:
+    scenario_label = (scenario or "b2b-saas").replace("-", " ").strip() or "b2b saas"
+    brand = (company_name or "").strip() or "your category"
+    return (
+        f"Primary buyers and decision makers evaluating {scenario_label} solutions — "
+        f"focused on teams comparing options relevant to {brand}."
+    )
+
+
 def _hydrate_workspace_strategy_from_agent1(result: dict[str, Any], *, website: str) -> None:
     """Map Agent 1 research lock JSON into legacy company_study / strategy / competitors rows."""
     if not isinstance(result, dict):
-        return
-
-    if "product_summary" not in result:
-        _coerce_workspace_competitors_in_place(result)
         return
 
     ps = result.get("product_summary")
@@ -1461,7 +1583,7 @@ def _hydrate_workspace_strategy_from_agent1(result: dict[str, Any], *, website: 
         pp = str(ps.get("pricing_positioning", "")).strip()
         if pp:
             parts.append(f"Pricing band: {pp}")
-        scenario_summary = " ".join(parts).strip() or "Positioning study derived from product_summary."
+        scenario_summary = " ".join(parts).strip()
 
         gap_list: list[str] = []
         gap_list.extend(_string_list(result.get("market_gaps"), []))
@@ -1485,13 +1607,9 @@ def _hydrate_workspace_strategy_from_agent1(result: dict[str, Any], *, website: 
         gap_list = deduped[:25]
 
         result["company_study"] = {
-            "discovered_website": str(website or ps.get("website") or "").strip() or "Not provided",
+            "discovered_website": str(website or ps.get("website") or "").strip(),
             "scenario_summary": scenario_summary[:2000],
-            "marketing_gap_issues": gap_list
-            or [
-                "Sharpen proof vs named category benchmarks",
-                "Surface scenario-specific buyer pain more explicitly",
-            ],
+            "marketing_gap_issues": gap_list,
         }
 
     strat = result.get("strategy")
@@ -1509,11 +1627,46 @@ def _hydrate_workspace_strategy_from_agent1(result: dict[str, Any], *, website: 
         else:
             ta_str = str(ta_raw or "").strip()
         if not ta_str:
-            ta_str = str(pos.get("target_niche") or pos.get("target niche") or "").strip()
+            ta_str = str(
+                pos.get("target_niche")
+                or pos.get("target niche")
+                or pos.get("ideal_customer")
+                or pos.get("primary_audience")
+                or pos.get("audience")
+                or ""
+            ).strip()
+        if not ta_str:
+            ta_str = str(
+                cs.get("target_audience")
+                or cs.get("icp")
+                or cs.get("audience")
+                or cs.get("ideal_customer_profile")
+                or ""
+            ).strip()
         if not ta_str:
             ta_str = str(ps.get("target_audience", "")).strip()
         if not ta_str:
-            ta_str = "B2B decision makers shortlisting and evaluating products in this category for their organization."
+            icp = result.get("ideal_customer_profile") or result.get("icp") or result.get("primary_audience")
+            if isinstance(icp, dict):
+                ta_str = "; ".join(str(v).strip() for v in icp.values() if str(v).strip())[:2000]
+            elif icp:
+                ta_str = str(icp).strip()
+        if not ta_str:
+            bp = result.get("buyer_personas") or result.get("buyer_personas_detail")
+            if isinstance(bp, list):
+                parts: list[str] = []
+                for item in bp[:12]:
+                    if isinstance(item, dict):
+                        seg = " ".join(
+                            str(item.get(k, "")).strip()
+                            for k in ("segment", "role", "title", "pain", "goal", "notes")
+                            if str(item.get(k, "")).strip()
+                        ).strip()
+                        if seg:
+                            parts.append(seg)
+                    elif str(item).strip():
+                        parts.append(str(item).strip())
+                ta_str = "; ".join(parts)[:2000]
         strat["target_audience"] = ta_str[:2000]
 
     if not strat.get("content_themes"):
@@ -1528,18 +1681,11 @@ def _hydrate_workspace_strategy_from_agent1(result: dict[str, Any], *, website: 
             if ma:
                 themes = [ma]
         if not themes:
-            themes = _string_list(result.get("market_gaps"), [])[:5] or [
-                "Clarity on outcomes and proof",
-                "Implementation and adoption workflows",
-                "Differentiation vs named category leaders",
-            ]
+            themes = _string_list(result.get("market_gaps"), [])[:5]
         strat["content_themes"] = themes[:12]
 
     if not strat.get("platform_focus"):
-        strat["platform_focus"] = _string_list(
-            cs.get("platform_focus"),
-            ["linkedin", "instagram", "facebook"],
-        )
+        strat["platform_focus"] = _string_list(cs.get("platform_focus"), [])
 
     if not strat.get("market_gaps"):
         cs_cur = result.get("company_study")
@@ -1576,43 +1722,75 @@ def _synthetic_calendar_posts_from_strategy(
     company_name: str,
     scenario: str,
     calendar_days: int,
+    ai_model: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Deterministic posts when the model omits or nulls calendar arrays (unblocks /content)."""
-    days = max(1, min(int(calendar_days) if calendar_days else 1, 31))
-    st = strategy_output.get("strategy") if isinstance(strategy_output.get("strategy"), dict) else {}
-    themes = _string_list(st.get("content_themes"), [])
-    if not themes:
-        themes = ["Proof-led education", "Customer pain breakdowns", "Competitive clarity"]
-    gaps = _string_list(st.get("market_gaps"), [])
-    if not gaps:
-        gaps = ["Trust and proof", "Clear differentiation", "Simpler next steps"]
-    label = (company_name or "Your brand").strip() or "Your brand"
-    scen = (scenario or "b2b").replace("-", " ")
-    platforms = ["linkedin", "instagram", "facebook"]
-    out: list[dict[str, Any]] = []
-    for i in range(days):
-        theme = themes[i % len(themes)]
-        gap = gaps[i % len(gaps)]
-        plat = platforms[i % 3]
-        seed = hashlib.md5(f"{label}:{scenario}:{i}".encode(), usedforsecurity=False).hexdigest()[:12]
-        hook = f"Still seeing {gap.lower()}? Here's a {scen} angle worth testing this week."
-        body = (
-            f"Start with one proof point: how you reduce risk for buyers before they commit. "
-            f"Theme: {theme}. Tie it to: {gap}."
-        )
-        out.append(
-            {
-                "platform": plat,
-                "title": f"Day {i + 1} — {theme}"[:200],
-                "hook": hook,
-                "content": body,
-                "cta": "Reply with the objection you hear most— we'll tailor the next post.",
-                "hashtags": [label.split()[0][:24] or "brand", "growth", "b2b"][:3],
-                "media_type": "Image",
-                "media_preview_prompt": f"https://picsum.photos/seed/{seed}/800/450",
-            }
-        )
-    return out
+    """Backward-compatible alias to model-driven calendar recovery."""
+    return _recover_calendar_posts_from_strategy_llm(
+        strategy_output,
+        company_name=company_name,
+        scenario=scenario,
+        calendar_days=calendar_days,
+        ai_model=ai_model,
+    )
+
+
+def _recover_calendar_posts_from_strategy_llm(
+    strategy_output: dict[str, Any],
+    *,
+    company_name: str,
+    scenario: str,
+    calendar_days: int,
+    ai_model: str | None,
+) -> list[dict[str, Any]]:
+    """Model-driven fallback when Agent 2 output lacks usable calendar posts."""
+    days = max(1, min(int(calendar_days) if calendar_days else 1, 60))
+    strategy_json = json.dumps(strategy_output, ensure_ascii=True)
+    scen = (scenario or "business").replace("-", " ").strip() or "business"
+    prompt = f"""
+You are a senior social content strategist.
+
+Generate exactly {days} publish-ready social posts from the provided strategy JSON.
+Do not use placeholders and do not return empty arrays.
+
+INPUT STRATEGY JSON:
+{strategy_json}
+
+BRAND:
+- Company: {company_name}
+- Scenario: {scen}
+
+RETURN FORMAT (JSON ONLY, no markdown):
+[
+  {{
+    "platform": "linkedin|instagram|facebook",
+    "title": "string",
+    "hook": "string",
+    "content": "string",
+    "cta": "string",
+    "hashtags": ["string", "string", "string"],
+    "media_type": "Image|Video|Carousel",
+    "media_preview_prompt": ""
+  }}
+]
+
+RULES:
+- Return exactly {days} items.
+- Rotate platforms across the list.
+- Every item must be grounded in strategy fields (audience, gaps, positioning, pain points).
+- Avoid generic business advice.
+"""
+    try:
+        raw, _used = call_openrouter_with_fallback(prompt, ai_model)
+        parsed = _extract_json(raw, preferred_model=ai_model)
+        if isinstance(parsed, list):
+            return [x for x in parsed if isinstance(x, dict)]
+        if isinstance(parsed, dict):
+            posts = parsed.get("calendar_posts")
+            if isinstance(posts, list):
+                return [x for x in posts if isinstance(x, dict)]
+    except AgentError:
+        pass
+    return []
 
 
 def _calendar_posts_from_content_payload(
@@ -1623,9 +1801,9 @@ def _calendar_posts_from_content_payload(
     calendar_days: int,
 ) -> list[dict[str, Any]]:
     """Turn Agent 2 JSON (calendar_posts + optional social_posts) into reviewable post dicts."""
-    days = max(1, min(int(calendar_days) if calendar_days else 1, 31))
-    short_brand = ((company_name or "Your brand").strip() or "Your brand")[:40]
-    scen = (scenario or "b2b").replace("-", " ")
+    days = max(1, min(int(calendar_days) if calendar_days else 1, 60))
+    short_brand = (company_name or "").strip()[:40]
+    scen = (scenario or "").replace("-", " ")
 
     def _as_list(key: str) -> list[Any] | None:
         v = payload.get(key)
@@ -1654,39 +1832,38 @@ def _calendar_posts_from_content_payload(
                 if isinstance(item, dict):
                     hook = str(item.get("hook", item.get("text", ""))).strip()
                     body = str(item.get("body", item.get("content", ""))).strip()
-                    platform = str(item.get("platform", platforms[i % 3])).strip().lower()
+                    platform = str(item.get("platform", "")).strip().lower()
                 else:
                     text = str(item).strip()
                     hook = text[:200]
                     body = text
-                    platform = platforms[i % 3]
+                    platform = ""
                 if platform not in {"linkedin", "instagram", "facebook"}:
-                    platform = platforms[i % 3]
+                    platform = ""
                 seed = hashlib.md5(f"{hook}-{i}".encode()).hexdigest()[:12]
-                brand = (company_name or "brand").split()[0][:20] or "content"
+                brand = (company_name or "").split()[0][:20]
                 extra.append(
                     {
                         "platform": platform,
-                        "title": f"Day {len(posts) + len(extra) + 1} — {brand}",
-                        "hook": hook or (body[:180] if body else f"Content beat — {short_brand}"),
+                        "title": (hook[:80] if hook else body[:80]),
+                        "hook": hook or (body[:180] if body else short_brand),
                         "content": body or hook,
-                        "cta": f"Comment with the biggest {scen} challenge on your plate this week.",
-                        "hashtags": [brand, scen.split()[0] if scen else "growth", "marketing"],
+                        "cta": "",
+                        "hashtags": [x for x in [brand, scen.split()[0] if scen else ""] if x],
                         "media_type": "Image",
-                        "media_preview_prompt": f"https://picsum.photos/seed/{seed}/800/450",
+                        "media_preview_prompt": "",
                     }
                 )
         posts = (posts + extra)[:days]
 
     out: list[dict[str, Any]] = []
-    platforms_cycle = ["linkedin", "instagram", "facebook"]
     for i, item in enumerate(posts[:days]):
         if not isinstance(item, dict):
             continue
-        platform_raw = str(item.get("platform", platforms_cycle[i % 3])).strip().lower()
+        platform_raw = str(item.get("platform", "")).strip().lower()
         if platform_raw not in {"linkedin", "instagram", "facebook"}:
-            platform_raw = platforms_cycle[i % 3]
-        title = str(item.get("title", f"Day {i + 1}")).strip()
+            platform_raw = ""
+        title = str(item.get("title", "")).strip()
         hook = str(item.get("hook", "")).strip()
         content = str(item.get("content", item.get("body", ""))).strip()
         cta = str(item.get("cta", "")).strip()
@@ -1695,23 +1872,19 @@ def _calendar_posts_from_content_payload(
         if not hook and content:
             hook = content.split("\n")[0][:240]
         hashtags = _string_list(item.get("hashtags"), [])
-        if not hashtags:
-            scen_token = re.sub(r"[^a-zA-Z0-9]+", "", scen.split()[0] if scen else "growth")[:16] or "brand"
-            hashtags = [scen_token, "workforce", "growth"]
         mt = str(item.get("media_type", "Image")).strip()
         if mt not in {"Image", "Video", "Carousel"}:
             mt = "Image"
         url = str(item.get("media_preview_prompt") or item.get("media_preview") or "").strip()
         if not url.startswith("http"):
-            seed_s = re.sub(r"[^a-zA-Z0-9-]+", "-", f"{company_name}-{scenario}-{i}")[:48].strip("-") or f"post-{i}"
-            url = f"https://picsum.photos/seed/{seed_s}/800/450"
+            url = ""
         out.append(
             {
                 "platform": platform_raw,
                 "title": title,
                 "hook": hook,
                 "content": content,
-                "cta": cta or "Reply with how you handle this today.",
+                "cta": cta,
                 "hashtags": hashtags,
                 "media_type": mt,
                 "media_preview_prompt": url,
@@ -1727,7 +1900,6 @@ def _normalize_workspace_research(
     scenario: str,
     competitors: list[dict[str, str]],
 ) -> dict[str, Any]:
-    fallback = _fallback_workspace_research(company_name, website, scenario, competitors)
     company_study = result.get("company_study") if isinstance(result.get("company_study"), dict) else {}
     strategy = result.get("strategy") if isinstance(result.get("strategy"), dict) else {}
     competitor_rows = result.get("competitors") if isinstance(result.get("competitors"), list) else []
@@ -1740,27 +1912,57 @@ def _normalize_workspace_research(
         name = str(item.get("name", "")).strip()
         if not name:
             continue
-        weaknesses = _string_list(item.get("weaknesses"), ["Content differentiation opportunity"])
+        weaknesses = _string_list(item.get("weaknesses"), [])
+        strengths = _string_list(item.get("strengths"), [])
+        positioning = str(item.get("positioning", "")).strip()
+        market_rank = str(item.get("market_rank") or item.get("market_rank_estimate") or "").strip()
         domain = str(item.get("domain") or item.get("website") or "").strip()
         market_gap = str(item.get("market_gap") or item.get("competitive_gap") or "").strip()
         if not market_gap and weaknesses:
             market_gap = weaknesses[0]
+        marketing_purpose = str(item.get("marketing_purpose") or item.get("marketing_objective") or "").strip()
+        generic_score = sum(
+            1
+            for part in (positioning, market_rank, market_gap, marketing_purpose, " ".join(strengths), " ".join(weaknesses))
+            if _is_generic_competitor_text(part)
+        )
+        if generic_score >= 2:
+            continue
         normalized_competitors.append(
             {
                 "name": name[:180],
                 "domain": domain[:300],
-                "positioning": str(item.get("positioning", "")).strip() or "Market alternative to benchmark against.",
-                "market_rank": str(item.get("market_rank") or item.get("market_rank_estimate") or "").strip()
-                or "Qualitative estimate — validate in market",
-                "market_gap": market_gap or "Differentiation opportunity vs. this player",
-                "marketing_purpose": str(item.get("marketing_purpose") or item.get("marketing_objective") or "").strip()
-                or "Grow category presence and win qualified demand",
-                "strengths": _string_list(item.get("strengths"), ["Recognized market presence"]),
+                "positioning": positioning,
+                "market_rank": market_rank,
+                "market_gap": market_gap,
+                "marketing_purpose": marketing_purpose,
+                "strengths": strengths,
                 "weaknesses": weaknesses,
             }
         )
 
-    normalized_competitors = normalized_competitors[:10]
+    normalized_competitors = normalized_competitors[:TARGET_COMPETITOR_COUNT]
+    if not normalized_competitors and isinstance(competitor_rows, list):
+        for item in competitor_rows[:TARGET_COMPETITOR_COUNT]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            normalized_competitors.append(
+                {
+                    "name": name[:180],
+                    "domain": str(item.get("domain") or item.get("website") or "").strip()[:300],
+                    "positioning": str(item.get("positioning") or item.get("pricing_perception") or "").strip(),
+                    "market_rank": str(item.get("market_rank") or "").strip(),
+                    "market_gap": str(item.get("market_gap") or "").strip(),
+                    "marketing_purpose": str(item.get("marketing_purpose") or "").strip(),
+                    "strengths": _string_list(item.get("strengths"), []),
+                    "weaknesses": _string_list(item.get("weaknesses"), []),
+                }
+            )
+            if len(normalized_competitors) >= TARGET_COMPETITOR_COUNT:
+                break
 
     normalized_content: list[dict[str, str]] = []
     seed_key = (company_name or "workspace").strip() or "workspace"
@@ -1796,28 +1998,31 @@ def _normalize_workspace_research(
             }
         )
 
+    ta_line = str(strategy.get("target_audience", "")).strip()
+    if not ta_line:
+        ta_line = _workspace_strategy_target_audience_line(result)
+    if not ta_line:
+        ta_line = str(company_study.get("scenario_summary", "")).strip()[:2000]
+    if not ta_line:
+        ta_line = _default_target_audience_line(company_name=company_name, scenario=scenario)
+
     base: dict[str, Any] = {
         "company_study": {
-            "discovered_website": str(company_study.get("discovered_website", "")).strip()
-            or fallback["company_study"]["discovered_website"],
-            "scenario_summary": str(company_study.get("scenario_summary", "")).strip()
-            or fallback["company_study"]["scenario_summary"],
-            "marketing_gap_issues": _string_list(
-                company_study.get("marketing_gap_issues"),
-                fallback["company_study"]["marketing_gap_issues"],
-            ),
+            "discovered_website": str(company_study.get("discovered_website", "")).strip(),
+            "scenario_summary": str(company_study.get("scenario_summary", "")).strip(),
+            "marketing_gap_issues": _string_list(company_study.get("marketing_gap_issues"), []),
         },
         "strategy": {
-            "target_audience": str(strategy.get("target_audience", "")).strip() or fallback["strategy"]["target_audience"],
-            "content_themes": _string_list(strategy.get("content_themes"), fallback["strategy"]["content_themes"]),
-            "platform_focus": _string_list(strategy.get("platform_focus"), fallback["strategy"]["platform_focus"]),
+            "target_audience": ta_line,
+            "content_themes": _string_list(strategy.get("content_themes"), []),
+            "platform_focus": _string_list(strategy.get("platform_focus"), []),
             "market_gaps": _string_list(
                 strategy.get("market_gaps"),
-                _string_list(company_study.get("marketing_gap_issues"), fallback["strategy"]["market_gaps"]),
+                _string_list(company_study.get("marketing_gap_issues"), []),
             ),
         },
-        "competitors": normalized_competitors or fallback["competitors"],
-        "content": normalized_content or fallback["content"],
+        "competitors": normalized_competitors,
+        "content": normalized_content,
     }
 
     agent1_keys = (
@@ -1848,8 +2053,8 @@ def _fallback_workspace_research(
     scenario: str,
     competitors: list[dict[str, str]],
 ) -> dict[str, Any]:
-    scenario_label = (scenario or "growth").replace("-", " ")
-    target = company_name or "this company"
+    target = (company_name or "").strip()
+    scenario_label = (scenario or "b2b-saas").replace("-", " ").strip() or "b2b saas"
     merged_raw: list[dict[str, Any]] = []
     for item in competitors:
         r = _row_from_user_competitor_seed(
@@ -1868,56 +2073,25 @@ def _fallback_workspace_research(
     return {
         "company_study": {
             "discovered_website": website,
-            "scenario_summary": f"{target} is being set up for the {scenario_label} scenario, so the AI should compare the website, offer, audience, and competitor messages before creating content.",
+            "scenario_summary": "",
             "marketing_gap_issues": [
-                "Website messaging needs sharper proof against competitor alternatives",
-                "Scenario-specific buyer pain points are not explained clearly enough",
-                "Competitor comparison content is missing from the marketing plan",
+                f"Decision makers in {scenario_label} struggle to compare tools on implementation effort, not just feature checklists.",
+                f"Current {scenario_label} messaging often under-explains measurable ROI for finance and operations stakeholders.",
             ],
         },
         "strategy": {
-            "target_audience": f"Decision makers evaluating {scenario_label} solutions for {target}.",
+            "target_audience": f"Primary buyers and decision makers evaluating {scenario_label} solutions for operational efficiency and measurable ROI.",
             "content_themes": [
-                "Proof-led education",
-                "Customer pain point breakdowns",
-                "Competitor gap comparisons",
-                "Website and offer clarity",
+                "Practical implementation playbooks",
+                "ROI and business impact storytelling",
+                "Comparison-led decision support content",
             ],
             "platform_focus": ["linkedin", "instagram", "facebook"],
             "market_gaps": [
-                "Show clearer proof than competitors",
-                "Explain the scenario-specific buying problem",
-                "Use comparison content to reduce buyer uncertainty",
+                f"Most competitors explain features but not rollout complexity, timelines, and ownership requirements for {scenario_label} teams.",
+                f"Buyer-facing content rarely addresses cross-functional objections from finance, operations, and IT during {scenario_label} evaluations.",
             ],
         },
         "competitors": comp_rows,
-        "content": [
-            {
-                "title": f"{target}: market gap snapshot",
-                "content_text": (
-                    f"We studied {target}{f' ({website})' if website else ''} in the {scenario_label} market and found one clear "
-                    "content opportunity: buyers need faster proof, simpler comparisons, and clearer next steps."
-                ),
-                "media_type": "Image",
-                "media_preview": "",
-            },
-            {
-                "title": "Competitor comparison angle",
-                "content_text": (
-                    f"Most alternatives in this space compete on features. {target} can stand out by showing outcomes, "
-                    "use cases, and practical buying criteria."
-                ),
-                "media_type": "Carousel",
-                "media_preview": "",
-            },
-            {
-                "title": "Scenario study post",
-                "content_text": (
-                    f"For {scenario_label} teams, the best marketing message connects the customer problem, the market gap, "
-                    "and a simple action path."
-                ),
-                "media_type": "Image",
-                "media_preview": "",
-            },
-        ],
+        "content": [],
     }

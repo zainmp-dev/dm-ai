@@ -141,6 +141,9 @@ export interface CompetitorSetupInput {
   focus: string;
 }
 
+/** Dedupe overlapping GET /workspace (React Strict Mode double-mount + parallel mounts). */
+let workspaceRefreshInflight: Promise<void> | null = null;
+
 interface WorkspaceStore {
   workspace: WorkspaceSnapshot | null;
   workspaceSetups: WorkspaceSetupConfig[];
@@ -150,6 +153,8 @@ interface WorkspaceStore {
   loading: boolean;
   error: string | null;
   selectedAiModel: string;
+  /** Set to true after the last AI run used a free OpenRouter fallback (paid credits exhausted). Reset on next paid run. */
+  lastRunUsedFreeModel: boolean;
   sidebarCollapsed: boolean;
   setSelectedAiModel: (model: string) => void;
   setSidebarCollapsed: (value: boolean) => void;
@@ -183,6 +188,7 @@ interface WorkspaceStore {
     selectedPlatform?: PublishingPlatform;
   }) => Promise<void>;
   deleteContentItem: (contentId: string) => Promise<void>;
+  bulkDeleteContentItems: (contentIds: string[]) => Promise<void>;
   approve: (contentId: string, platformOrPlatforms: PublishingPlatform | PublishingPlatform[]) => Promise<string[]>;
   reject: (contentId: string) => Promise<void>;
   schedule: (contentId: string, scheduledAt: string) => Promise<void>;
@@ -213,6 +219,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   loading: false,
   error: null,
   selectedAiModel: loadSelectedAiModel(),
+  lastRunUsedFreeModel: false,
   sidebarCollapsed: false,
   setSelectedAiModel: (model) => {
     const m = normalizeStoredAiModel(model);
@@ -305,20 +312,53 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     }
   },
   refreshWorkspace: async (options) => {
+    if (workspaceRefreshInflight) {
+      await workspaceRefreshInflight;
+      return;
+    }
     const soft = options?.soft;
-    if (!soft) {
-      set({ loading: true, error: null });
-    }
-    try {
-      const workspace = await apiGetWorkspace();
-      set({ workspace, loading: false, error: null, workspaceHydrated: true });
-    } catch (e) {
-      set({
-        error: e instanceof Error ? e.message : "Unable to reach workspace API",
-        loading: false,
-        workspaceHydrated: true,
-      });
-    }
+    workspaceRefreshInflight = (async () => {
+      if (!soft) {
+        set({ loading: true, error: null });
+      }
+      try {
+        const workspace = await apiGetWorkspace();
+
+        // Auto-recover the workspace setup from backend data when localStorage is empty.
+        // This unblocks users who log in on a new device or after clearing local storage —
+        // without this they would see "No saved setups yet" even though the backend has data.
+        if (workspace.workspaceConfigured && workspace.companyName.trim()) {
+          const currentSetups = get().workspaceSetups;
+          if (currentSetups.length === 0) {
+            const recovered: WorkspaceSetupConfig = {
+              id: `ws-local-${Date.now()}`,
+              companyName: workspace.companyName,
+              website: workspace.companyWebsite ?? "",
+              scenario: workspace.workspaceScenario,
+              primaryRegion: normalizePrimaryRegionCode(workspace.primaryRegion),
+              workspaceOwnerName: workspace.profile?.name ?? "",
+              workspaceOwnerEmail: workspace.profile?.email ?? "",
+              aiModel: get().selectedAiModel,
+              competitors: [],
+              createdAt: new Date().toISOString(),
+            };
+            writeStoredWorkspaceSetups([recovered], recovered.id);
+            set({ workspaceSetups: [recovered], activeWorkspaceId: recovered.id });
+          }
+        }
+
+        set({ workspace, loading: false, error: null, workspaceHydrated: true });
+      } catch (e) {
+        set({
+          error: apiErrorMessage(e),
+          loading: false,
+          workspaceHydrated: true,
+        });
+      }
+    })().finally(() => {
+      workspaceRefreshInflight = null;
+    });
+    await workspaceRefreshInflight;
   },
   generateStrategy: async (companyName, website, competitors) => {
     try {
@@ -333,6 +373,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
       if (used && used !== get().selectedAiModel) {
         get().setSelectedAiModel(used);
       }
+      set({ lastRunUsedFreeModel: data.used_free_model === true });
       await get().refreshWorkspace({ soft: true });
     } catch (e) {
       const message = apiErrorMessage(e);
@@ -347,6 +388,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
       if (used && used !== get().selectedAiModel) {
         get().setSelectedAiModel(used);
       }
+      set({ lastRunUsedFreeModel: data.used_free_model === true });
       await get().refreshWorkspace({ soft: true });
     } catch (e) {
       const message = apiErrorMessage(e);
@@ -428,12 +470,30 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
       throw new Error(message);
     }
   },
+  bulkDeleteContentItems: async (contentIds) => {
+    try {
+      const deduped = Array.from(new Set(contentIds.map((id) => id.trim()).filter(Boolean)));
+      if (deduped.length === 0) return;
+      await apiPostContent({ action: "bulk_delete", contentIds: deduped });
+      await get().refreshWorkspace({ soft: true });
+    } catch (e) {
+      const message = apiErrorMessage(e);
+      set({ error: message });
+      throw new Error(message);
+    }
+  },
   approve: async (contentId, platformOrPlatforms) => {
     const platforms = Array.isArray(platformOrPlatforms) ? platformOrPlatforms : [platformOrPlatforms];
-    const data = await apiApprove(contentId, platforms);
-    await get().refreshWorkspace({ soft: true });
-    const ids = data.approved_content_ids;
-    return Array.isArray(ids) && ids.length > 0 ? ids : [contentId];
+    try {
+      const data = await apiApprove(contentId, platforms);
+      await get().refreshWorkspace({ soft: true });
+      const ids = data.approved_content_ids;
+      return Array.isArray(ids) && ids.length > 0 ? ids : [contentId];
+    } catch (e) {
+      await get().refreshWorkspace({ soft: true });
+      const message = apiErrorMessage(e);
+      throw new Error(message);
+    }
   },
   reject: async (contentId) => {
     await apiReject(contentId);

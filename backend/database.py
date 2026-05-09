@@ -46,12 +46,29 @@ if not settings.database_url:
     engine = None
     SessionLocal = None
 else:
+    # Supabase transaction pooler (port 6543). Key tuning notes:
+    # - connect_timeout=3: fail fast on DNS/TCP issues; avoids 8s-per-attempt cascades.
+    # - pool_timeout=8: give up waiting for a pool slot after 8s (returns 500 instead of hanging).
+    # - pool_pre_ping: detects stale connections before use so dead connections are recycled quickly.
+    # - pool_size=3/max_overflow=6: small pool prevents exhausting Supabase's connection limit.
+    # - pool_recycle=180: refresh connections every 3 min to shed idle/stale state.
+    # - options removed: SET SESSION vars are not permitted in transaction-mode pooler (port 6543).
     engine = create_engine(
         settings.database_url,
         pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
+        pool_size=3,
+        max_overflow=6,
+        pool_recycle=180,
+        pool_timeout=8,
+        pool_use_lifo=True,
         future=True,
+        connect_args={
+            "connect_timeout": 3,
+            "keepalives": 1,
+            "keepalives_idle": 30,
+            "keepalives_interval": 10,
+            "keepalives_count": 3,
+        },
     )
     SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
 
@@ -88,6 +105,9 @@ def _init_workspace_tables(connection: object) -> None:
         "alter table flowpilot_users add column if not exists auth_provider text",
         "alter table flowpilot_users add column if not exists auth_subject text",
         "create unique index if not exists uq_flowpilot_users_auth_identity on flowpilot_users(auth_provider, auth_subject) where auth_provider is not null and auth_subject is not null",
+        # Speed up POST /login (case-insensitive email lookup) so a password check is one indexed scan,
+        # not a sequential table scan over flowpilot_users.
+        "create index if not exists idx_flowpilot_users_email_lower on flowpilot_users(lower(email))",
         """
         create table if not exists flowpilot_workspace (
             workspace_id text primary key,

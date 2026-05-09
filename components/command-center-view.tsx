@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { format, parseISO } from "date-fns";
 import { AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
@@ -20,9 +19,8 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
-import { isPlatformConnected, platformLabel } from "@/lib/platform";
+import { platformLabel } from "@/lib/platform";
 import { apiErrorMessage, sanitizeMediaUrl } from "@/lib/api";
-import { MediaPreviewBlock } from "@/components/media-preview-block";
 import { shouldUseVideoElement } from "@/lib/media-detect";
 import { primaryRegionLabel } from "@/lib/primary-region";
 import type { ContentItem, PublishingPlatform, WorkspaceSnapshot } from "@/lib/types";
@@ -198,6 +196,7 @@ function ContentQueueThumb({ item }: { item: ContentItem }) {
           aria-hidden
         />
       ) : (
+        // eslint-disable-next-line @next/next/no-img-element
         <img src={safe} alt="" className="h-16 w-16 rounded-xl object-cover" loading="lazy" />
       )}
       {item.mediaType === "Carousel" ? (
@@ -268,9 +267,10 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
   const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const generateStrategy = useWorkspaceStore((s) => s.generateStrategy);
   const generateContent = useWorkspaceStore((s) => s.generateContent);
+  const lastRunUsedFreeModel = useWorkspaceStore((s) => s.lastRunUsedFreeModel);
+  const bulkDeleteContentItems = useWorkspaceStore((s) => s.bulkDeleteContentItems);
   const approve = useWorkspaceStore((s) => s.approve);
   const reject = useWorkspaceStore((s) => s.reject);
-  const publish = useWorkspaceStore((s) => s.publish);
   const { push } = useToast();
   const router = useRouter();
 
@@ -285,13 +285,13 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
   const [editItem, setEditItem] = useState<ContentItem | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editText, setEditText] = useState("");
-  const [publishLoading, setPublishLoading] = useState(false);
   const [competitorDrafts, setCompetitorDrafts] = useState<CompetitorDraft[]>([]);
   const [competitorResearchPage, setCompetitorResearchPage] = useState(0);
   const [competitorResearchQuery, setCompetitorResearchQuery] = useState("");
   const [contentQueuePage, setContentQueuePage] = useState(0);
   const [competitorUploadOpen, setCompetitorUploadOpen] = useState(false);
   const [bootstrapLoading, setBootstrapLoading] = useState(false);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const bootstrapStartedRef = useRef(false);
 
   const updateContentItem = useWorkspaceStore((s) => s.updateContentItem);
@@ -314,7 +314,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       .map((draft) => {
         const website = draft.website.trim();
         const domain = website.replace(/^https?:\/\//i, "").split("/")[0]?.trim() ?? "";
-        const gapLine = marketGaps.length ? marketGaps[0] : draft.focus.trim() || "Gap analysis pending after Agent 1.";
+        const gapLine = marketGaps.length ? marketGaps[0] : draft.focus.trim() || "Gap analysis will appear after strategy refresh.";
         return {
           id: draft.id,
           name: draft.name.trim() || draft.website.trim() || "Unnamed competitor",
@@ -371,10 +371,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     [filteredResearchCompetitors, safeResearchPage],
   );
 
-  useEffect(() => {
-    setCompetitorResearchPage((p) => Math.min(p, Math.max(0, researchPageCount - 1)));
-  }, [researchPageCount, filteredResearchCompetitors.length]);
-
   const strategyResearchMeta = useMemo(() => {
     const t = workspace ? formatIsoDateTime(workspace.strategyUpdatedAt) : "";
     const v = workspace?.strategyVersion;
@@ -383,9 +379,9 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     if (t) parts.push(`Research saved · ${t}`);
     if (v != null) parts.push(`v${v}`);
     return parts.join(" · ");
-  }, [workspace?.strategyUpdatedAt, workspace?.strategyVersion]);
+  }, [workspace]);
 
-  const contentQueueItems = workspace?.content ?? [];
+  const contentQueueItems = useMemo(() => workspace?.content ?? [], [workspace?.content]);
   const contentQueuePageCount = Math.max(1, Math.ceil(contentQueueItems.length / CONTENT_QUEUE_PAGE_SIZE) || 1);
   const safeContentQueuePage = Math.min(contentQueuePage, Math.max(0, contentQueuePageCount - 1));
 
@@ -397,10 +393,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       ),
     [contentQueueItems, safeContentQueuePage],
   );
-
-  useEffect(() => {
-    setContentQueuePage((p) => Math.min(p, Math.max(0, contentQueuePageCount - 1)));
-  }, [contentQueuePageCount, contentQueueItems.length]);
 
   const workspaceReady = Boolean(
     workspace?.companyName?.trim() ||
@@ -422,7 +414,12 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       setBootstrapLoading(true);
       try {
         await generateContent(calendarDays);
-        push("AI agents finished workspace research and content setup.");
+        const usedFree = useWorkspaceStore.getState().lastRunUsedFreeModel;
+        push(
+          usedFree
+            ? "Setup complete (used free AI model — add OpenRouter credits for faster runs)."
+            : "Setup complete. Your strategy and content plan are ready.",
+        );
       } catch (e) {
         push(apiErrorMessage(e));
       } finally {
@@ -431,6 +428,24 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     };
     void runBootstrap();
   }, [aiOutputMissing, calendarDays, generateContent, push]);
+
+  const aiPhaseLine = useMemo(() => {
+    if (!aiJobActive) return "";
+    if (bootstrapLoading) return "Running full setup: strategy research, then content planning for your calendar.";
+    if (strategyLoading) return "Building strategy from competitors, website fit, positioning, and market gaps.";
+    if (contentLoading) return "Creating post titles, captions, and media ideas for each slot.";
+    return "";
+  }, [aiJobActive, bootstrapLoading, strategyLoading, contentLoading]);
+
+  const aiElapsedLabel = useMemo(() => {
+    if (aiElapsedSec < 60) return `${aiElapsedSec}s`;
+    const m = Math.floor(aiElapsedSec / 60);
+    const s = aiElapsedSec % 60;
+    return `${m}m ${s.toString().padStart(2, "0")}s`;
+  }, [aiElapsedSec]);
+
+  const aiFeelsSlow = aiJobActive && aiElapsedSec >= 90;
+  const aiUsingFreeModel = aiJobActive && aiElapsedSec >= 90;
 
   if (shellPending) {
     return (
@@ -467,18 +482,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       .finally(() => setPlatformTargetId(null));
   };
 
-  const eligibleToPublish = workspace.content.filter(
-    (c) =>
-      (c.status === "APPROVED" || c.status === "SCHEDULED") &&
-      c.selectedPlatform &&
-      isPlatformConnected(workspace.integrations, c.selectedPlatform),
-  );
-  const blocked = workspace.content.filter(
-    (c) =>
-      (c.status === "APPROVED" || c.status === "SCHEDULED") &&
-      (!c.selectedPlatform || !isPlatformConnected(workspace.integrations, c.selectedPlatform)),
-  );
-
   const handleCompetitorFile = async (files: FileList | null) => {
     const file = files?.[0];
     if (!file) return;
@@ -500,25 +503,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     push(`Imported ${importedRows.length} competitor row(s)`);
   };
 
-  const runPublish = async () => {
-    if (eligibleToPublish.length === 0) {
-      push("Nothing ready to publish. Approve items, pick a platform, and connect accounts.");
-      return;
-    }
-    setPublishLoading(true);
-    try {
-      const result = await publish(eligibleToPublish.map((c) => c.id));
-      if (result.warnings.length) {
-        result.warnings.slice(0, 3).forEach((w) => push(w));
-      }
-      push(`Published ${result.published} asset(s)`);
-    } catch {
-      push("Publish request failed");
-    } finally {
-      setPublishLoading(false);
-    }
-  };
-
   const runStrategy = async () => {
     if (!workspace) return;
     const company = effectiveWorkspaceCompanyName(workspace);
@@ -528,7 +512,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       return;
     }
     if (!workspaceReady) {
-      push("Complete workspace basics (company and setup) before running Agent 1.");
+      push("Complete company and workspace setup before running strategy.");
       return;
     }
     const competitorInputs = [...competitorDrafts];
@@ -547,7 +531,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
         website: competitorUrl,
         focus,
       })));
-      push("Agent 1 done: strategy and competitors updated for your region and latest inputs.");
+      push("Strategy is updated with your latest company, website, and market details.");
     } catch (e) {
       push(apiErrorMessage(e));
     } finally {
@@ -572,6 +556,25 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     }
   };
 
+  const runBulkDeleteGenerated = async () => {
+    const ids = (workspace?.content ?? []).map((item) => item.id).filter(Boolean);
+    if (ids.length === 0) {
+      push("No generated content to delete.");
+      return;
+    }
+    setBulkDeleteOpen(false);
+    setContentLoading(true);
+    try {
+      await bulkDeleteContentItems(ids);
+      setContentQueuePage(0);
+      push(`Deleted ${ids.length} generated content item(s).`);
+    } catch (e) {
+      push(apiErrorMessage(e));
+    } finally {
+      setContentLoading(false);
+    }
+  };
+
   const openEdit = (item: ContentItem) => {
     setEditItem(item);
     setEditTitle(item.title);
@@ -588,23 +591,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     setEditItem(null);
     push("Content saved");
   };
-
-  const aiPhaseLine = useMemo(() => {
-    if (!aiJobActive) return "";
-    if (bootstrapLoading) return "Running full setup: Agent 1 research, then Agent 2 content for your calendar.";
-    if (strategyLoading) return "Agent 1: scanning competitors, website fit, positioning, and market gaps (saved to Strategy).";
-    if (contentLoading) return "Agent 2: building post titles, copy, and media prompts for each slot.";
-    return "";
-  }, [aiJobActive, bootstrapLoading, strategyLoading, contentLoading]);
-
-  const aiElapsedLabel = useMemo(() => {
-    if (aiElapsedSec < 60) return `${aiElapsedSec}s`;
-    const m = Math.floor(aiElapsedSec / 60);
-    const s = aiElapsedSec % 60;
-    return `${m}m ${s.toString().padStart(2, "0")}s`;
-  }, [aiElapsedSec]);
-
-  const aiFeelsSlow = aiJobActive && aiElapsedSec >= 120;
 
   return (
     <div className="flex min-h-0 flex-col gap-4">
@@ -642,24 +628,31 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
               {aiJobActive ? <AiProcessingBannerIcon /> : <AiOutputMissingIcon />}
               <div className="min-w-0 flex-1 space-y-3">
                 <div>
-                  <p className="text-sm font-semibold text-zinc-900">
-                    {aiJobActive ? "AI workspace job running" : "AI setup output is missing"}
-                  </p>
+                  <p className="text-sm font-semibold text-zinc-900">{aiJobActive ? "Setting up your workspace" : "Setup not started yet"}</p>
                   <p className="mt-1.5 text-sm text-zinc-700">
                     {aiJobActive ? (
                       <>
-                        <span className="font-medium text-blue-900">{aiPhaseLine}</span> The bar below is estimated (not streamed
-                        from OpenRouter)—it slows near the end until the HTTP request completes. Elapsed{" "}
-                        <span className="tabular-nums">{aiElapsedLabel}</span>.
+                        <span className="font-medium text-blue-900">{aiPhaseLine}</span> We are preparing your company profile,
+                        strategy, and first content plan. This can take a few minutes. Elapsed <span className="tabular-nums">{aiElapsedLabel}</span>.
                       </>
                     ) : (
-                      "Agent 1 covers company, site, competitors, and strategy. Agent 2 expands that into your content queue. Run the job when you are ready."
+                      "Start setup to generate your company insights, strategy, and ready-to-use content ideas."
                     )}
                   </p>
                   {aiJobActive && aiFeelsSlow ? (
                     <p className="text-xs font-medium text-amber-900 dark:text-amber-200/95">
-                      Still working — multi-step agent runs often take several minutes on free-tier routing. Reduce calendar slots or
-                      pick a faster model in the header if this is routine.
+                      {aiUsingFreeModel
+                        ? "Your OpenRouter credits are low — the system switched to a free AI model. Free models are queued and can take 5–10 minutes. Top up at openrouter.ai for faster runs."
+                        : "Still working. Full setup may take several minutes for larger workspaces."}
+                    </p>
+                  ) : null}
+                  {!aiJobActive && lastRunUsedFreeModel ? (
+                    <p className="text-xs text-amber-800 dark:text-amber-300">
+                      Last run used a free AI model (low credits). Add credits at{" "}
+                      <a href="https://openrouter.ai/settings/credits" target="_blank" rel="noopener noreferrer" className="underline">
+                        openrouter.ai
+                      </a>{" "}
+                      for faster generation.
                     </p>
                   ) : null}
                 </div>
@@ -699,12 +692,12 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
         <div className="flex min-h-0 flex-col gap-3 xl:col-span-5 xl:min-h-[46rem]">
           <Card className="rounded-2xl border-blue-100/90 bg-gradient-to-br from-white to-blue-50/50 shadow-sm shadow-blue-900/[0.04] dark:border-blue-900/50 dark:from-zinc-900 dark:to-blue-950/20">
             <CardHeader className="pb-2">
-              <CardTitle className="text-base text-slate-900 dark:text-zinc-50">Agent 1 — Strategy first</CardTitle>
+              <CardTitle className="text-base text-slate-900 dark:text-zinc-50">Strategy setup</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2 text-sm text-slate-700 dark:text-slate-300">
               <p className="text-xs text-slate-600 dark:text-slate-400">
-                Regenerate the first agent with your <span className="font-medium">latest</span> company, site, and region (
-                {primaryRegionLabel(workspace.primaryRegion)}). Recommended weekly; then refresh content (Agent 2) when you need new posts.
+                Refresh strategy using your <span className="font-medium">latest</span> company, website, and market (
+                {primaryRegionLabel(workspace.primaryRegion)}). We recommend running this weekly, then refresh content when needed.
               </p>
               <Button
                 type="button"
@@ -712,7 +705,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                 disabled={strategyLoading || !workspaceReady}
                 onClick={() => void runStrategy()}
               >
-                {strategyLoading ? "Agent 1 running…" : workspaceReady ? "Regenerate strategy (Agent 1)" : "Set up workspace first"}
+                {strategyLoading ? "Updating strategy…" : workspaceReady ? "Refresh strategy" : "Set up workspace first"}
               </Button>
             </CardContent>
           </Card>
@@ -795,7 +788,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                 ) : null}
               </div>
               <p className="text-[11px] leading-snug text-zinc-600 dark:text-zinc-400">
-                <span className="font-medium text-zinc-700 dark:text-zinc-300">Agent 1</span> replaces this list each run—use{" "}
+                <span className="font-medium text-zinc-700 dark:text-zinc-300">Strategy refresh</span> replaces this list each run - use{" "}
                 <span className="font-medium">View</span> for an exportable snapshot. Content queue regenerates separately.
               </p>
             </CardHeader>
@@ -976,9 +969,21 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
               <CardTitle className="text-base text-slate-900 dark:text-zinc-50">Content queue</CardTitle>
               <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Pagination above the grid · uniform card height</p>
               </div>
-            <Button type="button" variant="secondary" size="sm" className="ml-auto shrink-0 rounded-xl" disabled={contentLoading || !workspaceReady} onClick={() => void runContent()}>
-              {contentLoading ? "Refreshing…" : workspaceReady ? "Regenerate library" : "Setup required"}
-            </Button>
+              <div className="ml-auto flex shrink-0 items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="rounded-xl"
+                  disabled={contentLoading || workspace.content.length === 0}
+                  onClick={() => setBulkDeleteOpen(true)}
+                >
+                  Delete all generated
+                </Button>
+                <Button type="button" variant="secondary" size="sm" className="rounded-xl" disabled={contentLoading || !workspaceReady} onClick={() => void runContent()}>
+                  {contentLoading ? "Refreshing…" : workspaceReady ? "Regenerate library" : "Setup required"}
+                </Button>
+              </div>
             </div>
           </CardHeader>
           <CardContent className="flex min-h-0 flex-1 flex-col gap-3 pt-2 pb-5">
@@ -1136,49 +1141,34 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
         */}
       </div>
 
-      {/* Publishing — pinned to bottom of viewport on scroll; mt-auto fills leftover column height on xl */}
-      {/* <div className="sticky bottom-0 z-30 mt-auto -mx-4 border-t border-zinc-200/90 bg-zinc-50/90 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] shadow-[0_-8px_30px_-12px_rgba(0,0,0,0.12)] backdrop-blur-md dark:border-zinc-700/90 dark:bg-zinc-950/90 md:-mx-6 md:px-6">
-        <Card className="rounded-2xl border-zinc-200 shadow-md dark:border-zinc-800">
-          <CardContent className="flex flex-col gap-4 py-4 lg:flex-row lg:items-stretch lg:justify-between">
-            <div className="flex flex-1 flex-col gap-2">
-              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Publishing</p>
-              <Button type="button" className="w-full max-w-xs rounded-2xl" disabled={publishLoading} onClick={() => void runPublish()}>
-                {publishLoading ? "Publishing…" : `Publish ready (${eligibleToPublish.length})`}
-              </Button>
-              {blocked.length > 0 && (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                  <p className="font-medium">Action required</p>
-                  <ul className="mt-1 list-inside list-disc space-y-0.5">
-                    {blocked.map((b) => (
-                      <li key={b.id}>
-                        {b.title}:{" "}
-                        {!b.selectedPlatform
-                          ? "Select a platform when approving."
-                          : !isPlatformConnected(workspace.integrations, b.selectedPlatform)
-                            ? `${platformLabel(b.selectedPlatform)} is not connected — open Settings → Integrations.`
-                            : null}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-            <div className="flex-1 border-t border-zinc-100 pt-4 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
-              <p className="text-xs font-semibold uppercase tracking-wide text-zinc-400">Automation status</p>
-              <p className="mt-1 text-sm text-zinc-600">Publishing is connected to approval, scheduling, and platform integrations.</p>
-              <p className="mt-2 text-sm text-zinc-600">
-                Open <Link href="/pipeline?tab=publishing" className="font-medium text-zinc-900 underline-offset-2 hover:underline">Publishing</Link> to run manual or cron cycles.
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      </div> */}
-
       <PlatformSelectDialog
         open={Boolean(platformTargetId)}
         onOpenChange={(o) => !o && setPlatformTargetId(null)}
         onConfirm={(platforms) => void handlePlatformConfirm(platforms)}
       />
+
+      <Dialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete all generated content?</DialogTitle>
+            <DialogDescription>
+              This will permanently delete{" "}
+              <span className="font-semibold text-foreground">
+                {(workspace?.content ?? []).length} item{(workspace?.content ?? []).length !== 1 ? "s" : ""}
+              </span>{" "}
+              from your content queue. This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex gap-2 sm:gap-2">
+            <Button variant="outline" className="flex-1 rounded-xl" onClick={() => setBulkDeleteOpen(false)}>
+              No, keep them
+            </Button>
+            <Button variant="destructive" className="flex-1 rounded-xl" onClick={() => void runBulkDeleteGenerated()}>
+              Yes, delete all
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={Boolean(editItem)} onOpenChange={(o) => !o && setEditItem(null)}>
         <DialogContent>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 import { shouldUseVideoElement } from "@/lib/media-detect";
 import { sanitizeMediaUrl } from "@/lib/api";
 import type { MediaType } from "@/lib/types";
@@ -26,7 +26,7 @@ export function MediaPreviewBlock({ url, mediaType = "Image", className, videoCl
   const videoPlaceholder = mediaType === "Video" && !useVideo;
 
   useEffect(() => {
-    setBroken(false);
+    startTransition(() => setBroken(false));
   }, [safe, mediaType]);
 
   if (!safe || broken) {
@@ -65,6 +65,7 @@ export function MediaPreviewBlock({ url, mediaType = "Image", className, videoCl
           onError={() => setBroken(true)}
         />
       ) : (
+        // eslint-disable-next-line @next/next/no-img-element
         <img
           key={safe}
           src={safe}

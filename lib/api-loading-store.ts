@@ -2,7 +2,7 @@
 
 import { create } from "zustand";
 
-export type FlowApiLoadingKind = "default" | "ai" | "publish";
+export type FlowApiLoadingKind = "default" | "ai" | "publish" | "delete";
 
 type Counts = Record<FlowApiLoadingKind, number>;
 
@@ -21,7 +21,7 @@ type State = {
 };
 
 function countsFromInFlight(inFlight: FlowInFlightRequest[]): Counts {
-  const c: Counts = { default: 0, ai: 0, publish: 0 };
+  const c: Counts = { default: 0, ai: 0, publish: 0, delete: 0 };
   for (const r of inFlight) {
     c[r.kind] += 1;
   }
@@ -31,6 +31,7 @@ function countsFromInFlight(inFlight: FlowInFlightRequest[]): Counts {
 function pickHeadline(counts: Counts): FlowApiLoadingKind {
   if (counts.publish > 0) return "publish";
   if (counts.ai > 0) return "ai";
+  if (counts.delete > 0) return "delete";
   return "default";
 }
 

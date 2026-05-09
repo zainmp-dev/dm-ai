@@ -46,7 +46,7 @@ const APPROVAL_PLATFORM_OPTIONS = [
   { id: "linkedin", disabled: false },
   { id: "instagram", disabled: false },
   { id: "facebook", disabled: false },
-  { id: "twitter", disabled: true },
+  { id: "twitter", disabled: false },
 ] as const;
 const ACTIVE_APPROVAL_PLATFORMS = APPROVAL_PLATFORM_OPTIONS.filter((platform) => !platform.disabled).map((platform) => platform.id);
 
@@ -86,6 +86,7 @@ function LibraryThumb({
       {useVideo ? (
         <video src={safe} muted playsInline preload="metadata" className={`${shell} object-cover`} aria-hidden />
       ) : (
+        // eslint-disable-next-line @next/next/no-img-element
         <img src={safe} alt="" className={`${shell} object-cover`} loading="lazy" />
       )}
       {mediaType === "Carousel" ? (
@@ -199,11 +200,6 @@ export function ContentWorkspaceView() {
   const effectiveLibraryPage = Math.min(libraryPage, libraryTotalPages - 1);
   const librarySliceStart = effectiveLibraryPage * libraryPageSize;
   const librarySlice = content.slice(librarySliceStart, librarySliceStart + libraryPageSize);
-
-  useEffect(() => {
-    const maxPage = Math.max(0, Math.ceil(content.length / libraryPageSize) - 1);
-    if (libraryPage > maxPage) setLibraryPage(maxPage);
-  }, [content.length, libraryPage, libraryPageSize]);
 
   useEffect(() => {
     if (newAutoActivate && !prevAutoActivateRef.current) setScheduleOpen(true);
@@ -1440,20 +1436,16 @@ export function ContentWorkspaceView() {
               All available
             </label>
             {APPROVAL_PLATFORM_OPTIONS.map((option) => {
-              const connected = option.disabled ? true : isPlatformConnected(workspace.integrations, option.id);
+              const connected = isPlatformConnected(workspace.integrations, option.id);
               return (
                 <label
                   key={option.id}
-                  title={option.disabled ? "Coming soon" : undefined}
-                  className={`flex flex-col gap-1 rounded-xl border px-3 py-2 text-sm ${
-                    option.disabled ? "cursor-not-allowed border-zinc-200 bg-zinc-100 text-zinc-500" : "border-zinc-200 text-zinc-700"
-                  }`}
+                  className="flex flex-col gap-1 rounded-xl border border-zinc-200 px-3 py-2 text-sm text-zinc-700"
                 >
                   <span className="flex items-center gap-2">
                     <input
                       type="checkbox"
                       checked={approvePlatforms.includes(option.id)}
-                      disabled={option.disabled}
                       onChange={() =>
                         setApprovePlatforms((current) =>
                           current.includes(option.id) ? current.filter((id) => id !== option.id) : [...current, option.id],
@@ -1461,9 +1453,8 @@ export function ContentWorkspaceView() {
                       }
                     />
                     {platformLabel(option.id)}
-                    {option.disabled ? " (Coming soon)" : ""}
                   </span>
-                  {!option.disabled && !connected ? (
+                  {!connected ? (
                     <span className="pl-6 text-xs font-normal text-amber-800">
                       Not connected — add credentials in Settings, then try again.
                     </span>

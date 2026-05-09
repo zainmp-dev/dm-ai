@@ -1,6 +1,12 @@
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { LandingPage } from "@/components/marketing/landing-page";
 
-// Middleware sends unauthenticated users to /login. This runs when a session cookie is present.
-export default function Home() {
-  redirect("/dashboard");
+export default async function Home() {
+  const cookieStore = await cookies();
+  const token = cookieStore.get("flowpilot_token")?.value;
+  if (token) {
+    redirect("/dashboard");
+  }
+  return <LandingPage />;
 }

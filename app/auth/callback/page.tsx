@@ -1,7 +1,7 @@
 "use client";
 
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, startTransition, useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiCompleteOAuth, apiErrorMessage } from "@/lib/api";
 import { setAuthSession } from "@/lib/auth";
@@ -61,8 +61,10 @@ function CallbackShell({
 
   useEffect(() => {
     if (!error) return;
-    setStatus("failed");
-    setMessage(errorDescription || error);
+    startTransition(() => {
+      setStatus("failed");
+      setMessage(errorDescription || error);
+    });
   }, [error, errorDescription]);
 
   useEffect(() => {
