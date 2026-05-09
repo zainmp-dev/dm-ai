@@ -50,6 +50,23 @@ export interface Campaign {
   status: "Draft" | "Active" | "Paused";
 }
 
+export type CampaignGoal = "Awareness" | "Engagement" | "LeadGen" | "Conversion";
+
+export interface ContentCampaign {
+  id: string;
+  name: string;
+  description: string;
+  goal: CampaignGoal;
+  platforms: PublishingPlatform[];
+  budget: number;
+  status: "Draft" | "Active" | "Paused" | "Completed";
+  startDate: string | null;
+  endDate: string | null;
+  contentIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ActivityItem {
   id: string;
   text: string;

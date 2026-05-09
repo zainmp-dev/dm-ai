@@ -10,6 +10,7 @@ import {
   Images,
   LayoutDashboard,
   LineChart,
+  Megaphone,
   Menu,
   Plug,
   Plus,
@@ -47,6 +48,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/approval": "Workflow",
   "/scheduling": "Workflow",
   "/publishing": "Workflow",
+  "/campaigns": "Campaigns",
   "/notifications": "Notifications",
   "/profile": "Profile",
   "/settings": "Settings",
@@ -57,6 +59,7 @@ const PAGE_TITLES: Record<string, string> = {
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/pipeline", label: "Workflow", icon: Workflow },
+  { href: "/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/notifications", label: "Notifications", icon: Bell },
   { href: "/analytics", label: "Analytics", icon: LineChart },
   { href: "/settings", label: "Settings", icon: Settings },
@@ -138,7 +141,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const setupRequired = visibleWorkspace ? !visibleWorkspace.workspaceConfigured : true;
   const showSetupOnly = setupRequired && pathname === "/workspace-setup";
   const setupRedirectExempt =
-    pathname === "/settings" || pathname === "/pipeline" || pathname === "/publishing";
+    pathname === "/settings" || pathname === "/pipeline" || pathname === "/publishing" || pathname === "/campaigns";
 
   useEffect(() => {
     if (setupRequired && pathname !== "/workspace-setup" && !setupRedirectExempt) {
@@ -392,16 +395,15 @@ export function AppShell({ children }: { children: ReactNode }) {
 
           {/* Right controls */}
           <div className="flex items-center gap-1.5">
-            {/* New Campaign — Coming Soon */}
-            <button
-              type="button"
-              onClick={() => pushToast("Coming soon — Campaign creation is on its way!", { kind: "info" })}
+            {/* New Campaign — navigates to /campaigns?new=1 which auto-opens the create dialog */}
+            <Link
+              href="/campaigns?new=1"
               className="flex h-8 items-center gap-1.5 rounded-lg bg-[#1a56db] px-3 text-[12.5px] font-semibold text-white transition-colors hover:bg-[#1648c0] active:bg-[#1340ad]"
             >
               <Plus className="size-3.5 shrink-0" strokeWidth={2.5} />
               <span className="hidden sm:inline">New Campaign</span>
               <span className="sm:hidden">New</span>
-            </button>
+            </Link>
 
             {/* AI Search */}
             <WorkspaceAiSearch

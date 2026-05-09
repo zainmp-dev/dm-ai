@@ -234,13 +234,17 @@ export function ContentWorkspaceView() {
     .filter((o) => !o.disabled && isPlatformConnected(workspace.integrations, o.id))
     .map((o) => o.id as PublishingPlatform);
 
-  const openPostNow = (target: "manual-create" | "edit") => {
+  const openPostNow = (target: "manual-create" | "edit", itemId?: string) => {
     const preferred = workspace.preferences.defaultPlatform;
     const initial = connectedPostNowPlatforms.includes(preferred) ? [preferred] : connectedPostNowPlatforms.slice(0, 1);
     setPostNowPlatforms(initial);
     setPostNowTarget(target);
-    if (target === "edit" && activeItem) setPostNowEditId(activeItem.id);
-    else setPostNowEditId(null);
+    if (target === "edit") {
+      const id = itemId ?? activeItem?.id ?? null;
+      setPostNowEditId(id);
+    } else {
+      setPostNowEditId(null);
+    }
     setPostNowOpen(true);
   };
 
@@ -309,6 +313,7 @@ export function ContentWorkspaceView() {
         if (res.published > 0) {
           push(`Published to ${selectedPlatforms.map((p) => platformLabel(p)).join(", ")}`);
           setEditingId(null);
+          setDetailItem(null);
         } else {
           push(res.warnings[0] ?? "Publish did not complete");
         }
@@ -974,10 +979,26 @@ export function ContentWorkspaceView() {
                           type="button"
                           variant="default"
                           size="sm"
-                          className="h-10 rounded-xl bg-zinc-900 px-4 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
+                          className="h-9 rounded-xl bg-zinc-900 px-3.5 text-sm font-medium text-white hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200"
                           onClick={() => setDetailItem(item)}
                         >
-                          View full details
+                          View
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-9 rounded-xl border-emerald-200 bg-emerald-50 px-3.5 text-sm font-medium text-emerald-800 hover:bg-emerald-100 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300"
+                          disabled={item.status === "PUBLISHED"}
+                          onClick={() => {
+                            setDraftTitle(item.title);
+                            setDraftText(item.contentText);
+                            setDraftMediaPreview(item.mediaPreview);
+                            setDraftMediaType(item.mediaType);
+                            openPostNow("edit", item.id);
+                          }}
+                        >
+                          Post now
                         </Button>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -985,11 +1006,10 @@ export function ContentWorkspaceView() {
                               type="button"
                               variant="outline"
                               size="sm"
-                              className="h-10 gap-1 rounded-xl border-zinc-300 px-4 text-sm font-medium hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+                              className="h-9 w-9 rounded-xl border-zinc-200 p-0 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
                               aria-label={`More actions: ${item.title}`}
                             >
-                              More
-                              <MoreHorizontal className="size-3.5 opacity-70" />
+                              <MoreHorizontal className="size-4" />
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="start" className="w-48 rounded-xl">
@@ -1011,20 +1031,32 @@ export function ContentWorkspaceView() {
                             >
                               Edit
                             </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="rounded-lg"
+                              disabled={item.status === "PUBLISHED"}
+                              onSelect={() => {
+                                const row = content.find((c) => c.id === item.id);
+                                if (!row) return;
+                                setApproveTargetId(item.id);
+                                setApprovePlatforms(row.selectedPlatform ? [row.selectedPlatform] : []);
+                              }}
+                            >
+                              Approve for platforms…
+                            </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem
                               className="rounded-lg text-red-600 focus:text-red-600"
                               onSelect={() => setDeleteTargetId(item.id)}
                             >
                               <Trash2 className="mr-2 size-3.5 opacity-80" aria-hidden />
-                              Delete permanently
+                              Delete
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               className="rounded-lg text-amber-700 focus:text-amber-800"
                               disabled={item.status === "PUBLISHED"}
                               onSelect={() => void reject(item.id).then(() => push("Content rejected"))}
                             >
-                              Reject (keep in list)
+                              Reject (keep)
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -1120,7 +1152,37 @@ export function ContentWorkspaceView() {
                 <Button type="button" variant="ghost" size="sm" className="rounded-lg" onClick={() => setDetailItem(null)}>
                   Close
                 </Button>
-                <div className="flex flex-wrap items-center justify-end gap-2">
+                <div className="flex items-center gap-2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button type="button" variant="outline" size="sm" className="h-8 w-8 rounded-lg p-0">
+                        <MoreHorizontal className="size-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="w-44 rounded-xl">
+                      <DropdownMenuItem
+                        className="rounded-lg text-amber-700 focus:text-amber-800"
+                        disabled={detailItem.status === "PUBLISHED"}
+                        onSelect={() => {
+                          const id = detailItem.id;
+                          void reject(id).then(() => {
+                            push("Content rejected");
+                            setDetailItem(null);
+                          });
+                        }}
+                      >
+                        Reject (keep)
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        className="rounded-lg text-red-600 focus:text-red-600"
+                        onSelect={() => setDeleteTargetId(detailItem.id)}
+                      >
+                        <Trash2 className="mr-2 size-3.5 opacity-80" aria-hidden />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <Button
                     type="button"
                     variant="secondary"
@@ -1142,34 +1204,6 @@ export function ContentWorkspaceView() {
                     }}
                   >
                     Edit
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="rounded-lg border-red-200 text-red-700 hover:bg-red-50"
-                    onClick={() => {
-                      setDeleteTargetId(detailItem.id);
-                    }}
-                  >
-                    <Trash2 className="mr-1.5 size-3.5" aria-hidden />
-                    Delete
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    size="sm"
-                    className="rounded-lg"
-                    disabled={detailItem.status === "PUBLISHED"}
-                    onClick={() => {
-                      const id = detailItem.id;
-                      void reject(id).then(() => {
-                        push("Content rejected");
-                        setDetailItem(null);
-                      });
-                    }}
-                  >
-                    Reject (keep)
                   </Button>
                   <Button
                     type="button"
@@ -1342,23 +1376,12 @@ export function ContentWorkspaceView() {
               <div className="flex flex-wrap items-center justify-end gap-2">
                 <Button
                   type="button"
-                  variant="secondary"
-                  className="rounded-xl"
-                  onClick={() => {
-                    setDraftTimePreset("1h");
-                    setDraftScheduledAt(toDateTimeLocalInZone(applyTimePresetInZone("1h", contentTimeZone), contentTimeZone));
-                  }}
-                >
-                  +1 hour
-                </Button>
-                <Button
-                  type="button"
                   variant="outline"
                   className="rounded-xl border-emerald-200/90 bg-emerald-50/50 text-emerald-900 hover:bg-emerald-100/80"
                   disabled={!draftTitle.trim() || !draftText.trim() || !draftMediaPreview}
                   onClick={() => openPostNow("edit")}
                 >
-                  Post now…
+                  Post now
                 </Button>
                 <Button
                   type="button"
@@ -1402,7 +1425,7 @@ export function ContentWorkspaceView() {
                     setEditingId(null);
                   }}
                 >
-                  Approve for platforms…
+                  Approve…
                 </Button>
               </div>
             </DialogFooter>
