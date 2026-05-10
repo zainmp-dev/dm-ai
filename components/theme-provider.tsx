@@ -1,10 +1,11 @@
 "use client";
 
-import { useServerInsertedHTML } from "next/navigation";
+import { usePathname, useServerInsertedHTML } from "next/navigation";
 import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useSyncExternalStore,
   type ReactNode,
@@ -15,9 +16,14 @@ export type Theme = "light" | "dark";
 const STORAGE_KEY = "flow-theme";
 
 // Runs before first paint to apply the saved theme and avoid a flash.
-// Injected via useServerInsertedHTML so React 19 doesn't warn about a
-// <script> tag rendered inside a component (Next.js 16 / React 19 behavior).
-const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem('${STORAGE_KEY}');if(t==='dark'){document.documentElement.classList.add('dark')}else{document.documentElement.classList.remove('dark')}}catch(e){}})()`;
+// Default is light when nothing is stored.
+const THEME_INIT_SCRIPT = `(function(){try{
+var t=localStorage.getItem('${STORAGE_KEY}');
+var dark = t==='dark';
+var el=document.documentElement;
+if(dark){el.classList.add('dark');el.style.colorScheme='dark';}
+else{el.classList.remove('dark');el.style.colorScheme='light';}
+}catch(e){}})()`;
 
 type ThemeContextValue = {
   theme: Theme;
@@ -42,7 +48,9 @@ function subscribe(onStoreChange: () => void) {
 }
 
 function persistAndApply(next: Theme) {
-  document.documentElement.classList.toggle("dark", next === "dark");
+  const el = document.documentElement;
+  el.classList.toggle("dark", next === "dark");
+  el.style.colorScheme = next;
   try {
     localStorage.setItem(STORAGE_KEY, next);
   } catch {
@@ -50,12 +58,33 @@ function persistAndApply(next: Theme) {
   }
 }
 
+function applyStoredTheme() {
+  const el = document.documentElement;
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+  const dark = stored === "dark";
+  el.classList.toggle("dark", dark);
+  el.style.colorScheme = dark ? "dark" : "light";
+}
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
   useServerInsertedHTML(() => (
     <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
   ));
 
+  const pathname = usePathname();
   const theme = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+
+  // Re-apply on client-side route changes so the stored preference stays
+  // in sync (handy if another tab updates it).
+  useEffect(() => {
+    applyStoredTheme();
+  }, [pathname]);
+
   const setTheme = useCallback((next: Theme) => {
     persistAndApply(next);
   }, []);

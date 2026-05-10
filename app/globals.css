@@ -9,15 +9,21 @@
   --surface: #ffffff;
   --surface-foreground: #111827;
   --border: #e5e7eb;
+  --hover: #f5f7fa;
+  --subtle: #f9fafb;
+  --accent: #1a56db;
 }
 
 .dark {
-  --background: #09090b;
-  --foreground: #fafafa;
+  --background: #0a0a0b;
+  --foreground: #f4f4f5;
   --muted: #a1a1aa;
-  --surface: #18181b;
-  --surface-foreground: #fafafa;
+  --surface: #161618;
+  --surface-foreground: #f4f4f5;
   --border: #27272a;
+  --hover: #1f1f23;
+  --subtle: #18181b;
+  --accent: #3b82f6;
 }
 
 @theme inline {
@@ -27,6 +33,9 @@
   --color-surface: var(--surface);
   --color-surface-foreground: var(--surface-foreground);
   --color-border: var(--border);
+  --color-hover: var(--hover);
+  --color-subtle: var(--subtle);
+  --color-accent: var(--accent);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -40,6 +49,190 @@ body {
 
 .dark body {
   color-scheme: dark;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Global dark-theme overrides
+ *
+ * The app is primarily styled with hardcoded light tokens (e.g. bg-white,
+ * text-[#111827], bg-[#f5f7fa]). Instead of refactoring every component
+ * we re-map those tokens under .dark so the entire workspace renders with
+ * a clean, consistent dark palette and white text out of the box.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+.dark .bg-white {
+  background-color: var(--surface) !important;
+}
+.dark .bg-\[\#f5f7fa\],
+.dark .bg-\[\#F5F7FA\] {
+  background-color: var(--background) !important;
+}
+.dark .bg-\[\#f8fbff\],
+.dark .bg-\[\#f9fafb\],
+.dark .bg-\[\#fafafa\] {
+  background-color: var(--subtle) !important;
+}
+.dark .hover\:bg-\[\#f5f7fa\]:hover,
+.dark .hover\:bg-\[\#F8FAFC\]:hover,
+.dark .hover\:bg-\[\#f3f4f6\]:hover,
+.dark .hover\:bg-\[\#f9fafb\]:hover {
+  background-color: var(--hover) !important;
+}
+.dark .hover\:bg-slate-50:hover {
+  background-color: var(--hover) !important;
+}
+
+/* Borders */
+.dark .border-\[\#e5e7eb\],
+.dark .border-\[\#E5E7EB\],
+.dark .border-slate-200,
+.dark .divide-\[\#e5e7eb\] > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--border) !important;
+}
+
+/* Foreground / text */
+.dark .text-\[\#111827\],
+.dark .text-\[\#0f172a\],
+.dark .text-\[\#0B1020\],
+.dark .text-\[\#0b1020\] {
+  color: var(--foreground) !important;
+}
+.dark .text-\[\#374151\],
+.dark .text-\[\#1f2937\] {
+  color: #e4e4e7 !important;
+}
+.dark .text-\[\#6b7280\],
+.dark .text-\[\#5B6475\],
+.dark .text-\[\#64748b\] {
+  color: var(--muted) !important;
+}
+.dark .text-\[\#9ca3af\],
+.dark .text-\[\#94A3B8\],
+.dark .text-\[\#94a3b8\] {
+  color: #71717a !important;
+}
+
+/* Hover text */
+.dark .hover\:text-\[\#111827\]:hover,
+.dark .hover\:text-\[\#0f172a\]:hover,
+.dark .hover\:text-\[\#374151\]:hover {
+  color: var(--foreground) !important;
+}
+
+/* Common subtle blue panels — keep a hint of accent in dark */
+.dark .bg-\[\#f0f4ff\] {
+  background-color: rgba(59, 130, 246, 0.16) !important;
+}
+.dark .text-\[\#1a56db\] {
+  color: #93c5fd !important;
+}
+.dark .group-hover\:text-\[\#374151\] {
+  color: #e4e4e7;
+}
+
+/* Accent button stays branded but slightly adjusts in dark */
+.dark .bg-\[\#1a56db\] {
+  background-color: #2563eb !important;
+}
+.dark .hover\:bg-\[\#1648c0\]:hover {
+  background-color: #1d4ed8 !important;
+}
+
+/* Skeletons / placeholders */
+.dark .bg-zinc-100,
+.dark .bg-gray-100,
+.dark .bg-slate-100 {
+  background-color: #1f1f23 !important;
+}
+
+/* Inputs / form controls */
+.dark input,
+.dark textarea,
+.dark select {
+  background-color: var(--surface);
+  color: var(--foreground);
+  border-color: var(--border);
+}
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: #71717a;
+}
+
+/* Tailwind ring/shadow tweaks for cards in dark */
+.dark .shadow-sm {
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
+}
+.dark .shadow,
+.dark .shadow-md {
+  box-shadow: 0 4px 12px -2px rgba(0, 0, 0, 0.5);
+}
+.dark .shadow-lg,
+.dark .shadow-xl {
+  box-shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.55);
+}
+
+/* ─── Marketing / landing page specific overrides ─────────────────────────── */
+
+/* Subtle slate translucent borders used throughout marketing pages */
+.dark [class*="border-[rgba(15,23,42,0.0"],
+.dark [class*="border-[rgba(15,23,42,0.1"] {
+  border-color: rgba(244, 244, 245, 0.08) !important;
+}
+.dark [class*="divide-[rgba(15,23,42,"] > :not([hidden]) ~ :not([hidden]) {
+  border-color: rgba(244, 244, 245, 0.06) !important;
+}
+.dark [class*="bg-[rgba(15,23,42,"] {
+  background-color: rgba(244, 244, 245, 0.04) !important;
+}
+
+/* Lighter surface used on some landing cards */
+.dark .bg-\[\#F8FAFC\] {
+  background-color: var(--subtle) !important;
+}
+.dark .hover\:bg-\[\#F1F5F9\]:hover {
+  background-color: #e4e4e7 !important;
+}
+
+/* Very pale ghost text seen on chart axis labels */
+.dark .text-\[\#D1D9E0\],
+.dark .text-\[\#C8D0DA\] {
+  color: #52525b !important;
+}
+
+/* Nav backdrop on landing — keep translucent but match dark surface */
+.dark .bg-\[\#F5F7FA\]\/90 {
+  background-color: rgba(10, 10, 11, 0.85) !important;
+}
+
+/* Trust section names — barely-there gray on light, slightly more legible on dark */
+.dark .text-\[\#C8D0DA\] {
+  color: #3f3f46 !important;
+}
+
+/* Hover states that reach for slate */
+.dark .hover\:bg-black\/5:hover {
+  background-color: rgba(255, 255, 255, 0.06) !important;
+}
+.dark .hover\:text-\[\#0B1020\]:hover,
+.dark .hover\:text-\[\#0b1020\]:hover {
+  color: var(--foreground) !important;
+}
+
+/* Soft chip/pill backgrounds used for compliance badges */
+.dark .bg-amber-50 {
+  background-color: rgba(245, 158, 11, 0.12) !important;
+  color: #fbbf24 !important;
+}
+.dark .bg-emerald-50 {
+  background-color: rgba(16, 185, 129, 0.12) !important;
+  color: #6ee7b7 !important;
+}
+.dark .bg-blue-50 {
+  background-color: rgba(59, 130, 246, 0.14) !important;
+  color: #93c5fd !important;
+}
+.dark .bg-slate-50 {
+  background-color: rgba(244, 244, 245, 0.06) !important;
 }
 
 html {

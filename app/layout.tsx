@@ -6,7 +6,6 @@ import { GlobalApiActivity } from "@/components/global-api-activity";
 import { StructuredData } from "@/components/structured-data";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ToastProvider } from "@/components/ui/toast";
-import { GlobalThemeToggle } from "@/components/global-theme-toggle";
 
 const structuredData = {
   "@context": "https://schema.org",
@@ -89,7 +88,6 @@ export default function RootLayout({
           <StructuredData data={structuredData} />
           <ToastProvider>
             <GlobalApiActivity />
-            <GlobalThemeToggle />
             {children}
           </ToastProvider>
         </ThemeProvider>

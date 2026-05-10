@@ -1,7 +1,6 @@
 "use client";
 
 import { Moon, Sun } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { useTheme } from "@/components/theme-provider";
 
 export function HeaderThemeControl() {
@@ -9,15 +8,14 @@ export function HeaderThemeControl() {
   const isDark = theme === "dark";
 
   return (
-    <Button
+    <button
       type="button"
-      variant="ghost"
-      size="sm"
-      className="size-10 rounded-xl text-zinc-600 hover:text-zinc-900 dark:text-amber-200/90 dark:hover:text-amber-100"
       onClick={() => setTheme(isDark ? "light" : "dark")}
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      className="flex size-8 items-center justify-center rounded-lg text-[#6b7280] transition-colors hover:bg-[#f5f7fa] hover:text-[#111827] dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
     >
-      {isDark ? <Sun className="size-5" /> : <Moon className="size-5" />}
-    </Button>
+      {isDark ? <Sun className="size-[17px]" strokeWidth={1.75} /> : <Moon className="size-[17px]" strokeWidth={1.75} />}
+    </button>
   );
 }

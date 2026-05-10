@@ -99,11 +99,16 @@ def _init_workspace_tables(connection: object) -> None:
             password text not null,
             auth_provider text,
             auth_subject text,
+            role text not null default 'user',
             created_at timestamptz not null default now()
         )
         """,
         "alter table flowpilot_users add column if not exists auth_provider text",
         "alter table flowpilot_users add column if not exists auth_subject text",
+        # Role-based access: 'user' (default) gets a workspace and goes through setup;
+        # 'admin' bypasses workspace setup entirely and lands on /admin.
+        "alter table flowpilot_users add column if not exists role text not null default 'user'",
+        "update flowpilot_users set role = 'user' where role is null or trim(role) = ''",
         "create unique index if not exists uq_flowpilot_users_auth_identity on flowpilot_users(auth_provider, auth_subject) where auth_provider is not null and auth_subject is not null",
         # Speed up POST /login (case-insensitive email lookup) so a password check is one indexed scan,
         # not a sequential table scan over flowpilot_users.

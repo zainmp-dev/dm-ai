@@ -307,8 +307,10 @@ export async function apiWorkspaceSearch(body: { query: string; aiModel?: string
   };
 }
 
+type AuthApiUser = { name: string; email: string; role?: "admin" | "user" };
+
 export async function apiSignup(body: { name: string; email: string; password: string }) {
-  const { data } = await apiClient.post<{ token: string; user: { name: string; email: string } }>("/signup", body, {
+  const { data } = await apiClient.post<{ token: string; user: AuthApiUser }>("/signup", body, {
     skipGlobalLoading: true,
     timeout: AUTH_REQUEST_TIMEOUT_MS,
   });
@@ -316,7 +318,177 @@ export async function apiSignup(body: { name: string; email: string; password: s
 }
 
 export async function apiLogin(body: { email: string; password: string }) {
-  const { data } = await apiClient.post<{ token: string; user: { name: string; email: string } }>("/login", body, {
+  const { data } = await apiClient.post<{ token: string; user: AuthApiUser }>("/login", body, {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export interface AdminOverview {
+  total_users: number;
+  admin_count: number;
+  workspace_rows: number;
+  configured_workspaces: number;
+  oauth_users: number;
+  password_only_users: number;
+  total_content_items: number;
+}
+
+export interface AdminUserRow {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  auth_provider: string | null;
+  created_at: string | null;
+  has_workspace: boolean;
+  company_name: string | null;
+  company_website: string | null;
+  workspace_scenario: string | null;
+  primary_region: string | null;
+  workspace_configured: boolean | null;
+  workspace_updated_at: string | null;
+  content_count: number;
+  competitor_count: number;
+}
+
+export interface AdminUsersPageResponse {
+  items: AdminUserRow[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface AdminWorkspaceRow {
+  workspace_id: string;
+  owner_name: string;
+  owner_email: string;
+  company_name: string;
+  company_website: string;
+  workspace_scenario: string;
+  primary_region: string;
+  workspace_configured: boolean;
+  updated_at: string | null;
+  content_count: number;
+  competitor_count: number;
+}
+
+export interface AdminWorkspacesPageResponse {
+  items: AdminWorkspaceRow[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface AdminIntegrationRow {
+  workspace_id: string;
+  owner_name: string;
+  owner_email: string;
+  platform: string;
+  connected: boolean;
+  account_name: string | null;
+  account_handle: string | null;
+  updated_at: string | null;
+}
+
+export interface AdminIntegrationsPageResponse {
+  items: AdminIntegrationRow[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export interface AdminContentStatusCount {
+  status: string;
+  count: number;
+}
+
+export interface AdminContentSummaryResponse {
+  total: number;
+  by_status: AdminContentStatusCount[];
+}
+
+export type AdminUsersSetupFilter = "all" | "configured" | "in_progress" | "no_workspace";
+export type AdminRoleFilter = "all" | "admin" | "user";
+export type AdminAuthFilter = "all" | "email" | "google" | "facebook";
+
+export async function apiAdminOverview(): Promise<AdminOverview> {
+  const { data } = await apiClient.get<AdminOverview>("/admin/overview", {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export async function apiAdminUsers(params: {
+  page?: number;
+  page_size?: number;
+  q?: string;
+  setup?: AdminUsersSetupFilter;
+  role?: AdminRoleFilter;
+  auth?: AdminAuthFilter;
+}): Promise<AdminUsersPageResponse> {
+  const { data } = await apiClient.get<AdminUsersPageResponse>("/admin/users", {
+    params: {
+      page: params.page ?? 1,
+      page_size: params.page_size ?? 25,
+      q: params.q ?? "",
+      setup: params.setup ?? "all",
+      role: params.role ?? "all",
+      auth: params.auth ?? "all",
+    },
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export async function apiAdminWorkspaces(params: {
+  page?: number;
+  page_size?: number;
+  q?: string;
+  configured?: "all" | "yes" | "no";
+}): Promise<AdminWorkspacesPageResponse> {
+  const { data } = await apiClient.get<AdminWorkspacesPageResponse>("/admin/workspaces", {
+    params: {
+      page: params.page ?? 1,
+      page_size: params.page_size ?? 25,
+      q: params.q ?? "",
+      configured: params.configured ?? "all",
+    },
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export async function apiAdminIntegrations(params: {
+  page?: number;
+  page_size?: number;
+  q?: string;
+  connected?: "all" | "yes" | "no";
+  platform?: string;
+}): Promise<AdminIntegrationsPageResponse> {
+  const { data } = await apiClient.get<AdminIntegrationsPageResponse>("/admin/integrations", {
+    params: {
+      page: params.page ?? 1,
+      page_size: params.page_size ?? 25,
+      q: params.q ?? "",
+      connected: params.connected ?? "all",
+      platform: params.platform ?? "all",
+    },
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export async function apiAdminContentSummary(): Promise<AdminContentSummaryResponse> {
+  const { data } = await apiClient.get<AdminContentSummaryResponse>("/admin/content/summary", {
     skipGlobalLoading: true,
     timeout: AUTH_REQUEST_TIMEOUT_MS,
   });

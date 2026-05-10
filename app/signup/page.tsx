@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
+import { PublicThemeToggle } from "@/components/public-theme-toggle";
 import axios from "axios";
 import { apiErrorMessage, apiSignup, apiStartOAuth } from "@/lib/api";
 import { setAuthSession } from "@/lib/auth";
@@ -105,7 +106,13 @@ export default function SignupPage() {
       .then((res) => {
         setAuthSession(res.token, res.user);
         push("Account created successfully.", { kind: "success" });
-        router.replace("/workspace-setup");
+        // Defensive: signup always creates role='user' today, but if that ever changes
+        // we don't want a freshly-minted admin to be redirected into the setup wizard.
+        if (res.user.role === "admin") {
+          router.replace("/admin");
+        } else {
+          router.replace("/workspace-setup");
+        }
       })
       .catch((error: unknown) => {
         if (axios.isAxiosError(error) && (error.code === "ECONNABORTED" || !error.response)) {
@@ -142,29 +149,30 @@ export default function SignupPage() {
   };
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#f8fbff] p-4 text-[#0f172a]">
-      <div className="pointer-events-none absolute -top-24 left-1/2 h-[24rem] w-[24rem] -translate-x-1/2 rounded-full bg-[#2563EB]/20 blur-[120px]" />
-      <div className="pointer-events-none absolute bottom-0 right-0 h-[20rem] w-[20rem] rounded-full bg-[#60a5fa]/20 blur-[110px]" />
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#f8fbff] p-4 text-[#0f172a] dark:bg-[#0a0a0b] dark:text-zinc-100">
+      <div className="pointer-events-none absolute -top-24 left-1/2 h-[24rem] w-[24rem] -translate-x-1/2 rounded-full bg-[#2563EB]/20 blur-[120px] dark:bg-[#2563EB]/30" />
+      <div className="pointer-events-none absolute bottom-0 right-0 h-[20rem] w-[20rem] rounded-full bg-[#60a5fa]/20 blur-[110px] dark:bg-[#3b82f6]/25" />
       <Link
         href="/"
-        className="absolute left-5 top-5 z-20 flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-[#64748b] shadow-sm transition-colors hover:bg-slate-50 hover:text-[#0f172a]"
+        className="absolute left-5 top-5 z-20 flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-[#64748b] shadow-sm transition-colors hover:bg-slate-50 hover:text-[#0f172a] dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
       >
         <ArrowLeft className="h-3.5 w-3.5" />
         Home
       </Link>
+      <PublicThemeToggle variant="floating" />
       <div className="w-full max-w-md">
-      <Card className="relative z-10 w-full rounded-3xl border-slate-200 bg-white p-1 shadow-xl">
+      <Card className="relative z-10 w-full rounded-3xl border-slate-200 bg-white p-1 shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
         <CardHeader className="pb-4 pt-8">
           <div className="mb-4 flex items-center justify-center">
-            <div className="rounded-2xl border border-white/20 bg-white/10 p-3 shadow-sm">
-              <UserRoundPlus className="h-5 w-5 text-[#0f172a]" />
+            <div className="rounded-2xl border border-white/20 bg-white/10 p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-800/50">
+              <UserRoundPlus className="h-5 w-5 text-[#0f172a] dark:text-zinc-100" />
             </div>
           </div>
           <div className="flex justify-center">
-            <Link href="/" className="text-xs font-semibold uppercase tracking-[0.2em] text-[#64748b] hover:text-[#0f172a] transition-colors">FlowPilot</Link>
+            <Link href="/" className="text-xs font-semibold uppercase tracking-[0.2em] text-[#64748b] hover:text-[#0f172a] transition-colors dark:text-zinc-400 dark:hover:text-zinc-100">FlowPilot</Link>
           </div>
-          <CardTitle className="mt-2 text-center text-3xl font-semibold tracking-tight">Create account</CardTitle>
-          <CardDescription className="mx-auto max-w-xs text-center text-base text-[#64748b]">Set up your workspace in seconds.</CardDescription>
+          <CardTitle className="mt-2 text-center text-3xl font-semibold tracking-tight dark:text-zinc-100">Create account</CardTitle>
+          <CardDescription className="mx-auto max-w-xs text-center text-base text-[#64748b] dark:text-zinc-400">Set up your workspace in seconds.</CardDescription>
         </CardHeader>
         <CardContent>
           <form className="space-y-4 pb-8" onSubmit={handleSignupSubmit}>
@@ -173,14 +181,14 @@ export default function SignupPage() {
               Name
             </Label>
             <div className="relative">
-              <UserRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b]" />
+              <UserRound className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b] dark:text-zinc-500" />
               <Input
                 id="signup-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Name"
                 autoComplete="name"
-                className="h-11 rounded-xl border-slate-200 bg-white pl-10 text-[#0f172a] placeholder:text-[#94a3b8]"
+                className="h-11 rounded-xl border-slate-200 bg-white pl-10 text-[#0f172a] placeholder:text-[#94a3b8] dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500"
               />
             </div>
           </div>
@@ -189,7 +197,7 @@ export default function SignupPage() {
               Email
             </Label>
             <div className="relative">
-              <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b]" />
+              <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b] dark:text-zinc-500" />
               <Input
                 id="signup-email"
                 type="email"
@@ -197,7 +205,7 @@ export default function SignupPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="Email"
                 autoComplete="email"
-                className="h-11 rounded-xl border-slate-200 bg-white pl-10 text-[#0f172a] placeholder:text-[#94a3b8]"
+                className="h-11 rounded-xl border-slate-200 bg-white pl-10 text-[#0f172a] placeholder:text-[#94a3b8] dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500"
               />
             </div>
           </div>
@@ -206,7 +214,7 @@ export default function SignupPage() {
               Password
             </Label>
             <div className="relative">
-              <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b]" />
+              <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b] dark:text-zinc-500" />
               <Input
                 ref={passwordInputRef}
                 id="signup-password"
@@ -214,7 +222,7 @@ export default function SignupPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Password"
-                className="h-11 rounded-xl border-slate-200 bg-white pl-10 pr-10 text-[#0f172a] placeholder:text-[#94a3b8]"
+                className="h-11 rounded-xl border-slate-200 bg-white pl-10 pr-10 text-[#0f172a] placeholder:text-[#94a3b8] dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500"
                 autoComplete="new-password"
               />
               <button
@@ -228,7 +236,7 @@ export default function SignupPage() {
                   event.stopPropagation();
                   handleTogglePassword();
                 }}
-                className="absolute inset-y-0 right-0 z-30 flex w-11 cursor-pointer items-center justify-center text-[#64748b] transition-colors hover:text-[#0f172a]"
+                className="absolute inset-y-0 right-0 z-30 flex w-11 cursor-pointer items-center justify-center text-[#64748b] transition-colors hover:text-[#0f172a] dark:text-zinc-500 dark:hover:text-zinc-100"
                 aria-label={showPassword ? "Hide password" : "Show password"}
                 aria-pressed={showPassword}
               >
@@ -237,7 +245,7 @@ export default function SignupPage() {
             </div>
           </div>
           <div className="space-y-1.5">
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-zinc-700">
               <div
                 className="h-full rounded-full transition-all duration-300 ease-out"
                 style={{
@@ -246,31 +254,31 @@ export default function SignupPage() {
                 }}
               />
             </div>
-            <p className="text-xs text-[#64748b]">
+            <p className="text-xs text-[#64748b] dark:text-zinc-400">
               {password.length === 0
                 ? "Use 6+ characters with letters and numbers."
                 : `Password strength: ${passwordStrengthLabel}.`}
             </p>
-            {password.length > 0 ? <p className="text-xs text-[#64748b]">{getPasswordEstimate(passwordStrength)}</p> : null}
+            {password.length > 0 ? <p className="text-xs text-[#64748b] dark:text-zinc-400">{getPasswordEstimate(passwordStrength)}</p> : null}
           </div>
           <Button
             type="submit"
-            className="h-11 w-full rounded-xl bg-[#2563EB] text-white hover:bg-[#1d4ed8]"
+            className="h-11 w-full rounded-xl bg-[#2563EB] text-white hover:bg-[#1d4ed8] dark:bg-[#3b82f6] dark:hover:bg-[#2563eb]"
             disabled={loading || !trimmedName || !trimmedEmail || !password.trim()}
           >
             {loading ? "Creating account..." : "Create account"}
           </Button>
           <div className="pt-1">
             <div className="flex items-center gap-3">
-              <div className="h-px flex-1 bg-slate-200" />
-              <p className="text-xs text-[#64748b]">Or sign up with</p>
-              <div className="h-px flex-1 bg-slate-200" />
+              <div className="h-px flex-1 bg-slate-200 dark:bg-zinc-700" />
+              <p className="text-xs text-[#64748b] dark:text-zinc-500">Or sign up with</p>
+              <div className="h-px flex-1 bg-slate-200 dark:bg-zinc-700" />
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2">
               <Button
                 type="button"
                 variant="outline"
-                className="rounded-xl border-slate-200 bg-white"
+                className="rounded-xl border-slate-200 bg-white dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700"
                 disabled={loading || Boolean(oauthLoading)}
                 aria-label="Sign up with Google"
                 onClick={() => handleOAuthStart("google")}
@@ -280,7 +288,7 @@ export default function SignupPage() {
               <Button
                 type="button"
                 variant="outline"
-                className="rounded-xl border-slate-200 bg-white"
+                className="rounded-xl border-slate-200 bg-white dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700"
                 disabled={loading || Boolean(oauthLoading)}
                 aria-label="Sign up with Facebook"
                 onClick={() => handleOAuthStart("facebook")}
@@ -289,12 +297,12 @@ export default function SignupPage() {
               </Button>
             </div>
             {oauthLoading ? (
-              <p className="mt-2 text-center text-xs text-[#64748b]">Redirecting to {oauthLoading}…</p>
+              <p className="mt-2 text-center text-xs text-[#64748b] dark:text-zinc-400">Redirecting to {oauthLoading}…</p>
             ) : null}
           </div>
-          <p className="text-center text-sm text-[#64748b]">
+          <p className="text-center text-sm text-[#64748b] dark:text-zinc-400">
             Already have an account?{" "}
-            <Link href="/login" className="font-medium text-[#0f172a] hover:underline">
+            <Link href="/login" className="font-medium text-[#0f172a] hover:underline dark:text-zinc-100">
               Sign in
             </Link>
           </p>

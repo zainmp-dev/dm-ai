@@ -16,6 +16,7 @@ import {
   Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PublicThemeToggle } from "@/components/public-theme-toggle";
 
 // ─── Animation Primitives ────────────────────────────────────────────────────
 
@@ -235,16 +236,17 @@ function Nav() {
         </nav>
 
         <div className="flex items-center gap-2">
+          <PublicThemeToggle className="size-9" />
           <Link href="/login">
             <Button
               variant="ghost"
-              className="h-9 rounded-lg px-4 text-[13px] text-[#5B6475] hover:bg-black/5 hover:text-[#0B1020]"
+              className="h-9 rounded-lg px-4 text-[13px] text-[#5B6475] hover:bg-black/5 hover:text-[#0B1020] dark:text-zinc-300 dark:hover:bg-white/5 dark:hover:text-zinc-100"
             >
               Sign in
             </Button>
           </Link>
           <Link href="/signup">
-            <Button className="h-9 rounded-lg bg-[#0B1020] px-4 text-[13px] text-white shadow-none hover:bg-[#1e293b]">
+            <Button className="h-9 rounded-lg bg-[#0B1020] px-4 text-[13px] text-white shadow-none hover:bg-[#1e293b] dark:bg-[#3b82f6] dark:hover:bg-[#2563eb]">
               Request demo
             </Button>
           </Link>
@@ -285,19 +287,19 @@ function HeroSection() {
 
           <motion.div variants={fadeUp} className="mt-8 flex flex-wrap items-center gap-3">
             <Link href="/signup">
-              <Button className="group h-10 rounded-lg bg-[#0B1020] px-5 text-[13px] font-medium text-white shadow-none hover:bg-[#1e293b]">
+              <Button className="group h-10 rounded-lg bg-[#0B1020] px-5 text-[13px] font-medium text-white shadow-none hover:bg-[#1e293b] dark:bg-[#3b82f6] dark:hover:bg-[#2563eb]">
                 Request a demo
                 <ArrowRight className="ml-2 h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
               </Button>
             </Link>
-            <Link href="/login">
+            <a href="#dashboard">
               <Button
                 variant="ghost"
                 className="h-10 rounded-lg border border-[rgba(15,23,42,0.12)] bg-white px-5 text-[13px] font-medium text-[#0B1020] hover:bg-[#F8FAFC]"
               >
                 See how it works
               </Button>
-            </Link>
+            </a>
           </motion.div>
 
           <motion.div

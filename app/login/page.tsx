@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
+import { PublicThemeToggle } from "@/components/public-theme-toggle";
 import { apiErrorMessage, apiLogin, apiStartOAuth } from "@/lib/api";
 import { setAuthSession } from "@/lib/auth";
 import axios from "axios";
@@ -74,8 +75,13 @@ export default function LoginPage() {
       .then((res) => {
         setAuthSession(res.token, res.user);
         push("Welcome back.", { kind: "success" });
-        // Avoid an extra post-login workspace fetch here; dashboard loads what it needs.
-        router.replace("/dashboard");
+        // Admins skip the workspace shell entirely; regular users land on the dashboard
+        // and the AppShell handles the workspace-setup redirect if needed.
+        if (res.user.role === "admin") {
+          router.replace("/admin");
+        } else {
+          router.replace("/dashboard");
+        }
       })
       .catch((error: unknown) => {
         if (axios.isAxiosError(error)) {
@@ -126,29 +132,30 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#f8fbff] p-4 text-[#0f172a]">
-      <div className="pointer-events-none absolute -top-24 left-1/2 h-[24rem] w-[24rem] -translate-x-1/2 rounded-full bg-[#2563EB]/20 blur-[120px]" />
-      <div className="pointer-events-none absolute bottom-0 right-0 h-[20rem] w-[20rem] rounded-full bg-[#60a5fa]/20 blur-[110px]" />
+    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-[#f8fbff] p-4 text-[#0f172a] dark:bg-[#0a0a0b] dark:text-zinc-100">
+      <div className="pointer-events-none absolute -top-24 left-1/2 h-[24rem] w-[24rem] -translate-x-1/2 rounded-full bg-[#2563EB]/20 blur-[120px] dark:bg-[#2563EB]/30" />
+      <div className="pointer-events-none absolute bottom-0 right-0 h-[20rem] w-[20rem] rounded-full bg-[#60a5fa]/20 blur-[110px] dark:bg-[#3b82f6]/25" />
       <Link
         href="/"
-        className="absolute left-5 top-5 z-20 flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-[#64748b] shadow-sm transition-colors hover:bg-slate-50 hover:text-[#0f172a]"
+        className="absolute left-5 top-5 z-20 flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-[#64748b] shadow-sm transition-colors hover:bg-slate-50 hover:text-[#0f172a] dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
       >
         <ArrowLeft className="h-3.5 w-3.5" />
         Home
       </Link>
+      <PublicThemeToggle variant="floating" />
       <div className="w-full max-w-md">
-      <Card className="relative z-10 w-full rounded-3xl border-slate-200 bg-white p-1 shadow-xl">
+      <Card className="relative z-10 w-full rounded-3xl border-slate-200 bg-white p-1 shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
         <CardHeader className="pb-4 pt-8">
           <div className="mb-4 flex items-center justify-center">
-            <div className="rounded-2xl border border-white/20 bg-white/10 p-3 shadow-sm">
-              <LogIn className="h-5 w-5 text-[#0f172a]" />
+            <div className="rounded-2xl border border-white/20 bg-white/10 p-3 shadow-sm dark:border-zinc-700 dark:bg-zinc-800/50">
+              <LogIn className="h-5 w-5 text-[#0f172a] dark:text-zinc-100" />
             </div>
           </div>
           <div className="flex justify-center">
-            <Link href="/" className="text-xs font-semibold uppercase tracking-[0.2em] text-[#64748b] hover:text-[#0f172a] transition-colors">FlowPilot</Link>
+            <Link href="/" className="text-xs font-semibold uppercase tracking-[0.2em] text-[#64748b] hover:text-[#0f172a] transition-colors dark:text-zinc-400 dark:hover:text-zinc-100">FlowPilot</Link>
           </div>
-          <CardTitle className="mt-2 text-center text-3xl font-semibold tracking-tight">Sign in with email</CardTitle>
-          <CardDescription className="mx-auto max-w-xs text-center text-base text-[#64748b]">
+          <CardTitle className="mt-2 text-center text-3xl font-semibold tracking-tight dark:text-zinc-100">Sign in with email</CardTitle>
+          <CardDescription className="mx-auto max-w-xs text-center text-base text-[#64748b] dark:text-zinc-400">
             Log in to your workspace and continue your flow.
           </CardDescription>
         </CardHeader>
@@ -159,7 +166,7 @@ export default function LoginPage() {
               Email
             </Label>
             <div className="relative">
-              <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b]" />
+              <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b] dark:text-zinc-500" />
               <Input
                 id="login-email"
                 type="email"
@@ -167,7 +174,7 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="Email"
                 autoComplete="email"
-                className="h-11 rounded-xl border-slate-200 bg-white pl-10 text-[#0f172a] placeholder:text-[#94a3b8]"
+                className="h-11 rounded-xl border-slate-200 bg-white pl-10 text-[#0f172a] placeholder:text-[#94a3b8] dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500"
               />
             </div>
           </div>
@@ -176,7 +183,7 @@ export default function LoginPage() {
               Password
             </Label>
             <div className="relative">
-              <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b]" />
+              <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#64748b] dark:text-zinc-500" />
               <Input
                 ref={passwordInputRef}
                 id="login-password"
@@ -184,7 +191,7 @@ export default function LoginPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Password"
-                className="h-11 rounded-xl border-slate-200 bg-white pl-10 pr-10 text-[#0f172a] placeholder:text-[#94a3b8]"
+                className="h-11 rounded-xl border-slate-200 bg-white pl-10 pr-10 text-[#0f172a] placeholder:text-[#94a3b8] dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder:text-zinc-500"
                 autoComplete="current-password"
               />
               <button
@@ -198,7 +205,7 @@ export default function LoginPage() {
                   event.stopPropagation();
                   handleTogglePassword();
                 }}
-                className="absolute inset-y-0 right-0 z-30 flex w-11 cursor-pointer items-center justify-center text-[#64748b] transition-colors hover:text-[#0f172a]"
+                className="absolute inset-y-0 right-0 z-30 flex w-11 cursor-pointer items-center justify-center text-[#64748b] transition-colors hover:text-[#0f172a] dark:text-zinc-500 dark:hover:text-zinc-100"
                 aria-label={showPassword ? "Hide password" : "Show password"}
                 aria-pressed={showPassword}
               >
@@ -209,7 +216,7 @@ export default function LoginPage() {
           <div className="flex justify-end">
             <button
               type="button"
-              className="text-sm text-[#64748b] hover:text-[#0f172a] hover:underline"
+              className="text-sm text-[#64748b] hover:text-[#0f172a] hover:underline dark:text-zinc-400 dark:hover:text-zinc-100"
               onClick={() => push("Forgot password flow is being rolled out.", { kind: "info" })}
             >
               Forgot password?
@@ -217,22 +224,22 @@ export default function LoginPage() {
           </div>
           <Button
             type="submit"
-            className="h-11 w-full rounded-xl bg-[#2563EB] text-white hover:bg-[#1d4ed8]"
+            className="h-11 w-full rounded-xl bg-[#2563EB] text-white hover:bg-[#1d4ed8] dark:bg-[#3b82f6] dark:hover:bg-[#2563eb]"
             disabled={loading || !trimmedEmail || !password.trim()}
           >
             {loading ? "Signing in..." : "Sign in"}
           </Button>
           <div className="pt-1">
             <div className="flex items-center gap-3">
-              <div className="h-px flex-1 bg-slate-200" />
-              <p className="text-xs text-[#64748b]">Or sign in with</p>
-              <div className="h-px flex-1 bg-slate-200" />
+              <div className="h-px flex-1 bg-slate-200 dark:bg-zinc-700" />
+              <p className="text-xs text-[#64748b] dark:text-zinc-500">Or sign in with</p>
+              <div className="h-px flex-1 bg-slate-200 dark:bg-zinc-700" />
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2">
               <Button
                 type="button"
                 variant="outline"
-                className="rounded-xl border-slate-200 bg-white"
+                className="rounded-xl border-slate-200 bg-white dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700"
                 disabled={loading || Boolean(oauthLoading)}
                 aria-label="Sign in with Google"
                 onClick={() => handleOAuthStart("google")}
@@ -242,7 +249,7 @@ export default function LoginPage() {
               <Button
                 type="button"
                 variant="outline"
-                className="rounded-xl border-slate-200 bg-white"
+                className="rounded-xl border-slate-200 bg-white dark:border-zinc-700 dark:bg-zinc-800 dark:hover:bg-zinc-700"
                 disabled={loading || Boolean(oauthLoading)}
                 aria-label="Sign in with Facebook"
                 onClick={() => handleOAuthStart("facebook")}
@@ -251,12 +258,12 @@ export default function LoginPage() {
               </Button>
             </div>
             {oauthLoading ? (
-              <p className="mt-2 text-center text-xs text-[#64748b]">Redirecting to {oauthLoading}…</p>
+              <p className="mt-2 text-center text-xs text-[#64748b] dark:text-zinc-400">Redirecting to {oauthLoading}…</p>
             ) : null}
           </div>
-          <p className="text-center text-sm text-[#64748b]">
+          <p className="text-center text-sm text-[#64748b] dark:text-zinc-400">
             No account?{" "}
-            <Link href="/signup" className="font-medium text-[#0f172a] hover:underline">
+            <Link href="/signup" className="font-medium text-[#0f172a] hover:underline dark:text-zinc-100">
               Create account
             </Link>
           </p>

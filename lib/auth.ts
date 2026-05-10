@@ -1,9 +1,16 @@
 const TOKEN_KEY = "flowpilot_token";
 const USER_KEY = "flowpilot_user";
 
+export type AuthRole = "admin" | "user";
+
 export interface AuthUser {
   name: string;
   email: string;
+  role?: AuthRole;
+}
+
+export function isAdmin(user: AuthUser | null | undefined): boolean {
+  return user?.role === "admin";
 }
 
 export function getAuthToken(): string | null {

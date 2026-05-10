@@ -6,7 +6,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { apiCompleteOAuth, apiErrorMessage } from "@/lib/api";
 import { setAuthSession } from "@/lib/auth";
 
-const oauthCallbackInflight = new Map<string, Promise<{ token: string; user: { name: string; email: string } }>>();
+const oauthCallbackInflight = new Map<
+  string,
+  Promise<{ token: string; user: { name: string; email: string; role?: "admin" | "user" } }>
+>();
 
 function oauthCallbackPromise(code: string, state: string) {
   const key = `${code}\n${state}`;
@@ -76,7 +79,9 @@ function CallbackShell({
         setAuthSession(res.token, res.user);
         setStatus("ok");
         setMessage("Signed in. Redirecting...");
-        window.location.replace("/dashboard");
+        // Admins skip the workspace shell and land on /admin.
+        const target = res.user.role === "admin" ? "/admin" : "/dashboard";
+        window.location.replace(target);
       })
       .catch((e: unknown) => {
         if (cancelled) return;

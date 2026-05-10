@@ -18,7 +18,7 @@ from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo
 
 import requests
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.routing import APIRoute
@@ -226,11 +226,99 @@ class ContentLibraryRequest(BaseModel):
 class AuthUserResponse(BaseModel):
     name: str
     email: str
+    role: str = "user"
 
 
 class AuthResponse(BaseModel):
     token: str
     user: AuthUserResponse
+
+
+class AdminOverviewResponse(BaseModel):
+    total_users: int
+    admin_count: int
+    workspace_rows: int
+    configured_workspaces: int
+    oauth_users: int
+    password_only_users: int
+    total_content_items: int
+
+
+class AdminUserRow(BaseModel):
+    id: str
+    name: str
+    email: str
+    role: str
+    auth_provider: str | None = None
+    created_at: datetime | None = None
+    has_workspace: bool
+    company_name: str | None = None
+    company_website: str | None = None
+    workspace_scenario: str | None = None
+    primary_region: str | None = None
+    workspace_configured: bool | None = None
+    workspace_updated_at: datetime | None = None
+    content_count: int = 0
+    competitor_count: int = 0
+
+
+class AdminUsersPageResponse(BaseModel):
+    items: list[AdminUserRow]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class AdminWorkspaceRow(BaseModel):
+    workspace_id: str
+    owner_name: str
+    owner_email: str
+    company_name: str
+    company_website: str
+    workspace_scenario: str
+    primary_region: str
+    workspace_configured: bool
+    updated_at: datetime | None = None
+    content_count: int = 0
+    competitor_count: int = 0
+
+
+class AdminWorkspacesPageResponse(BaseModel):
+    items: list[AdminWorkspaceRow]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class AdminIntegrationRow(BaseModel):
+    workspace_id: str
+    owner_name: str
+    owner_email: str
+    platform: str
+    connected: bool
+    account_name: str | None = None
+    account_handle: str | None = None
+    updated_at: datetime | None = None
+
+
+class AdminIntegrationsPageResponse(BaseModel):
+    items: list[AdminIntegrationRow]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int
+
+
+class AdminContentStatusCount(BaseModel):
+    status: str
+    count: int
+
+
+class AdminContentSummaryResponse(BaseModel):
+    total: int
+    by_status: list[AdminContentStatusCount]
 
 
 class ContentResponse(BaseModel):
@@ -260,7 +348,9 @@ def auth_token(user_id: str) -> str:
 
 
 def serialize_auth_user(row: dict[str, Any]) -> AuthUserResponse:
-    return AuthUserResponse(name=str(row["name"]), email=str(row["email"]))
+    raw_role = str(row.get("role") or "user").strip().lower()
+    role = raw_role if raw_role in {"admin", "user"} else "user"
+    return AuthUserResponse(name=str(row["name"]), email=str(row["email"]), role=role)
 
 
 def _safe_origin(origin: str | None) -> str:
@@ -335,14 +425,14 @@ def _upsert_oauth_user(
         raise HTTPException(status_code=400, detail="OAuth provider did not return an email.")
     row = db.execute(
         text(
-            "select id, name, email, auth_provider, auth_subject "
+            "select id, name, email, role, auth_provider, auth_subject "
             "from flowpilot_users where auth_provider = :provider and auth_subject = :subject"
         ),
         {"provider": provider, "subject": subject},
     ).mappings().first()
     if row is None:
         row = db.execute(
-            text("select id, name, email, auth_provider, auth_subject from flowpilot_users where lower(email) = :email"),
+            text("select id, name, email, role, auth_provider, auth_subject from flowpilot_users where lower(email) = :email"),
             {"email": email_norm},
         ).mappings().first()
     if row is None:
@@ -363,7 +453,7 @@ def _upsert_oauth_user(
             },
         )
         db.commit()
-        return {"id": user_id, "name": resolved_name, "email": email_norm}, True
+        return {"id": user_id, "name": resolved_name, "email": email_norm, "role": "user"}, True
 
     user_id = str(row["id"])
     updates: dict[str, Any] = {}
@@ -382,7 +472,7 @@ def _upsert_oauth_user(
         )
         db.commit()
     resolved_name = (str(row.get("name") or "").strip() or name.strip() or _auth_name_from_email(email_norm))
-    return {"id": user_id, "name": resolved_name, "email": email_norm}, False
+    return {"id": user_id, "name": resolved_name, "email": email_norm, "role": str(row.get("role") or "user")}, False
 
 def _cloudinary_uploads_ready() -> bool:
     return bool(
@@ -531,15 +621,114 @@ def get_current_user(authorization: str | None = Header(default=None), db: Sessi
 
     user_id = token.removeprefix("flowpilot-").rsplit("-", 1)[0]
     row = db.execute(
-        text("select id, name, email from flowpilot_users where id = :id"),
+        text("select id, name, email, role from flowpilot_users where id = :id"),
         {"id": user_id},
     ).mappings().first()
     if row is None:
         raise HTTPException(status_code=401, detail="Invalid auth token")
 
     user = dict(row)
+    raw_role = str(user.get("role") or "user").strip().lower()
+    user["role"] = raw_role if raw_role in {"admin", "user"} else "user"
     _auth_user_cache_put(token, user)
     return user
+
+
+def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    """Dependency guard for admin-only endpoints. Add as `Depends(require_admin)`."""
+    if str(user.get("role") or "user").lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
+
+
+_ADMIN_USERS_JOIN = """
+from flowpilot_users u
+left join flowpilot_workspace w on w.workspace_id = u.id
+left join (
+    select workspace_id, count(*)::int as cnt
+    from flowpilot_content
+    group by workspace_id
+) c on c.workspace_id = u.id
+left join (
+    select workspace_id, count(*)::int as cnt
+    from flowpilot_competitors
+    group by workspace_id
+) cp on cp.workspace_id = u.id
+"""
+
+
+def _admin_user_row_from_rd(rd: dict) -> AdminUserRow:
+    raw_role = str(rd.get("role") or "user").strip().lower()
+    role_out = raw_role if raw_role in {"admin", "user"} else "user"
+    ap_raw = rd.get("auth_provider")
+    auth_prov = str(ap_raw).strip().lower() if ap_raw is not None else ""
+    auth_prov = auth_prov if auth_prov else None
+    wc_raw = rd.get("workspace_configured")
+    return AdminUserRow(
+        id=str(rd["id"]),
+        name=str(rd.get("name") or ""),
+        email=str(rd.get("email") or ""),
+        role=role_out,
+        auth_provider=auth_prov,
+        created_at=rd.get("created_at"),
+        has_workspace=bool(rd.get("has_workspace")),
+        company_name=str(rd["company_name"]) if rd.get("company_name") is not None else None,
+        company_website=str(rd["company_website"]) if rd.get("company_website") is not None else None,
+        workspace_scenario=str(rd["workspace_scenario"]) if rd.get("workspace_scenario") is not None else None,
+        primary_region=str(rd["primary_region"]) if rd.get("primary_region") is not None else None,
+        workspace_configured=bool(wc_raw) if wc_raw is not None else None,
+        workspace_updated_at=rd.get("workspace_updated_at"),
+        content_count=int(rd.get("content_count") or 0),
+        competitor_count=int(rd.get("competitor_count") or 0),
+    )
+
+
+def _admin_users_where_params(*, setup: str, role: str, auth: str, q: str) -> tuple[str, dict[str, Any]]:
+    params: dict[str, Any] = {}
+    clauses: list[str] = []
+    if setup == "configured":
+        clauses.append("(w.workspace_id is not null and coalesce(w.workspace_configured, false))")
+    elif setup == "in_progress":
+        clauses.append("(w.workspace_id is not null and not coalesce(w.workspace_configured, false))")
+    elif setup == "no_workspace":
+        clauses.append("(w.workspace_id is null or lower(trim(coalesce(u.role, ''))) = 'admin')")
+
+    if role == "admin":
+        clauses.append("lower(trim(coalesce(u.role, ''))) = 'admin'")
+    elif role == "user":
+        clauses.append("lower(trim(coalesce(u.role, ''))) = 'user'")
+
+    if auth == "email":
+        clauses.append("(u.auth_provider is null or trim(coalesce(u.auth_provider, '')) = '')")
+    elif auth == "google":
+        clauses.append("lower(trim(coalesce(u.auth_provider, ''))) = 'google'")
+    elif auth == "facebook":
+        clauses.append("lower(trim(coalesce(u.auth_provider, ''))) = 'facebook'")
+
+    q_plain = q.strip()[:220].lower()
+    if q_plain:
+        params["q_plain"] = q_plain
+        clauses.append(
+            "("
+            "position(:q_plain in lower(coalesce(u.name, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(u.email, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(u.id, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(w.company_name, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(w.workspace_scenario, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(w.primary_region, ''))) > 0"
+            ")"
+        )
+
+    where_sql = " AND ".join(clauses) if clauses else "TRUE"
+    return where_sql, params
+
+
+def _clamp_admin_page(page: int) -> int:
+    return max(1, page)
+
+
+def _clamp_admin_page_size(page_size: int) -> int:
+    return max(1, min(page_size, 100))
 
 
 # Single-shot workspace snapshot: one Postgres round-trip per GET /workspace instead of ~12.
@@ -2270,7 +2459,7 @@ def auth_oauth_callback(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return AuthResponse(token=auth_token(user_row["id"]), user=AuthUserResponse(name=user_row["name"], email=user_row["email"]))
+    return AuthResponse(token=auth_token(user_row["id"]), user=serialize_auth_user(dict(user_row)))
 
 
 @app.post("/signup", response_model=AuthResponse)
@@ -2289,14 +2478,14 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)) -> AuthResponse:
     user_id = f"usr-{uuid.uuid4().hex[:10]}"
     db.execute(
         text(
-            "insert into flowpilot_users (id, name, email, password, created_at) "
-            "values (:id, :name, :email, :password, now())"
+            "insert into flowpilot_users (id, name, email, password, role, created_at) "
+            "values (:id, :name, :email, :password, 'user', now())"
         ),
         {"id": user_id, "name": name, "email": email, "password": password},
     )
     db.commit()
 
-    user = AuthUserResponse(name=name, email=email)
+    user = AuthUserResponse(name=name, email=email, role="user")
     return AuthResponse(token=auth_token(user_id), user=user)
 
 
@@ -2304,7 +2493,7 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)) -> AuthResponse:
 def login(body: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
     row = db.execute(
         text(
-            "select id, name, email from flowpilot_users "
+            "select id, name, email, role from flowpilot_users "
             "where lower(email) = :email and password = :password"
         ),
         {"email": body.email.strip().lower(), "password": body.password},
@@ -2314,6 +2503,361 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     return AuthResponse(token=auth_token(str(row["id"])), user=serialize_auth_user(dict(row)))
+
+
+@app.get("/admin/overview", response_model=AdminOverviewResponse)
+def admin_overview(db: Session = Depends(get_db), _admin: dict[str, Any] = Depends(require_admin)) -> AdminOverviewResponse:
+    row = db.execute(
+        text(
+            """
+            select
+                (select count(*)::int from flowpilot_users) as total_users,
+                (select count(*)::int from flowpilot_users where lower(coalesce(role, '')) = 'admin') as admin_count,
+                (select count(*)::int from flowpilot_workspace) as workspace_rows,
+                (select count(*)::int from flowpilot_workspace where workspace_configured) as configured_workspaces,
+                (select count(*)::int from flowpilot_users where auth_provider is not null and trim(auth_provider) <> '')
+                    as oauth_users,
+                (select count(*)::int from flowpilot_users where auth_provider is null or trim(coalesce(auth_provider, '')) = '')
+                    as password_only_users,
+                (select count(*)::int from flowpilot_content) as total_content_items
+            """
+        )
+    ).mappings().first()
+    if row is None:
+        return AdminOverviewResponse(
+            total_users=0,
+            admin_count=0,
+            workspace_rows=0,
+            configured_workspaces=0,
+            oauth_users=0,
+            password_only_users=0,
+            total_content_items=0,
+        )
+    return AdminOverviewResponse(
+        total_users=int(row["total_users"] or 0),
+        admin_count=int(row["admin_count"] or 0),
+        workspace_rows=int(row["workspace_rows"] or 0),
+        configured_workspaces=int(row["configured_workspaces"] or 0),
+        oauth_users=int(row["oauth_users"] or 0),
+        password_only_users=int(row["password_only_users"] or 0),
+        total_content_items=int(row["total_content_items"] or 0),
+    )
+
+
+@app.get("/admin/users", response_model=AdminUsersPageResponse)
+def admin_users(
+    db: Session = Depends(get_db),
+    _admin: dict[str, Any] = Depends(require_admin),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    q: str = Query("", max_length=220),
+    setup: str = Query("all"),
+    role: str = Query("all"),
+    auth: str = Query("all"),
+) -> AdminUsersPageResponse:
+    if setup not in {"all", "configured", "in_progress", "no_workspace"}:
+        raise HTTPException(status_code=400, detail="Invalid setup filter")
+    if role not in {"all", "admin", "user"}:
+        raise HTTPException(status_code=400, detail="Invalid role filter")
+    if auth not in {"all", "email", "google", "facebook"}:
+        raise HTTPException(status_code=400, detail="Invalid auth filter")
+
+    where_sql, filter_params = _admin_users_where_params(setup=setup, role=role, auth=auth, q=q)
+    page_i = _clamp_admin_page(page)
+    size_i = _clamp_admin_page_size(page_size)
+
+    count_row = db.execute(
+        text(f"select count(*)::int as n {_ADMIN_USERS_JOIN} where {where_sql}"),
+        filter_params,
+    ).mappings().first()
+    total = int(count_row["n"] or 0) if count_row is not None else 0
+    total_pages = (total + size_i - 1) // size_i if total else 0
+    if total_pages > 0 and page_i > total_pages:
+        page_i = total_pages
+    offset = (page_i - 1) * size_i
+
+    list_params = {**filter_params, "limit": size_i, "offset": offset}
+    rows = db.execute(
+        text(
+            f"""
+            select
+                u.id,
+                u.name,
+                u.email,
+                u.role,
+                u.auth_provider,
+                u.created_at,
+                (w.workspace_id is not null) as has_workspace,
+                w.company_name,
+                w.company_website,
+                w.workspace_scenario,
+                w.primary_region,
+                w.workspace_configured,
+                w.updated_at as workspace_updated_at,
+                coalesce(c.cnt, 0) as content_count,
+                coalesce(cp.cnt, 0) as competitor_count
+            {_ADMIN_USERS_JOIN}
+            where {where_sql}
+            order by u.created_at desc nulls last, u.email asc
+            limit :limit offset :offset
+            """
+        ),
+        list_params,
+    ).mappings().all()
+    items = [_admin_user_row_from_rd(dict(r)) for r in rows]
+    return AdminUsersPageResponse(
+        items=items,
+        total=total,
+        page=page_i,
+        page_size=size_i,
+        total_pages=total_pages,
+    )
+
+
+def _workspaces_where_params(*, configured: str, q: str) -> tuple[str, dict[str, Any]]:
+    params: dict[str, Any] = {}
+    clauses: list[str] = []
+    if configured == "yes":
+        clauses.append("coalesce(w.workspace_configured, false)")
+    elif configured == "no":
+        clauses.append("not coalesce(w.workspace_configured, false)")
+
+    q_plain = q.strip()[:220].lower()
+    if q_plain:
+        params["q_plain"] = q_plain
+        clauses.append(
+            "("
+            "position(:q_plain in lower(coalesce(w.workspace_id, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(u.email, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(u.name, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(w.company_name, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(w.company_website, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(w.workspace_scenario, ''))) > 0"
+            ")"
+        )
+
+    where_sql = " AND ".join(clauses) if clauses else "TRUE"
+    return where_sql, params
+
+
+_ADMIN_WORKSPACE_JOIN = """
+from flowpilot_workspace w
+join flowpilot_users u on u.id = w.workspace_id
+left join (
+    select workspace_id, count(*)::int as cnt from flowpilot_content group by workspace_id
+) c on c.workspace_id = w.workspace_id
+left join (
+    select workspace_id, count(*)::int as cnt from flowpilot_competitors group by workspace_id
+) cp on cp.workspace_id = w.workspace_id
+"""
+
+
+@app.get("/admin/workspaces", response_model=AdminWorkspacesPageResponse)
+def admin_workspaces(
+    db: Session = Depends(get_db),
+    _admin: dict[str, Any] = Depends(require_admin),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    q: str = Query("", max_length=220),
+    configured: str = Query("all"),
+) -> AdminWorkspacesPageResponse:
+    if configured not in {"all", "yes", "no"}:
+        raise HTTPException(status_code=400, detail="Invalid configured filter")
+
+    where_sql, filter_params = _workspaces_where_params(configured=configured, q=q)
+    page_i = _clamp_admin_page(page)
+    size_i = _clamp_admin_page_size(page_size)
+
+    count_row = db.execute(
+        text(f"select count(*)::int as n {_ADMIN_WORKSPACE_JOIN} where {where_sql}"),
+        filter_params,
+    ).mappings().first()
+    total = int(count_row["n"] or 0) if count_row is not None else 0
+    total_pages = (total + size_i - 1) // size_i if total else 0
+    if total_pages > 0 and page_i > total_pages:
+        page_i = total_pages
+    offset = (page_i - 1) * size_i
+
+    list_params = {**filter_params, "limit": size_i, "offset": offset}
+    rows = db.execute(
+        text(
+            f"""
+            select
+                w.workspace_id,
+                w.company_name,
+                w.company_website,
+                w.workspace_scenario,
+                w.primary_region,
+                w.workspace_configured,
+                w.updated_at,
+                u.name as owner_name,
+                u.email as owner_email,
+                coalesce(c.cnt, 0) as content_count,
+                coalesce(cp.cnt, 0) as competitor_count
+            {_ADMIN_WORKSPACE_JOIN}
+            where {where_sql}
+            order by w.updated_at desc nulls last, w.workspace_id asc
+            limit :limit offset :offset
+            """
+        ),
+        list_params,
+    ).mappings().all()
+
+    items = []
+    for r in rows:
+        rd = dict(r)
+        items.append(
+            AdminWorkspaceRow(
+                workspace_id=str(rd["workspace_id"]),
+                owner_name=str(rd.get("owner_name") or ""),
+                owner_email=str(rd.get("owner_email") or ""),
+                company_name=str(rd.get("company_name") or ""),
+                company_website=str(rd.get("company_website") or ""),
+                workspace_scenario=str(rd.get("workspace_scenario") or ""),
+                primary_region=str(rd.get("primary_region") or ""),
+                workspace_configured=bool(rd.get("workspace_configured")),
+                updated_at=rd.get("updated_at"),
+                content_count=int(rd.get("content_count") or 0),
+                competitor_count=int(rd.get("competitor_count") or 0),
+            )
+        )
+    return AdminWorkspacesPageResponse(
+        items=items,
+        total=total,
+        page=page_i,
+        page_size=size_i,
+        total_pages=total_pages,
+    )
+
+
+def _integrations_where_params(*, connected: str, platform: str, q: str) -> tuple[str, dict[str, Any]]:
+    params: dict[str, Any] = {}
+    clauses: list[str] = []
+    if connected == "yes":
+        clauses.append("i.connected")
+    elif connected == "no":
+        clauses.append("not i.connected")
+
+    if platform != "all":
+        pf = platform.strip().lower()[:32]
+        params["platform"] = pf
+        clauses.append("lower(trim(coalesce(i.platform, ''))) = :platform")
+
+    q_plain = q.strip()[:220].lower()
+    if q_plain:
+        params["q_plain"] = q_plain
+        clauses.append(
+            "("
+            "position(:q_plain in lower(coalesce(i.workspace_id, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(u.email, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(u.name, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(i.platform, ''))) > 0 or "
+            "position(:q_plain in lower(coalesce(i.account_handle, ''))) > 0"
+            ")"
+        )
+
+    where_sql = " AND ".join(clauses) if clauses else "TRUE"
+    return where_sql, params
+
+
+@app.get("/admin/integrations", response_model=AdminIntegrationsPageResponse)
+def admin_integrations(
+    db: Session = Depends(get_db),
+    _admin: dict[str, Any] = Depends(require_admin),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=1, le=100),
+    q: str = Query("", max_length=220),
+    connected: str = Query("all"),
+    platform: str = Query("all", max_length=32),
+) -> AdminIntegrationsPageResponse:
+    if connected not in {"all", "yes", "no"}:
+        raise HTTPException(status_code=400, detail="Invalid connected filter")
+
+    where_sql, filter_params = _integrations_where_params(connected=connected, platform=platform, q=q)
+    page_i = _clamp_admin_page(page)
+    size_i = _clamp_admin_page_size(page_size)
+
+    join_sql = """
+from flowpilot_integrations i
+join flowpilot_users u on u.id = i.workspace_id
+"""
+
+    count_row = db.execute(
+        text(f"select count(*)::int as n {join_sql} where {where_sql}"),
+        filter_params,
+    ).mappings().first()
+    total = int(count_row["n"] or 0) if count_row is not None else 0
+    total_pages = (total + size_i - 1) // size_i if total else 0
+    if total_pages > 0 and page_i > total_pages:
+        page_i = total_pages
+    offset = (page_i - 1) * size_i
+
+    list_params = {**filter_params, "limit": size_i, "offset": offset}
+    rows = db.execute(
+        text(
+            f"""
+            select
+                i.workspace_id,
+                u.name as owner_name,
+                u.email as owner_email,
+                i.platform,
+                i.connected,
+                i.account_name,
+                i.account_handle,
+                i.updated_at
+            {join_sql}
+            where {where_sql}
+            order by i.updated_at desc nulls last, i.workspace_id asc, i.platform asc
+            limit :limit offset :offset
+            """
+        ),
+        list_params,
+    ).mappings().all()
+
+    items = []
+    for r in rows:
+        rd = dict(r)
+        an = rd.get("account_name")
+        ah = rd.get("account_handle")
+        items.append(
+            AdminIntegrationRow(
+                workspace_id=str(rd["workspace_id"]),
+                owner_name=str(rd.get("owner_name") or ""),
+                owner_email=str(rd.get("owner_email") or ""),
+                platform=str(rd.get("platform") or ""),
+                connected=bool(rd.get("connected")),
+                account_name=str(an) if an is not None else None,
+                account_handle=str(ah) if ah is not None else None,
+                updated_at=rd.get("updated_at"),
+            )
+        )
+    return AdminIntegrationsPageResponse(
+        items=items,
+        total=total,
+        page=page_i,
+        page_size=size_i,
+        total_pages=total_pages,
+    )
+
+
+@app.get("/admin/content/summary", response_model=AdminContentSummaryResponse)
+def admin_content_summary(
+    db: Session = Depends(get_db),
+    _admin: dict[str, Any] = Depends(require_admin),
+) -> AdminContentSummaryResponse:
+    rows = db.execute(
+        text(
+            """
+            select status, count(*)::int as cnt
+            from flowpilot_content
+            group by status
+            order by status asc
+            """
+        )
+    ).mappings().all()
+    by_status = [AdminContentStatusCount(status=str(r["status"]), count=int(r["cnt"] or 0)) for r in rows]
+    total = sum(b.count for b in by_status)
+    return AdminContentSummaryResponse(total=total, by_status=by_status)
 
 
 @app.get("/workspace")

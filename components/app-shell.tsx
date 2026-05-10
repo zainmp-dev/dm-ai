@@ -150,12 +150,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [pathname, router, setupRequired, setupRedirectExempt]);
 
   return (
-    <div className="flex h-[100dvh] min-h-0 overflow-hidden bg-[#f5f7fa]">
+    <div className="flex h-[100dvh] min-h-0 overflow-hidden bg-[#f5f7fa] dark:bg-[#0a0a0b]">
       {/* Sidebar */}
       {!showSetupOnly && (
         <aside
           className={cn(
-            "flex h-full shrink-0 flex-col border-r border-[#e5e7eb] bg-white transition-[width] duration-200 ease-out",
+            "flex h-full shrink-0 flex-col border-r border-[#e5e7eb] bg-white transition-[width] duration-200 ease-out dark:border-zinc-800 dark:bg-[#161618]",
             collapsed ? "w-[3.75rem]" : "w-[14rem]",
           )}
         >
@@ -320,7 +320,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       {/* Main area */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* Top header */}
-        <header className="z-20 flex h-[3.75rem] shrink-0 items-center gap-3 border-b border-[#e5e7eb] bg-white px-5">
+        <header className="z-20 flex h-[3.75rem] shrink-0 items-center gap-3 border-b border-[#e5e7eb] bg-white px-5 dark:border-zinc-800 dark:bg-[#161618]">
           {/* Sidebar toggle */}
           {!showSetupOnly && (
             <button
@@ -334,7 +334,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           )}
 
           {/* Page title */}
-          <h1 className="min-w-0 flex-shrink-0 text-[15px] font-semibold text-[#111827]">{title}</h1>
+          <h1 className="min-w-0 flex-shrink-0 text-[15px] font-semibold text-[#111827] dark:text-zinc-100">{title}</h1>
 
           {/* Workspace switcher */}
           {!error && (

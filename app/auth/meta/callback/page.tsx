@@ -92,7 +92,7 @@ function CallbackShell({
   }, [ready, code, state]);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 p-4">
+    <div className="flex min-h-screen items-center justify-center bg-zinc-50 p-4 dark:bg-zinc-950">
       <Card className="w-full max-w-2xl rounded-2xl shadow-sm">
         <CardHeader>
           <CardTitle>Meta OAuth callback</CardTitle>
