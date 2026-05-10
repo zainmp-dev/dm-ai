@@ -1,4 +1,12 @@
-export type AgentRole = "research" | "strategy" | "content" | "distribution" | "short";
+export type AgentRole =
+  | "research"
+  | "strategy"
+  | "content"
+  | "distribution"
+  | "short"
+  | "validator"
+  | "brand_review"
+  | "trend_analyzer";
 
 /** Free = smaller fallbacks enforced in router (cost control); pro = wider chain */
 export type PlanTier = "free" | "pro";

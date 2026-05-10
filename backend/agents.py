@@ -375,11 +375,18 @@ def call_gemini_with_openrouter_fallback(
     prompt: str,
     preferred_openrouter_model: str | None = None,
 ) -> tuple[str, str]:
-    """Try Gemini first; fall back to OpenRouter if Gemini is unconfigured or fails.
+    """Strategy-agent multi-tier fallback chain (cost-optimised, highest quality first).
 
-    Used exclusively by the strategy agent so the heavy strategy prompt always
-    hits Gemini (fast, free quota) before spending OpenRouter credits.
+    Priority:
+    1. Gemini 2.5 Flash    — free quota, fast, large context
+    2. anthropic/claude-sonnet-4 — best reasoning quality (via OpenRouter)
+    3. openai/gpt-4o-mini  — reliable structured output fallback
+    4. openai/gpt-5-mini   — final safe fallback
+
+    If ``preferred_openrouter_model`` is set it is tried first in the OpenRouter
+    chain (before Claude Sonnet), giving callers a manual override path.
     """
+    # ── 1. Gemini (free, fast) ─────────────────────────────────────────────
     gemini_key = (getattr(settings, "google_ai_api_key", "") or "").strip()
     if gemini_key:
         try:
@@ -391,22 +398,51 @@ def call_gemini_with_openrouter_fallback(
             return result.text, result.model_used
         except AIServiceError as exc:
             logger.warning(
-                "agents.strategy gemini_failed status=%s err=%s — falling back to OpenRouter",
+                "agents.strategy gemini_failed status=%s err=%s — cascading to Claude Sonnet",
                 exc.status_code,
                 str(exc)[:300],
             )
-    # Gemini not configured or failed — go to OpenRouter.
-    try:
-        result = ai_service.retry_request(
-            prompt=prompt,
-            preferred_model=preferred_openrouter_model,
-            max_tokens=settings.openrouter_max_tokens,
-            temperature=0.7,
-            prefer_gemini=False,
-        )
-        return result.text, result.model_used
-    except AIServiceError as exc:
-        raise AgentError(str(exc)) from exc
+
+    # ── 2–4. OpenRouter priority chain ────────────────────────────────────
+    strategy_chain: list[str] = []
+    if preferred_openrouter_model and preferred_openrouter_model.strip():
+        strategy_chain.append(preferred_openrouter_model.strip())
+    strategy_chain.extend([
+        "anthropic/claude-sonnet-4",
+        "openai/gpt-4o-mini",
+        "openai/gpt-5-mini",
+    ])
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    deduped_chain: list[str] = []
+    for m in strategy_chain:
+        if m not in seen:
+            seen.add(m)
+            deduped_chain.append(m)
+
+    last_exc: AIServiceError | None = None
+    for model in deduped_chain:
+        try:
+            result = ai_service.retry_request(
+                prompt=prompt,
+                preferred_model=model,
+                max_tokens=settings.openrouter_max_tokens,
+                temperature=0.7,
+                prefer_gemini=False,
+            )
+            logger.info("agents.strategy openrouter_success model=%s", model)
+            return result.text, result.model_used
+        except AIServiceError as exc:
+            last_exc = exc
+            logger.warning(
+                "agents.strategy model=%s failed status=%s — trying next in chain",
+                model,
+                exc.status_code,
+                str(exc)[:200],
+            )
+            continue
+
+    raise AgentError(str(last_exc)) from last_exc
 
 
 def get_openrouter_key_info_for_ui() -> dict[str, Any]:

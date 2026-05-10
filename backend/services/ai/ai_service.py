@@ -132,6 +132,7 @@ class AIService:
         task_type: str,
         max_tokens: int | None,
         temperature: float,
+        response_format: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         key = (getattr(settings, "google_ai_api_key", "") or "").strip()
         if not key:
@@ -139,14 +140,19 @@ class AIService:
         model = (getattr(settings, "gemini_model", "") or "gemini-2.0-flash").strip()
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         system_prompt = build_system_prompt(task_type)
+        generation_config: dict[str, Any] = {
+            "temperature": temperature,
+            "maxOutputTokens": min(max_tokens or self.max_tokens, 8192),
+        }
+        # Translate OpenAI-style JSON mode into Gemini's responseMimeType so
+        # callers like the carousel agent get parseable JSON back from Gemini.
+        if isinstance(response_format, dict) and response_format.get("type") == "json_object":
+            generation_config["responseMimeType"] = "application/json"
         # Gemini uses a single user turn; prepend system instructions inline.
         payload: dict[str, Any] = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": min(max_tokens or self.max_tokens, 8192),
-            },
+            "generationConfig": generation_config,
         }
         try:
             response = requests.post(
@@ -184,6 +190,7 @@ class AIService:
         task_type: str | None = None,
         max_tokens: int | None = None,
         temperature: float = 0.7,
+        response_format: dict[str, Any] | None = None,
     ) -> AIResult:
         """Call Gemini directly. Raises AIServiceError if key is missing or Gemini fails (no OpenRouter fallback)."""
         gemini_key = (getattr(settings, "google_ai_api_key", "") or "").strip()
@@ -197,6 +204,7 @@ class AIService:
                 task_type=routed_task,
                 max_tokens=max_tokens,
                 temperature=temperature,
+                response_format=response_format,
             )
         gemini_text = gemini_result.get("text", "").strip()
         if not gemini_text:
@@ -246,6 +254,7 @@ class AIService:
                             task_type=routed_task,
                             max_tokens=max_tokens,
                             temperature=temperature,
+                            response_format=response_format,
                         )
                     gemini_text = gemini_result.get("text", "").strip()
                     if gemini_text:

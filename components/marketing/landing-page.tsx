@@ -853,7 +853,7 @@ function Footer() {
         <div className="mx-auto flex max-w-7xl items-center justify-between">
           <p className="text-[12px] text-[#94A3B8]">© 2026 Flowpilot.officekithr.net. All rights reserved.</p>
           <div className="flex items-center gap-5 text-[12px] text-[#94A3B8]">
-            {["Privacy", "Terms", "Security"].map(() => (
+            {["Privacy", "Terms", "Security"].map((l) => (
               <a key={l} href="#" className="transition-colors hover:text-[#5B6475]">
                 {l}
               </a>

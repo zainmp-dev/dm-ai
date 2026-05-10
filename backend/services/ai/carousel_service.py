@@ -45,11 +45,15 @@ def generate_carousel(*, topic: str, brand_context: str = "", preferred_model: s
         ),
         schema_hint=schema,
     )
+    # Gemini-first (free quota, fast, large context). On failure the underlying
+    # retry_request automatically cascades to the OpenRouter chain so the
+    # carousel still renders even if Gemini is down or unauthorised.
     result = ai_service.retry_request(
         prompt=prompt,
         preferred_model=preferred_model,
         task_type="carousel",
         response_format={"type": "json_object"},
+        prefer_gemini=True,
     )
     try:
         payload = json.loads(result.text)

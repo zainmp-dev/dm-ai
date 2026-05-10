@@ -1,5 +1,6 @@
 "use client";
 
+import { useServerInsertedHTML } from "next/navigation";
 import {
   createContext,
   useCallback,
@@ -12,6 +13,11 @@ import {
 export type Theme = "light" | "dark";
 
 const STORAGE_KEY = "flow-theme";
+
+// Runs before first paint to apply the saved theme and avoid a flash.
+// Injected via useServerInsertedHTML so React 19 doesn't warn about a
+// <script> tag rendered inside a component (Next.js 16 / React 19 behavior).
+const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem('${STORAGE_KEY}');if(t==='dark'){document.documentElement.classList.add('dark')}else{document.documentElement.classList.remove('dark')}}catch(e){}})()`;
 
 type ThemeContextValue = {
   theme: Theme;
@@ -45,6 +51,10 @@ function persistAndApply(next: Theme) {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
+  useServerInsertedHTML(() => (
+    <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+  ));
+
   const theme = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   const setTheme = useCallback((next: Theme) => {
     persistAndApply(next);

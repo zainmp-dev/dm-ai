@@ -3,9 +3,20 @@ import { Geist, Geist_Mono } from "next/font/google";
 import type { ReactNode } from "react";
 import "./globals.css";
 import { GlobalApiActivity } from "@/components/global-api-activity";
+import { StructuredData } from "@/components/structured-data";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ToastProvider } from "@/components/ui/toast";
 import { GlobalThemeToggle } from "@/components/global-theme-toggle";
+
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "FlowPilot",
+  applicationCategory: "BusinessApplication",
+  operatingSystem: "Web",
+  description:
+    "AI-powered multi-tenant platform for strategy, content creation, approvals, scheduling, and social publishing.",
+};
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -74,29 +85,8 @@ export default function RootLayout({
         suppressHydrationWarning
         className="min-h-full flex flex-col bg-background text-foreground"
       >
-        {/* Apply saved theme before first paint to avoid flash — default is light */}
-        <script
-          suppressHydrationWarning
-          dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem('flow-theme');if(t==='dark'){document.documentElement.classList.add('dark')}else{document.documentElement.classList.remove('dark')}}catch(e){}})()`,
-          }}
-        />
-        <script
-          type="application/ld+json"
-          suppressHydrationWarning
-          dangerouslySetInnerHTML={{
-            __html: JSON.stringify({
-              "@context": "https://schema.org",
-              "@type": "SoftwareApplication",
-              name: "FlowPilot",
-              applicationCategory: "BusinessApplication",
-              operatingSystem: "Web",
-              description:
-                "AI-powered multi-tenant platform for strategy, content creation, approvals, scheduling, and social publishing.",
-            }),
-          }}
-        />
         <ThemeProvider>
+          <StructuredData data={structuredData} />
           <ToastProvider>
             <GlobalApiActivity />
             <GlobalThemeToggle />
