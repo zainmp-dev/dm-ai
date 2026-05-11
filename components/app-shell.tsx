@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useMemo, type ReactNode } from "react";
 import {
   Bell,
   Check,
@@ -17,8 +17,10 @@ import {
   Plus,
   Settings,
   Sparkles,
+  Users,
   Workflow,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
@@ -37,6 +39,7 @@ import { clearAuthSession } from "@/lib/auth";
 import { AI_MODEL_GROUPS, labelForAiModel } from "@/lib/ai-models";
 import { HeaderThemeControl } from "@/components/header-theme-control";
 import { OpenrouterBalanceHint } from "@/components/openrouter-balance-hint";
+import { VoiceCommandOverlay } from "@/components/voice-command-overlay";
 import { WorkspaceAiSearch } from "@/components/workspace-ai-search";
 import { useToast } from "@/components/ui/toast";
 
@@ -52,20 +55,51 @@ const PAGE_TITLES: Record<string, string> = {
   "/campaigns": "Campaigns",
   "/notifications": "Notifications",
   "/profile": "Profile",
-  "/settings": "Settings",
   "/media": "Media Setup",
+  "/settings": "Settings",
   "/workspace-setup": "Workspace Setup",
 };
 
-const navItems = [
+type SidebarNavItem = {
+  href: string;
+  label: string;
+  icon: LucideIcon;
+  /** Hidden until Agent 1 has produced a strategy plan */
+  requiresStrategy?: boolean;
+  /** Use GET /workspace snapshot gap list length */
+  gapsInsight?: boolean;
+  /** Pending notifications-style badge (blue) */
+  notificationBadge?: boolean;
+  /** Solid divider after Campaigns when expanded */
+  dividerAfter?: boolean;
+  matchActive?: (pathname: string) => boolean;
+};
+
+const SIDEBAR_NAV: SidebarNavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/pipeline", label: "Workflow", icon: Workflow },
-  { href: "/campaigns", label: "Campaigns", icon: Megaphone },
-  { href: "/notifications", label: "Notifications", icon: Bell },
+  { href: "/campaigns", label: "Campaigns", icon: Megaphone, dividerAfter: true },
+  { href: "/notifications", label: "Notifications", icon: Bell, notificationBadge: true },
   { href: "/analytics", label: "Analytics", icon: LineChart },
-  { href: "/settings", label: "Settings", icon: Settings },
   { href: "/media", label: "Media Setup", icon: Images },
+  {
+    href: "/strategy#strategy-market-gaps",
+    label: "Competitors & gaps",
+    icon: Users,
+    requiresStrategy: true,
+    gapsInsight: true,
+    matchActive: (p) => p === "/strategy" || p.startsWith("/competitors"),
+  },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
+
+function sidebarNavItemActive(pathname: string, item: SidebarNavItem): boolean {
+  if (item.matchActive) return item.matchActive(pathname);
+  const base = item.href.split("#")[0] ?? item.href;
+  if (pathname === base || pathname.startsWith(`${base}/`)) return true;
+  if (base === "/pipeline" && pathname === "/command-center") return true;
+  return false;
+}
 
 function NavItem({
   href,
@@ -73,33 +107,43 @@ function NavItem({
   icon: Icon,
   active,
   badge,
+  gapsBadge,
 }: {
   href: string;
   label: string;
-  icon: typeof LayoutDashboard;
+  icon: LucideIcon;
   active: boolean;
   badge?: number;
+  gapsBadge?: number;
 }) {
   return (
     <Link
       href={href}
       className={cn(
-        "group flex items-center gap-3 rounded-lg px-3 py-2.5 text-[13.5px] font-medium leading-none transition-colors duration-150",
+        "group flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] leading-snug transition-colors duration-150",
         active
-          ? "bg-[#f0f4ff] text-[#1a56db]"
-          : "text-[#6b7280] hover:bg-[#f5f7fa] hover:text-[#111827]",
+          ? "bg-[#e8efff] font-semibold text-[#1547ad] shadow-[inset_0_0_0_1px_rgba(26,86,219,0.12)] dark:bg-blue-950/50 dark:text-[#93c5fd] dark:shadow-[inset_0_0_0_1px_rgba(59,130,246,0.2)]"
+          : "font-semibold text-[#374151] hover:bg-[#f0f2f5] hover:text-[#111827] dark:text-zinc-300 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
       )}
     >
       <Icon
         className={cn(
-          "size-[17px] shrink-0",
-          active ? "text-[#1a56db]" : "text-[#9ca3af] group-hover:text-[#374151]",
+          "size-[18px] shrink-0",
+          active ? "text-[#1a56db] dark:text-[#93c5fd]" : "text-[#6b7280] group-hover:text-[#111827] dark:text-zinc-500 dark:group-hover:text-zinc-200",
         )}
-        strokeWidth={1.75}
+        strokeWidth={2.25}
       />
-      <span className="flex-1">{label}</span>
+      <span className="min-w-0 flex-1 tracking-tight">{label}</span>
+      {gapsBadge != null && gapsBadge > 0 && (
+        <span
+          className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-md bg-amber-100 px-1.5 text-[10px] font-bold tabular-nums text-amber-950 dark:bg-amber-950/80 dark:text-amber-100"
+          title={`${gapsBadge} market gaps in your strategy`}
+        >
+          {gapsBadge > 99 ? "99+" : gapsBadge}
+        </span>
+      )}
       {badge != null && badge > 0 && (
-        <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[#1a56db] px-1.5 text-[10px] font-semibold text-white">
+        <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[#1a56db] px-1.5 text-[10px] font-bold text-white dark:bg-blue-600">
           {badge > 99 ? "99+" : badge}
         </span>
       )}
@@ -148,6 +192,16 @@ export function AppShell({ children }: { children: ReactNode }) {
   const setupRedirectExempt =
     pathname === "/settings" || pathname === "/pipeline" || pathname === "/publishing" || pathname === "/campaigns";
 
+  const marketGapsCount = useMemo(() => {
+    const gaps = visibleWorkspace?.strategy?.marketGaps ?? [];
+    return gaps.filter((g) => String(g).trim().length > 0).length;
+  }, [visibleWorkspace?.strategy?.marketGaps]);
+
+  const visibleSidebarNav = useMemo(
+    () => SIDEBAR_NAV.filter((item) => !item.requiresStrategy || Boolean(visibleWorkspace?.strategy)),
+    [visibleWorkspace?.strategy],
+  );
+
   useEffect(() => {
     if (setupRequired && pathname !== "/workspace-setup" && !setupRedirectExempt) {
       router.replace("/workspace-setup");
@@ -161,68 +215,76 @@ export function AppShell({ children }: { children: ReactNode }) {
         <aside
           className={cn(
             "flex h-full shrink-0 flex-col border-r border-[#e5e7eb] bg-white transition-[width] duration-200 ease-out dark:border-zinc-800 dark:bg-[#161618]",
-            collapsed ? "w-[3.75rem]" : "w-[14rem]",
+            collapsed ? "w-[3.75rem]" : "w-[15.5rem]",
           )}
         >
           {/* Brand */}
           <div
             className={cn(
-              "flex h-[3.75rem] shrink-0 items-center gap-2.5 border-b border-[#e5e7eb] px-4",
+              "flex h-[3.75rem] shrink-0 items-center gap-2.5 border-b border-[#e5e7eb] px-4 dark:border-zinc-800",
               collapsed && "justify-center px-0",
             )}
           >
-            <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[#1a56db]">
-              <Sparkles className="size-3.5 text-white" strokeWidth={2} />
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-[#1a56db] shadow-sm shadow-blue-600/25">
+              <Sparkles className="size-4 text-white" strokeWidth={2.25} />
             </div>
             {!collapsed && (
-              <span className="text-[14px] font-semibold tracking-tight text-[#111827]">FlowPilot</span>
+              <span className="text-[15px] font-bold tracking-tight text-[#111827] dark:text-zinc-100">FlowPilot</span>
             )}
           </div>
 
           {/* Nav */}
-          <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 py-3">
+          <nav className="flex flex-1 flex-col gap-1 overflow-y-auto px-2.5 py-3">
             {collapsed
-              ? navItems.map((item) => {
-                  const active =
-                    pathname === item.href ||
-                    pathname.startsWith(`${item.href}/`) ||
-                    (item.href === "/pipeline" && pathname === "/command-center");
+              ? visibleSidebarNav.map((item) => {
+                  const active = sidebarNavItemActive(pathname, item);
                   const Icon = item.icon;
-                  const badge = item.href === "/notifications" ? notificationCount : undefined;
+                  const badge = item.notificationBadge ? notificationCount : undefined;
+                  const gapsBadge = item.gapsInsight ? marketGapsCount : undefined;
+                  const collapseTitle =
+                    gapsBadge != null && gapsBadge > 0 ? `${item.label} · ${gapsBadge} gaps` : item.label;
                   return (
                     <Link
                       key={item.href}
                       href={item.href}
-                      title={item.label}
+                      title={collapseTitle}
                       className={cn(
-                        "relative flex h-9 w-full items-center justify-center rounded-lg transition-colors duration-150",
-                        active ? "bg-[#f0f4ff] text-[#1a56db]" : "text-[#9ca3af] hover:bg-[#f5f7fa] hover:text-[#374151]",
+                        "relative flex h-10 w-full items-center justify-center rounded-xl transition-colors duration-150",
+                        active
+                          ? "bg-[#e8efff] text-[#1a56db] dark:bg-blue-950/50 dark:text-[#93c5fd]"
+                          : "text-[#6b7280] hover:bg-[#f0f2f5] hover:text-[#111827] dark:text-zinc-500 dark:hover:bg-zinc-800 dark:hover:text-zinc-100",
                       )}
                     >
-                      <Icon className="size-[17px]" strokeWidth={1.75} />
+                      <Icon className="size-[18px]" strokeWidth={2.25} />
                       {badge != null && badge > 0 && (
-                        <span className="absolute right-1 top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-[#1a56db] px-0.5 text-[9px] font-bold text-white">
+                        <span className="absolute right-1 top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-[#1a56db] px-0.5 text-[9px] font-bold text-white dark:bg-blue-600">
                           {badge > 9 ? "9+" : badge}
                         </span>
+                      )}
+                      {gapsBadge != null && gapsBadge > 0 && badge == null && (
+                        <span className="absolute right-1 top-1 size-2 rounded-sm bg-amber-500 shadow-sm dark:bg-amber-400" />
                       )}
                     </Link>
                   );
                 })
-              : navItems.map((item) => {
-                  const active =
-                    pathname === item.href ||
-                    pathname.startsWith(`${item.href}/`) ||
-                    (item.href === "/pipeline" && pathname === "/command-center");
-                  const badge = item.href === "/notifications" ? notificationCount : undefined;
+              : visibleSidebarNav.map((item) => {
+                  const active = sidebarNavItemActive(pathname, item);
+                  const badge = item.notificationBadge ? notificationCount : undefined;
+                  const gapsBadge = item.gapsInsight ? marketGapsCount : undefined;
                   return (
-                    <NavItem
-                      key={item.href}
-                      href={item.href}
-                      label={item.label}
-                      icon={item.icon}
-                      active={active}
-                      badge={badge}
-                    />
+                    <div key={item.href}>
+                      <NavItem
+                        href={item.href}
+                        label={item.label}
+                        icon={item.icon}
+                        active={active}
+                        badge={badge}
+                        gapsBadge={gapsBadge}
+                      />
+                      {item.dividerAfter ? (
+                        <div className="my-2 border-t border-[#ebedf0] dark:border-zinc-700/90" aria-hidden />
+                      ) : null}
+                    </div>
                   );
                 })}
           </nav>
@@ -500,6 +562,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           {children}
         </main>
       </div>
+      {!showSetupOnly && <VoiceCommandOverlay />}
     </div>
   );
 }

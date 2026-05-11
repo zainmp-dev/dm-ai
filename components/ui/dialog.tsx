@@ -16,7 +16,11 @@ const DialogOverlay = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <DialogPrimitive.Overlay
     ref={ref}
-    className={cn("fixed inset-0 z-50 bg-zinc-900/40 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out", className)}
+    className={cn(
+      // Overlay must stay *below* DialogContent (z-[101]); custom overlay classes must not raise z-index above content.
+      "fixed inset-0 z-[100] bg-zinc-950/55 backdrop-blur-[3px] data-[state=open]:animate-in data-[state=closed]:animate-out",
+      className,
+    )}
     {...props}
   />
 ));
@@ -31,7 +35,8 @@ const DialogContent = React.forwardRef<
     <DialogPrimitive.Content
       ref={ref}
       className={cn(
-        "fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 rounded-2xl border border-zinc-200 bg-white p-6 text-zinc-900 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100",
+        // Content always stacks above overlay (see overlay z-[100]).
+        "fixed left-1/2 top-1/2 z-[101] grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 rounded-2xl border border-zinc-200 bg-white p-6 text-zinc-900 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100",
         className,
       )}
       {...props}

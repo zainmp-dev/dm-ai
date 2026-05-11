@@ -177,6 +177,8 @@ interface WorkspaceStore {
   ) => Promise<boolean>;
   removeWorkspaceSetup: (workspaceId: string) => Promise<void>;
   deleteCurrentWorkspace: () => Promise<void>;
+  /** Clear workspace presets and snapshot after the account is deleted on the server (caller clears auth). */
+  resetAfterAccountDeletion: () => void;
   refreshWorkspace: (options?: { soft?: boolean }) => Promise<void>;
   generateStrategy: (
     companyName: string,
@@ -318,23 +320,55 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     const existingSetups = get().workspaceSetups;
     const nextSetups = existingSetups.filter((item) => item.id !== workspaceId);
     const removingActive = get().activeWorkspaceId === workspaceId;
-    const nextActiveId = get().activeWorkspaceId === workspaceId ? nextSetups[0]?.id ?? null : get().activeWorkspaceId;
-    writeStoredWorkspaceSetups(nextSetups, nextActiveId);
-    set({ workspaceSetups: nextSetups, activeWorkspaceId: nextActiveId });
+    const nextActiveId = removingActive ? (nextSetups[0]?.id ?? null) : get().activeWorkspaceId;
 
-    if (removingActive) {
-      const workspace = await apiDeleteWorkspace();
-      set({ workspace, loading: false, error: null });
+    if (!removingActive) {
+      writeStoredWorkspaceSetups(nextSetups, nextActiveId);
+      set({ workspaceSetups: nextSetups });
+      return;
     }
 
-    if (removingActive && nextActiveId) {
-      await get().setActiveWorkspace(nextActiveId, { variant: "switch" });
+    // Removing the active preset: clear the server first so WorkspaceProvider cannot race a POST
+    // against the old workspace, and so local state is not updated if delete fails.
+    try {
+      const workspace = await apiDeleteWorkspace();
+      writeStoredWorkspaceSetups(nextSetups, nextActiveId);
+      set({ workspace, workspaceSetups: nextSetups, activeWorkspaceId: nextActiveId, loading: false, error: null });
+      if (nextActiveId) {
+        await get().setActiveWorkspace(nextActiveId, { variant: "switch" });
+      }
+    } catch (e) {
+      set({
+        error: e instanceof Error ? e.message : "Could not remove workspace",
+        loading: false,
+      });
+      throw e;
     }
   },
   deleteCurrentWorkspace: async () => {
     const workspace = await apiDeleteWorkspace();
     writeStoredWorkspaceSetups([], null);
     set({ workspace, workspaceSetups: [], activeWorkspaceId: null, loading: false, error: null });
+  },
+  resetAfterAccountDeletion: () => {
+    const email = getAuthUser()?.email?.trim().toLowerCase();
+    if (typeof window !== "undefined") {
+      if (email) {
+        window.localStorage.removeItem(`${WORKSPACE_SETUPS_STORAGE_KEY}.${email}`);
+        window.localStorage.removeItem(`${ACTIVE_WORKSPACE_STORAGE_KEY}.${email}`);
+      }
+      window.localStorage.removeItem(WORKSPACE_SETUPS_STORAGE_KEY);
+      window.localStorage.removeItem(ACTIVE_WORKSPACE_STORAGE_KEY);
+    }
+    set({
+      workspace: null,
+      workspaceSetups: [],
+      activeWorkspaceId: null,
+      workspaceHydrated: false,
+      loading: false,
+      error: null,
+      lastRunUsedFreeModel: false,
+    });
   },
   clearAiOutputs: async () => {
     try {

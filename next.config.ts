@@ -32,7 +32,8 @@ const nextConfig: NextConfig = {
           { key: "X-Frame-Options", value: "DENY" },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          // microphone=(self) so Web Speech API / voice navigation can request the mic; () would block it entirely.
+          { key: "Permissions-Policy", value: "camera=(), microphone=(self), geolocation=()" },
           {
             key: "Content-Security-Policy",
             value: csp.replace(/\s+/g, " ").trim(),

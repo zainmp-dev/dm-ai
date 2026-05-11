@@ -313,7 +313,7 @@ export default function StrategyPage() {
         {/* Right: output */}
         <div className="flex min-w-0 flex-col gap-5">
           {/* ── Competitors ─────────────────────────────────────────── */}
-          <Card className="rounded-2xl border-[#e5e7eb] shadow-sm">
+          <Card id="strategy-competitors" className="scroll-mt-24 rounded-2xl border-[#e5e7eb] shadow-sm">
             <CardHeader className="pb-3">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <CardTitle className="text-[13.5px]">Competitors</CardTitle>
@@ -530,7 +530,7 @@ export default function StrategyPage() {
                   </div>
 
                   {/* Market gaps */}
-                  <div>
+                  <div id="strategy-market-gaps" className="scroll-mt-24">
                     <div className="mb-2 flex items-center justify-between gap-2">
                       <p className="text-[12px] font-semibold text-[#374151]">Market gaps</p>
                       {filteredGaps.length > 0 && (

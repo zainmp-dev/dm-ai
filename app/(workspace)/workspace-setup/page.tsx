@@ -450,11 +450,13 @@ function WorkspaceSetupForm({
                   variant="ghost"
                   className="rounded-xl text-red-600 hover:text-red-700"
                   onClick={() => {
-                    void deleteCurrentWorkspace().then(() => {
-                      setNewWorkspaceOpen(false);
-                      closeEditModal(false);
-                      push("Current workspace removed from database");
-                    });
+                    void deleteCurrentWorkspace()
+                      .then(() => {
+                        setNewWorkspaceOpen(false);
+                        closeEditModal(false);
+                        push("Current workspace removed from database");
+                      })
+                      .catch((e: unknown) => push(e instanceof Error ? e.message : "Could not clear workspace"));
                   }}
                 >
                   Clear current workspace
@@ -519,12 +521,14 @@ function WorkspaceSetupForm({
                     variant="ghost"
                     className="rounded-xl text-red-600 hover:text-red-700"
                     onClick={() => {
-                      void removeWorkspaceSetup(setup.id).then(() => {
-                        if (setupBeingEdited?.id === setup.id) {
-                          closeEditModal(false);
-                        }
-                        push("Workspace setup deleted");
-                      });
+                      void removeWorkspaceSetup(setup.id)
+                        .then(() => {
+                          if (setupBeingEdited?.id === setup.id) {
+                            closeEditModal(false);
+                          }
+                          push("Workspace setup deleted");
+                        })
+                        .catch((e: unknown) => push(e instanceof Error ? e.message : "Could not delete workspace"));
                     }}
                   >
                     Delete

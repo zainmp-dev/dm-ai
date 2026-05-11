@@ -13,31 +13,53 @@ import {
   LayoutGrid,
   Link2,
   Linkedin,
+  Mic,
   SlidersHorizontal,
   Sparkles,
+  UserX,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
 import { Skeleton } from "@/components/ui/skeleton";
+import { clearAuthSession } from "@/lib/auth";
+import { apiDeleteAccount, apiErrorMessage } from "@/lib/api";
 import { labelForAiModel } from "@/lib/ai-models";
 import { platformLabel } from "@/lib/platform";
 import { primaryRegionLabel } from "@/lib/primary-region";
 import { setOAuthPostConnectReturn } from "@/lib/first-login-wizard";
 import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
+import { useAgentsFlow } from "@/components/agents-flow-provider";
 import Link from "next/link";
 
 const SECTIONS = [
   { id: "overview" as const, label: "Overview", short: "Workspace", icon: LayoutGrid },
   { id: "integrations" as const, label: "Integrations", short: "Social", icon: Link2 },
+  { id: "assistant" as const, label: "Voice & AI flow", short: "Mic", icon: Mic },
   { id: "security" as const, label: "API & security", short: "API", icon: KeyRound },
   { id: "preferences" as const, label: "Preferences", short: "Defaults", icon: SlidersHorizontal },
+  { id: "account" as const, label: "Account", short: "Delete", icon: UserX },
 ];
 
-const SECTION_PARAM_IDS: (typeof SECTIONS)[number]["id"][] = ["overview", "integrations", "security", "preferences"];
+const SECTION_PARAM_IDS: (typeof SECTIONS)[number]["id"][] = [
+  "overview",
+  "integrations",
+  "assistant",
+  "security",
+  "preferences",
+  "account",
+];
 
 function isSectionId(value: string | null): value is (typeof SECTIONS)[number]["id"] {
   return Boolean(value && SECTION_PARAM_IDS.includes(value as (typeof SECTIONS)[number]["id"]));
@@ -59,6 +81,7 @@ function linkedinProfileLink(accountUrl: string | null | undefined, accountHandl
 function SettingsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { openAgentsFlow } = useAgentsFlow();
   const workspace = useWorkspaceStore((s) => s.workspace);
   const workspaceSetups = useWorkspaceStore((s) => s.workspaceSetups);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
@@ -67,10 +90,13 @@ function SettingsContent() {
   const connectLinkedin = useWorkspaceStore((s) => s.connectLinkedin);
   const connectMeta = useWorkspaceStore((s) => s.connectMeta);
   const savePreferences = useWorkspaceStore((s) => s.savePreferences);
+  const resetAfterAccountDeletion = useWorkspaceStore((s) => s.resetAfterAccountDeletion);
   const { push } = useToast();
   const [active, setActive] = useState<(typeof SECTIONS)[number]["id"]>("overview");
   const [linkedinConnecting, setLinkedinConnecting] = useState(false);
   const [metaConnecting, setMetaConnecting] = useState(false);
+  const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
+  const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
 
   function formatConnectError(platform: "LinkedIn" | "Meta", error: unknown): string {
     const raw = error instanceof Error ? error.message : "Could not reach the server.";
@@ -528,6 +554,41 @@ function SettingsContent() {
           </Card>
         )}
 
+        {active === "assistant" && (
+          <Card className="overflow-hidden rounded-2xl border-zinc-200 shadow-sm dark:border-zinc-800">
+            <CardHeader className="border-b border-zinc-100 bg-gradient-to-r from-slate-50/90 to-white dark:border-zinc-800 dark:from-zinc-900/40 dark:to-zinc-950">
+              <CardTitle className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+                Voice commands & AI agents
+              </CardTitle>
+              <CardDescription className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
+                Use hands-free navigation where your browser supports it, and see how server-side agents support research runs.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6 p-6">
+              <div className="rounded-2xl border border-zinc-200/90 bg-zinc-50/60 p-5 dark:border-zinc-800 dark:bg-zinc-900/35">
+                <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Voice navigation</p>
+                <p className="mt-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">
+                  In the workspace, use the floating microphone (bottom-right). Say short phrases like “Open dashboard,” “Approval
+                  queue,” or “Publishing.” Your microphone sends audio to the browser&apos;s speech service for transcription—not to
+                  FlowPilot&apos;s servers. Chrome and Edge usually work best; allow mic access when prompted.
+                </p>
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-zinc-600 dark:text-zinc-300">
+                  Open the same diagram linked from the voice panel: your workflow steps and the backend research pipeline.
+                </p>
+                <Button
+                  type="button"
+                  className="rounded-xl bg-blue-600 text-white hover:bg-blue-700"
+                  onClick={() => openAgentsFlow()}
+                >
+                  View AI agents & workflow
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {active === "security" && (
           <Card className="rounded-2xl border-zinc-200 shadow-sm">
             <CardHeader>
@@ -642,7 +703,115 @@ function SettingsContent() {
             </CardContent>
           </Card>
         )}
+
+        {active === "account" && (
+          <Card className="w-full max-w-2xl overflow-hidden rounded-2xl border border-zinc-200/90 shadow-sm dark:border-zinc-800">
+            <CardHeader className="border-b border-zinc-100 bg-gradient-to-br from-zinc-50/95 to-white px-6 py-6 dark:border-zinc-800 dark:from-zinc-900/70 dark:to-zinc-950 sm:px-8 sm:py-7">
+              <div className="flex items-start gap-4">
+                <div
+                  className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300"
+                  aria-hidden
+                >
+                  <UserX className="size-6" />
+                </div>
+                <div className="min-w-0 space-y-1">
+                  <CardTitle className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">Delete account</CardTitle>
+                  <CardDescription className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
+                    Remove your login and all workspace data from FlowPilot. You can register again with the same email later.
+                  </CardDescription>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-5 p-6 sm:p-8">
+              <ul className="space-y-2.5 text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">
+                <li className="flex gap-2.5">
+                  <span className="mt-2 size-1 shrink-0 rounded-full bg-red-500/80" aria-hidden />
+                  <span>Profile, workspaces, drafts, strategy, and activity history are erased.</span>
+                </li>
+                <li className="flex gap-2.5">
+                  <span className="mt-2 size-1 shrink-0 rounded-full bg-red-500/80" aria-hidden />
+                  <span>LinkedIn and Meta tokens stored for publishing are removed.</span>
+                </li>
+                <li className="flex gap-2.5">
+                  <span className="mt-2 size-1 shrink-0 rounded-full bg-red-500/80" aria-hidden />
+                  <span>You will be signed out immediately after you confirm.</span>
+                </li>
+              </ul>
+              <Button
+                type="button"
+                variant="destructive"
+                className="h-11 rounded-xl px-6 font-semibold shadow-sm"
+                onClick={() => setDeleteAccountOpen(true)}
+              >
+                Delete my account
+              </Button>
+            </CardContent>
+          </Card>
+        )}
       </div>
+
+      <Dialog open={deleteAccountOpen} onOpenChange={(open) => !deleteAccountBusy && setDeleteAccountOpen(open)}>
+        <DialogContent
+          overlayClassName="bg-zinc-950/80 backdrop-blur-[6px]"
+          className="max-h-[calc(100dvh-1rem)] w-[min(100vw-1.25rem,24rem)] max-w-[min(100vw-1.25rem,28rem)] gap-0 overflow-y-auto border-0 bg-transparent p-3 shadow-none sm:max-w-md sm:p-5"
+          onPointerDownOutside={(e) => deleteAccountBusy && e.preventDefault()}
+          onEscapeKeyDown={(e) => deleteAccountBusy && e.preventDefault()}
+        >
+          <div className="relative rounded-[1.25rem] border border-zinc-200/90 bg-white p-6 pt-10 shadow-2xl ring-1 ring-black/[0.04] dark:border-zinc-700 dark:bg-zinc-900 dark:ring-white/[0.06] sm:p-8 sm:pt-11">
+            <DialogHeader className="space-y-3 text-left">
+              <DialogTitle className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+                Delete your account?
+              </DialogTitle>
+              <DialogDescription asChild>
+                <div className="space-y-4 text-left text-sm text-zinc-600 dark:text-zinc-300">
+                  <p>
+                    This permanently deletes data for{" "}
+                    <span className="font-medium text-zinc-900 dark:text-zinc-100">{workspace.profile.email}</span>
+                    — workspace, content library, integrations, and credentials.
+                  </p>
+                  <p className="rounded-xl border border-amber-200/90 bg-amber-50/90 px-3.5 py-3 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100">
+                    This cannot be undone. Make sure you have exported anything you need before continuing.
+                  </p>
+                </div>
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="mt-8 flex-col gap-2 sm:flex-col sm:space-x-0">
+              <Button
+                type="button"
+                variant="destructive"
+                className="h-11 w-full rounded-xl font-semibold"
+                disabled={deleteAccountBusy}
+                onClick={() => {
+                  setDeleteAccountBusy(true);
+                  void apiDeleteAccount()
+                    .then(() => {
+                      resetAfterAccountDeletion();
+                      clearAuthSession();
+                      push("Your account has been deleted.");
+                      setDeleteAccountOpen(false);
+                      router.replace("/login");
+                    })
+                    .catch((err: unknown) => {
+                      push(apiErrorMessage(err));
+                    })
+                    .finally(() => setDeleteAccountBusy(false));
+                }}
+              >
+                {deleteAccountBusy ? "Deleting…" : "Yes, delete my account permanently"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="h-11 w-full rounded-xl font-medium"
+                disabled={deleteAccountBusy}
+                onClick={() => setDeleteAccountOpen(false)}
+              >
+                Cancel, keep my account
+              </Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

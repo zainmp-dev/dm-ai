@@ -2992,9 +2992,19 @@ def workspace_search(
     }
 
 
-@app.delete("/workspace")
-def delete_workspace(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    workspace_id = str(user["id"])
+def _purge_user_workspace_tables(db: Session, workspace_id: str) -> None:
+    """Remove all persisted data for a tenant (workspace_id == flowpilot user id). Does not commit."""
+    _release_content_lock(workspace_id)
+    # Rows outside flowpilot_* (no FK to flowpilot_workspace) — omitting these left OAuth tokens and
+    # media rows behind so "clear workspace" did not fully reset the tenant and reconnect flows broke.
+    for table in ("ads_campaigns", "posts"):
+        db.execute(text(f"delete from {table} where workspace_id = :workspace_id"), {"workspace_id": workspace_id})
+    db.execute(
+        text("delete from social_accounts where workspace_id = :workspace_id or user_id = :user_id"),
+        {"workspace_id": workspace_id, "user_id": workspace_id},
+    )
+    for table in ("flowpilot_oauth_nonce", "flowpilot_media_library"):
+        db.execute(text(f"delete from {table} where workspace_id = :workspace_id"), {"workspace_id": workspace_id})
     for table in (
         "flowpilot_post_analytics",
         "flowpilot_strategy",
@@ -3012,8 +3022,25 @@ def delete_workspace(db: Session = Depends(get_db), user: dict[str, Any] = Depen
         "flowpilot_workspace",
     ):
         db.execute(text(f"delete from {table} where workspace_id = :workspace_id"), {"workspace_id": workspace_id})
+
+
+@app.delete("/workspace")
+def delete_workspace(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    _purge_user_workspace_tables(db, workspace_id)
     db.commit()
     return default_workspace_snapshot(user)
+
+
+@app.delete("/account")
+def delete_account(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    """Permanently delete the signed-in user and all workspace data. Session token becomes invalid."""
+    user_id = str(user["id"])
+    _purge_user_workspace_tables(db, user_id)
+    db.execute(text("delete from flowpilot_users where id = :id"), {"id": user_id})
+    db.commit()
+    _AUTH_USER_CACHE.clear()
+    return {"deleted": True}
 
 
 @app.post("/workspace/clear-ai")

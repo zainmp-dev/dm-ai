@@ -151,6 +151,7 @@ function resolveProcessLabel(config: InternalAxiosRequestConfig): string {
   if (path.endsWith("/workspace") && method === "GET") return "Loading workspace";
   if (path.endsWith("/workspace") && method === "POST") return "Saving workspace";
   if (path.endsWith("/workspace") && method === "DELETE") return "Removing workspace";
+  if (path.endsWith("/account") && method === "DELETE") return "Deleting account";
   if (path.includes("/media/upload/cloudinary") || path.includes("/media/upload/local")) return "Uploading media";
   if (path.endsWith("/media/library/remove")) return "Removing from library";
   if (path.endsWith("/media/library/add-url")) return "Adding media";
@@ -849,6 +850,11 @@ export async function apiSetupWorkspace(
 export async function apiDeleteWorkspace(): Promise<WorkspaceSnapshot> {
   const { data } = await apiClient.delete<Record<string, unknown>>("/workspace");
   return normalizeWorkspace(data);
+}
+
+/** Permanently delete the current user and all data (DELETE /account). */
+export async function apiDeleteAccount(): Promise<void> {
+  await apiClient.delete("/account");
 }
 
 export async function apiPostClearAiOutputs(): Promise<WorkspaceSnapshot> {
