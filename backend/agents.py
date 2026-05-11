@@ -263,7 +263,6 @@ _DEFAULT_OPENROUTER_FALLBACKS: tuple[str, ...] = (
     "openai/gpt-5-nano",
     "google/gemini-2.5-pro",
     "deepseek/deepseek-chat-v3.1",
-    "openai/gpt-oss-20b:free",
 )
 
 

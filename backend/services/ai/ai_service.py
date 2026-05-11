@@ -19,27 +19,19 @@ from services.ai.prompt_builder import build_system_prompt
 _MIN_AFFORDABLE_MAX_TOKENS = 256
 # Headroom subtracted from "can only afford N" so the request fits even after price-rounding.
 _AFFORDABLE_HEADROOM_TOKENS = 64
-# Below this, paid models are useless even with retries — switch to OpenRouter free models.
+# Below this, paid models are useless even with retries — may switch to `:free` models if OPENROUTER_FREE_FALLBACKS is set.
 _PAID_BUDGET_FLOOR = 256
-# Free models queue deeply and can take 3-5 minutes to respond; use a much longer read timeout.
+# Free OpenRouter models queue deeply; use a longer read timeout when that tier is active.
 _FREE_MODEL_TIMEOUT_SECONDS = 360
-# Free models on OpenRouter (no credits needed). Verified to return non-empty `content` (some
-# free models only emit reasoning, which would fail our empty-text check). Override with
-# OPENROUTER_FREE_FALLBACKS env (comma-separated) when OpenRouter rotates availability.
-_FREE_MODEL_FALLBACKS_DEFAULT: tuple[str, ...] = (
-    "openai/gpt-oss-120b:free",
-    "openai/gpt-oss-20b:free",
-    "google/gemma-4-31b-it:free",
-    "minimax/minimax-m2.5:free",
-)
 
 
 def _free_model_fallbacks() -> tuple[str, ...]:
+    """Free `:free` models queue on OpenRouter; off by default. Set OPENROUTER_FREE_FALLBACKS to opt in."""
     raw = (getattr(settings, "openrouter_free_fallbacks", "") or "").strip()
     if not raw:
-        return _FREE_MODEL_FALLBACKS_DEFAULT
+        return ()
     parts = [p.strip() for p in raw.split(",") if p.strip()]
-    return tuple(parts) or _FREE_MODEL_FALLBACKS_DEFAULT
+    return tuple(parts)
 
 
 def _parse_affordable_max_tokens(error_message: str) -> int | None:
@@ -335,13 +327,13 @@ class AIService:
         max_tokens: int | None = None,
         temperature: float = 0.7,
         response_format: dict[str, Any] | None = None,
-        prefer_groq_first: bool = False,
-        prefer_gemini: bool = False,
+        prefer_groq_first: bool = True,
+        prefer_gemini: bool = True,
     ) -> AIResult:
         routed_task = detect_task_type(prompt=prompt, explicit=task_type)
         model = (preferred_model or "").strip() or select_best_model(routed_task, self.models)
 
-        # ── Groq first (opt-in): fast completions; falls through on quota/rate/other errors ──
+        # ── Groq first (when GROQ_API_KEY set): fast; falls through on errors ──
         if prefer_groq_first:
             groq_key = (getattr(settings, "groq_api_key", "") or "").strip()
             if groq_key:
@@ -382,7 +374,7 @@ class AIService:
                         str(exc)[:300],
                     )
 
-        # ── Gemini (opt-in): after Groq when prefer_groq_first, else first when only prefer_gemini ──
+        # ── Gemini before OpenRouter (when GOOGLE_AI_API_KEY set) ──
         if prefer_gemini:
             gemini_key = (getattr(settings, "google_ai_api_key", "") or "").strip()
             if gemini_key:

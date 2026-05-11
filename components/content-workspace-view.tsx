@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/toast";
+import { requestAiCompletionNotifyPreference } from "@/components/ai-completion-notify-bridge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MediaPreviewBlock } from "@/components/media-preview-block";
 import { MediaLocalDropzone } from "@/components/media-local-dropzone";
@@ -823,11 +824,17 @@ export function ContentWorkspaceView() {
               type="button"
               size="sm"
               className="h-8 rounded-md px-3 text-xs"
-              onClick={() =>
-                void generateContent(calendarDays).then(() => {
-                  push(`Generated ${calendarDays}-day content calendar`);
-                })
-              }
+              onClick={() => {
+                void (async () => {
+                  try {
+                    const notify = await requestAiCompletionNotifyPreference("content");
+                    await generateContent(calendarDays, { completionNotify: notify });
+                    push(`Generated ${calendarDays}-day content calendar`);
+                  } catch (e) {
+                    push(apiErrorMessage(e), { kind: "error" });
+                  }
+                })();
+              }}
             >
               Regenerate
             </Button>

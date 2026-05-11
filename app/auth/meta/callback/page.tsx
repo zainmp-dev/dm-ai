@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { resolvePostOAuthAppUrl } from "@/lib/oauth-return";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
@@ -63,7 +64,9 @@ function CallbackShell({
   useEffect(() => {
     if (!error) return;
     const m = [error, errorDescription].filter(Boolean).join(" — ").replace(/\s+/g, " ").slice(0, 240);
-    window.location.assign(`/settings?section=integrations&toast=meta_failed&toast_detail=${encodeURIComponent(m)}`);
+    window.location.assign(
+      resolvePostOAuthAppUrl(`/settings?section=integrations&toast=meta_failed&toast_detail=${encodeURIComponent(m)}`),
+    );
   }, [error, errorDescription]);
 
   useEffect(() => {
@@ -78,13 +81,13 @@ function CallbackShell({
         }
         setStatus("ok");
         setDetail("Meta accounts connected");
-        window.location.assign("/settings?section=integrations&toast=meta_connected");
+        window.location.assign(resolvePostOAuthAppUrl("/settings?section=integrations&toast=meta_connected"));
       })
       .catch((e: unknown) => {
         if (cancelled) return;
         const message = e instanceof Error ? e.message : "Meta callback failed";
         const detail = encodeURIComponent(message.replace(/\s+/g, " ").slice(0, 240));
-        window.location.assign(`/settings?section=integrations&toast=meta_failed&toast_detail=${detail}`);
+        window.location.assign(resolvePostOAuthAppUrl(`/settings?section=integrations&toast=meta_failed&toast_detail=${detail}`));
       });
     return () => {
       cancelled = true;
@@ -107,7 +110,7 @@ function CallbackShell({
           ) : (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
               {status === "ok"
-                ? "Authorization complete. Redirecting to settings…"
+                ? "Authorization complete. Redirecting…"
                 : status === "failed"
                   ? `Authorization code received but connect failed: ${detail}`
                   : code

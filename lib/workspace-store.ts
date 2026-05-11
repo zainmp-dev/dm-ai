@@ -25,6 +25,7 @@ import { DEFAULT_AI_MODEL, normalizeStoredAiModel } from "@/lib/ai-models";
 import { getAuthUser } from "@/lib/auth";
 import { normalizePrimaryRegionCode } from "@/lib/primary-region";
 import type { MediaType, PostingPreferences, PublishingPlatform, UserProfile, WorkspaceScenario, WorkspaceSnapshot } from "@/lib/types";
+import { signalAiWorkflowComplete } from "@/lib/ai-completion-signal";
 
 const AI_MODEL_STORAGE_KEY = "flowpilot.aiModel";
 const WORKSPACE_SETUPS_STORAGE_KEY = "flowpilot.workspaceSetups";
@@ -156,16 +157,36 @@ interface WorkspaceStore {
   selectedAiModel: string;
   /** Set to true after the last AI run used a free OpenRouter fallback (paid credits exhausted). Reset on next paid run. */
   lastRunUsedFreeModel: boolean;
+  /** True while the first-login assistant wizard is mounted (hides main app chrome on /workspace-setup). */
+  firstRunOnboardingFocused: boolean;
+  setFirstRunOnboardingFocused: (value: boolean) => void;
   sidebarCollapsed: boolean;
   setSelectedAiModel: (model: string) => void;
   setSidebarCollapsed: (value: boolean) => void;
   loadWorkspaceSetups: () => void;
-  setActiveWorkspace: (workspaceId: string) => Promise<void>;
+  /**
+   * Persist the chosen setup as the lone server workspace and refresh the global snapshot.
+   * @returns true if the server run (POST workspace, optional AI clear); false when already in sync / unknown id.
+   * @param variant `sync` (default): initial hydrate / reconcile only. `switch`: user chose another preset — clears strategy, competitors & drafts so Workflow matches this brand.
+   */
+  setActiveWorkspace: (
+    workspaceId: string,
+    opts?: {
+      variant?: "sync" | "switch";
+    },
+  ) => Promise<boolean>;
   removeWorkspaceSetup: (workspaceId: string) => Promise<void>;
   deleteCurrentWorkspace: () => Promise<void>;
   refreshWorkspace: (options?: { soft?: boolean }) => Promise<void>;
-  generateStrategy: (companyName: string, website: string, competitors?: CompetitorSetupInput[]) => Promise<void>;
-  generateContent: (calendarDays?: number) => Promise<void>;
+  generateStrategy: (
+    companyName: string,
+    website: string,
+    options?: {
+      competitors?: CompetitorSetupInput[];
+      completionNotify?: boolean;
+    },
+  ) => Promise<void>;
+  generateContent: (calendarDays?: number, options?: { completionNotify?: boolean }) => Promise<void>;
   clearAiOutputs: () => Promise<void>;
   patchWorkspaceResearch: (patch: {
     deleteCompetitorIds?: string[];
@@ -225,6 +246,8 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   error: null,
   selectedAiModel: loadSelectedAiModel(),
   lastRunUsedFreeModel: false,
+  firstRunOnboardingFocused: false,
+  setFirstRunOnboardingFocused: (firstRunOnboardingFocused) => set({ firstRunOnboardingFocused }),
   sidebarCollapsed: false,
   setSelectedAiModel: (model) => {
     const m = normalizeStoredAiModel(model);
@@ -245,10 +268,11 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     const { setups, activeWorkspaceId } = readStoredWorkspaceSetups();
     set({ workspaceSetups: setups, activeWorkspaceId });
   },
-  setActiveWorkspace: async (workspaceId) => {
+  setActiveWorkspace: async (workspaceId, opts) => {
+    const variant = opts?.variant ?? "sync";
     const setup = get().workspaceSetups.find((item) => item.id === workspaceId);
     if (!setup) {
-      return;
+      return false;
     }
     const current = get().workspace;
     const alreadyActive =
@@ -257,7 +281,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
       normalizeWebsiteKey(current?.companyWebsite ?? "") === normalizeWebsiteKey(setup.website) &&
       current?.workspaceScenario === setup.scenario;
     if (alreadyActive) {
-      return;
+      return false;
     }
     writeStoredWorkspaceSetups(get().workspaceSetups, setup.id);
     set({ activeWorkspaceId: setup.id, loading: true, error: null });
@@ -276,12 +300,18 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
         { skipGlobalLoading: true },
       );
       get().setSelectedAiModel(setup.aiModel);
+      if (variant === "switch") {
+        await apiPostClearAiOutputs();
+        set({ lastRunUsedFreeModel: false });
+      }
       await get().refreshWorkspace({ soft: true });
+      return true;
     } catch (e) {
       set({
         error: e instanceof Error ? e.message : "Unable to switch workspace",
         loading: false,
       });
+      return false;
     }
   },
   removeWorkspaceSetup: async (workspaceId) => {
@@ -298,7 +328,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     }
 
     if (removingActive && nextActiveId) {
-      await get().setActiveWorkspace(nextActiveId);
+      await get().setActiveWorkspace(nextActiveId, { variant: "switch" });
     }
   },
   deleteCurrentWorkspace: async () => {
@@ -375,7 +405,8 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     });
     await workspaceRefreshInflight;
   },
-  generateStrategy: async (companyName, website, competitors) => {
+  generateStrategy: async (companyName, website, options) => {
+    const competitors = options?.competitors ?? [];
     try {
       const data = await apiPostStrategy(
         companyName,
@@ -390,13 +421,16 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
       }
       set({ lastRunUsedFreeModel: data.used_free_model === true });
       await get().refreshWorkspace({ soft: true });
+      if (options?.completionNotify === true) {
+        signalAiWorkflowComplete("strategy", "Strategy ready", "Agent 1 finished. Open Workflow to review research and drafts.");
+      }
     } catch (e) {
       const message = apiErrorMessage(e);
       set({ error: message });
       throw new Error(message);
     }
   },
-  generateContent: async (calendarDays) => {
+  generateContent: async (calendarDays, options) => {
     try {
       const data = await apiPostContent({ action: "generate", calendarDays, aiModel: get().selectedAiModel });
       const used = data.ai_model_used?.trim();
@@ -405,6 +439,13 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
       }
       set({ lastRunUsedFreeModel: data.used_free_model === true });
       await get().refreshWorkspace({ soft: true });
+      if (options?.completionNotify === true) {
+        signalAiWorkflowComplete(
+          "content",
+          "Content calendar ready",
+          "Your AI content calendar finished generating. Open Workflow to review posts.",
+        );
+      }
     } catch (e) {
       const message = apiErrorMessage(e);
       set({
@@ -588,11 +629,18 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   },
   setupWorkspace: async (payload) => {
     const payloadNorm = { ...payload, aiModel: normalizeStoredAiModel(payload.aiModel) };
-    await apiSetupWorkspace(payloadNorm);
     const existingSetups = get().workspaceSetups;
     const matched = payload.workspaceId
       ? existingSetups.find((item) => item.id === payload.workspaceId)
       : existingSetups.find((item) => item.companyName.toLowerCase() === payload.companyName.toLowerCase());
+    /** New brand card (not an edit of an existing id) — wipe server strategy/drafts so Workflow matches this company. */
+    const isNewPreset = !payload.workspaceId && !matched;
+
+    await apiSetupWorkspace(payloadNorm);
+    if (isNewPreset) {
+      await apiPostClearAiOutputs();
+      set({ lastRunUsedFreeModel: false });
+    }
     const setupId = matched?.id ?? `ws-local-${Date.now()}`;
     const nextSetup: WorkspaceSetupConfig = {
       id: setupId,

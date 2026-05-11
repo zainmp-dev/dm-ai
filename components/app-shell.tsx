@@ -140,7 +140,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       .slice(0, 2)
       .toUpperCase() ?? "U";
   const setupRequired = visibleWorkspace ? !visibleWorkspace.workspaceConfigured : true;
-  const showSetupOnly = setupRequired && pathname === "/workspace-setup";
+  const firstRunOnboardingFocused = useWorkspaceStore((s) => s.firstRunOnboardingFocused);
+  const workspaceSetupMinimal =
+    pathname === "/workspace-setup" && (setupRequired || firstRunOnboardingFocused);
+  const showSetupOnly = workspaceSetupMinimal;
+  const headerTitle = showSetupOnly && pathname === "/workspace-setup" ? "Set up workspace" : title;
   const setupRedirectExempt =
     pathname === "/settings" || pathname === "/pipeline" || pathname === "/publishing" || pathname === "/campaigns";
 
@@ -242,10 +246,10 @@ export function AppShell({ children }: { children: ReactNode }) {
           )}
 
           {/* Page title */}
-          <h1 className="min-w-0 flex-shrink-0 text-[15px] font-semibold text-[#111827] dark:text-zinc-100">{title}</h1>
+          <h1 className="min-w-0 flex-shrink-0 text-[15px] font-semibold text-[#111827] dark:text-zinc-100">{headerTitle}</h1>
 
           {/* Workspace switcher */}
-          {!error && (
+          {!showSetupOnly && !error && (
             <div className="hidden items-center gap-1 sm:flex">
               <span className="text-[#e5e7eb]">·</span>
               <DropdownMenu>
@@ -267,7 +271,16 @@ export function AppShell({ children }: { children: ReactNode }) {
                   {workspaceSetups.map((item) => (
                     <DropdownMenuItem
                       key={item.id}
-                      onClick={() => void setActiveWorkspace(item.id)}
+                      onClick={() =>
+                        void setActiveWorkspace(item.id, { variant: "switch" }).then((applied) => {
+                          if (applied) {
+                            pushToast(
+                              "Active workspace switched. Earlier strategy and drafts were cleared — run Agents for this brand.",
+                              { durationMs: 8200 },
+                            );
+                          }
+                        })
+                      }
                       className="flex items-start justify-between gap-2"
                     >
                       <span className="min-w-0">
@@ -303,26 +316,28 @@ export function AppShell({ children }: { children: ReactNode }) {
 
           {/* Right controls */}
           <div className="flex items-center gap-1.5">
-            {/* New Campaign — navigates to /campaigns?new=1 which auto-opens the create dialog */}
-            <Link
-              href="/campaigns?new=1"
-              className="flex h-8 items-center gap-1.5 rounded-lg bg-[#1a56db] px-3 text-[12.5px] font-semibold text-white transition-colors hover:bg-[#1648c0] active:bg-[#1340ad]"
-            >
-              <Plus className="size-3.5 shrink-0" strokeWidth={2.5} />
-              <span className="hidden sm:inline">New Campaign</span>
-              <span className="sm:hidden">New</span>
-            </Link>
+            {!showSetupOnly && (
+              <>
+                {/* New Campaign — navigates to /campaigns?new=1 which auto-opens the create dialog */}
+                <Link
+                  href="/campaigns?new=1"
+                  className="flex h-8 items-center gap-1.5 rounded-lg bg-[#1a56db] px-3 text-[12.5px] font-semibold text-white transition-colors hover:bg-[#1648c0] active:bg-[#1340ad]"
+                >
+                  <Plus className="size-3.5 shrink-0" strokeWidth={2.5} />
+                  <span className="hidden sm:inline">New Campaign</span>
+                  <span className="sm:hidden">New</span>
+                </Link>
 
-            {/* AI Search */}
-            <WorkspaceAiSearch
-              selectedAiModel={selectedAiModel}
-              workspaceConfigured={Boolean(
-                visibleWorkspace?.workspaceConfigured || (visibleWorkspace?.companyName?.trim() ?? "").length > 0,
-              )}
-            />
+                {/* AI Search */}
+                <WorkspaceAiSearch
+                  selectedAiModel={selectedAiModel}
+                  workspaceConfigured={Boolean(
+                    visibleWorkspace?.workspaceConfigured || (visibleWorkspace?.companyName?.trim() ?? "").length > 0,
+                  )}
+                />
 
-            {/* AI Model picker */}
-            <DropdownMenu>
+                {/* AI Model picker */}
+                <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   type="button"
@@ -366,59 +381,61 @@ export function AppShell({ children }: { children: ReactNode }) {
             </DropdownMenu>
             <OpenrouterBalanceHint />
 
+                {/* Notifications */}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className="relative flex size-8 items-center justify-center rounded-lg text-[#6b7280] transition-colors hover:bg-[#f5f7fa] hover:text-[#111827]"
+                      aria-label="Notifications"
+                    >
+                      <Bell className="size-[17px]" strokeWidth={1.75} />
+                      {notificationCount > 0 && (
+                        <span className="absolute right-1 top-1 flex size-3.5 items-center justify-center rounded-full bg-[#1a56db] text-[9px] font-bold text-white">
+                          {notificationCount > 9 ? "9+" : notificationCount}
+                        </span>
+                      )}
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-80 rounded-xl p-2">
+                    <div className="px-2 py-1.5">
+                      <p className="text-sm font-semibold text-[#111827]">Notifications</p>
+                      <p className="text-xs text-[#6b7280]">Recent workspace updates and content reviews.</p>
+                    </div>
+                    <DropdownMenuSeparator />
+                    <div className="max-h-80 space-y-2 overflow-y-auto p-1">
+                      {pendingContentCount > 0 && (
+                        <Link
+                          href="/pipeline?tab=content"
+                          className="block rounded-xl border border-amber-200/90 bg-amber-50 px-3 py-2.5 text-sm text-amber-900 transition-colors hover:border-amber-300"
+                        >
+                          <span className="font-medium text-amber-950">Approval required</span>
+                          <span className="mt-0.5 block text-xs text-amber-900/85">
+                            {pendingContentCount} post{pendingContentCount === 1 ? "" : "s"} pending — open Workflow
+                          </span>
+                        </Link>
+                      )}
+                      {recentActivities.length === 0 && pendingContentCount === 0 ? (
+                        <div className="rounded-xl border border-dashed border-[#e5e7eb] px-3 py-6 text-center text-sm text-[#9ca3af]">
+                          You are all caught up.
+                        </div>
+                      ) : (
+                        recentActivities.map((item) => (
+                          <NotificationEntry key={item.id} text={item.text} createdAt={item.createdAt} variant="dropdown" />
+                        ))
+                      )}
+                    </div>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem asChild>
+                      <Link href="/notifications">View all notifications</Link>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </>
+            )}
+
             {/* Theme */}
             <HeaderThemeControl />
-
-            {/* Notifications */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className="relative flex size-8 items-center justify-center rounded-lg text-[#6b7280] transition-colors hover:bg-[#f5f7fa] hover:text-[#111827]"
-                  aria-label="Notifications"
-                >
-                  <Bell className="size-[17px]" strokeWidth={1.75} />
-                  {notificationCount > 0 && (
-                    <span className="absolute right-1 top-1 flex size-3.5 items-center justify-center rounded-full bg-[#1a56db] text-[9px] font-bold text-white">
-                      {notificationCount > 9 ? "9+" : notificationCount}
-                    </span>
-                  )}
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-80 rounded-xl p-2">
-                <div className="px-2 py-1.5">
-                  <p className="text-sm font-semibold text-[#111827]">Notifications</p>
-                  <p className="text-xs text-[#6b7280]">Recent workspace updates and content reviews.</p>
-                </div>
-                <DropdownMenuSeparator />
-                <div className="max-h-80 space-y-2 overflow-y-auto p-1">
-                  {pendingContentCount > 0 && (
-                    <Link
-                      href="/pipeline?tab=content"
-                      className="block rounded-xl border border-amber-200/90 bg-amber-50 px-3 py-2.5 text-sm text-amber-900 transition-colors hover:border-amber-300"
-                    >
-                      <span className="font-medium text-amber-950">Approval required</span>
-                      <span className="mt-0.5 block text-xs text-amber-900/85">
-                        {pendingContentCount} post{pendingContentCount === 1 ? "" : "s"} pending — open Workflow
-                      </span>
-                    </Link>
-                  )}
-                  {recentActivities.length === 0 && pendingContentCount === 0 ? (
-                    <div className="rounded-xl border border-dashed border-[#e5e7eb] px-3 py-6 text-center text-sm text-[#9ca3af]">
-                      You are all caught up.
-                    </div>
-                  ) : (
-                    recentActivities.map((item) => (
-                      <NotificationEntry key={item.id} text={item.text} createdAt={item.createdAt} variant="dropdown" />
-                    ))
-                  )}
-                </div>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem asChild>
-                  <Link href="/notifications">View all notifications</Link>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
 
             {/* Account: workspace setup, profile, logout */}
             <DropdownMenu>

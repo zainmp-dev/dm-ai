@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { resolvePostOAuthAppUrl } from "@/lib/oauth-return";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
@@ -63,7 +64,7 @@ function CallbackView({
     if (!error) return;
     const m = [error, errorDescription].filter(Boolean).join(" — ").replace(/\s+/g, " ").slice(0, 240);
     window.location.assign(
-      `/settings?section=integrations&toast=linkedin_failed&toast_detail=${encodeURIComponent(m)}`,
+      resolvePostOAuthAppUrl(`/settings?section=integrations&toast=linkedin_failed&toast_detail=${encodeURIComponent(m)}`),
     );
   }, [error, errorDescription]);
 
@@ -81,16 +82,18 @@ function CallbackView({
         setStatus("ok");
         setDetail(payload.profile_pending ? "LinkedIn connected (profile syncing)" : "LinkedIn account connected");
         window.location.assign(
-          payload.profile_pending
-            ? "/settings?section=integrations&toast=linkedin_connected_pending"
-            : "/settings?section=integrations&toast=linkedin_connected",
+          resolvePostOAuthAppUrl(
+            payload.profile_pending
+              ? "/settings?section=integrations&toast=linkedin_connected_pending"
+              : "/settings?section=integrations&toast=linkedin_connected",
+          ),
         );
       })
       .catch((e: unknown) => {
         if (cancelled) return;
         const message = e instanceof Error ? e.message : "LinkedIn callback failed";
         const detail = encodeURIComponent(message.replace(/\s+/g, " ").slice(0, 240));
-        window.location.assign(`/settings?section=integrations&toast=linkedin_failed&toast_detail=${detail}`);
+        window.location.assign(resolvePostOAuthAppUrl(`/settings?section=integrations&toast=linkedin_failed&toast_detail=${detail}`));
       });
     return () => {
       cancelled = true;
@@ -113,7 +116,7 @@ function CallbackView({
           ) : (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
               {status === "ok"
-                ? "Authorization complete. Redirecting to settings…"
+                ? "Authorization complete. Redirecting…"
                 : status === "failed"
                   ? `Authorization code received but connect failed: ${detail}`
                   : code

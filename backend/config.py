@@ -86,7 +86,7 @@ class Settings:
     openrouter_max_tokens: int = field(default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS", 8192))
     # Comma-separated OpenRouter model ids tried after the requested model and OPENROUTER_MODEL (quota/model errors only).
     openrouter_model_fallbacks: str = field(default_factory=lambda: _str_env("OPENROUTER_MODEL_FALLBACKS"))
-    # Comma-separated free OpenRouter model ids used as the last-resort chain when paid credits are exhausted (HTTP 402).
+    # Comma-separated free OpenRouter model ids (HTTP 402 last resort). Empty/unset = disabled (no queued free tier).
     openrouter_free_fallbacks: str = field(default_factory=lambda: _str_env("OPENROUTER_FREE_FALLBACKS"))
 
     meta_graph_api_version: str = field(

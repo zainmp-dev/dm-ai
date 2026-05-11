@@ -7,6 +7,7 @@ import { FacebookPostPreview } from "@/components/previews/facebook-post-preview
 import { InstagramPostPreview } from "@/components/previews/instagram-post-preview";
 import { LinkedInPostPreview } from "@/components/previews/linkedin-post-preview";
 import { TwitterPostPreview } from "@/components/previews/twitter-post-preview";
+import { requestAiCompletionNotifyPreference } from "@/components/ai-completion-notify-bridge";
 import { PlatformSelectDialog } from "@/components/platform-select-dialog";
 import { ContentStatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
@@ -135,17 +136,6 @@ function formatQueueDate(item: ContentItem): string {
 
 function formatQueueBodyPreview(text: string): string {
   return text.replace(/\s+/g, " ").trim();
-}
-
-function formatIsoDateTime(iso: string | undefined): string {
-  if (!iso?.trim()) return "";
-  try {
-    const d = parseISO(String(iso));
-    if (Number.isNaN(d.getTime())) return "";
-    return format(d, "MMM d, yyyy · h:mm a");
-  } catch {
-    return "";
-  }
 }
 
 const COMPETITOR_RESEARCH_PAGE_SIZE = 4;
@@ -491,13 +481,9 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
   }, [strategyOutputQuery]);
 
   const strategyResearchMeta = useMemo(() => {
-    const t = workspace ? formatIsoDateTime(workspace.strategyUpdatedAt) : "";
     const v = workspace?.strategyVersion;
-    if (!t && v == null) return "";
-    const parts: string[] = [];
-    if (t) parts.push(`Research saved · ${t}`);
-    if (v != null) parts.push(`v${v}`);
-    return parts.join(" · ");
+    if (v == null) return "";
+    return `v${v}`;
   }, [workspace]);
 
   const contentQueueItems = useMemo(() => workspace?.content ?? [], [workspace?.content]);
@@ -532,7 +518,8 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     const runBootstrap = async () => {
       setBootstrapLoading(true);
       try {
-        await generateContent(calendarDays);
+        const notify = await requestAiCompletionNotifyPreference("content");
+        await generateContent(calendarDays, { completionNotify: notify });
         const usedFree = useWorkspaceStore.getState().lastRunUsedFreeModel;
         push(
           usedFree
@@ -564,7 +551,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
   }, [aiElapsedSec]);
 
   const aiFeelsSlow = aiJobActive && aiElapsedSec >= 90;
-  const aiUsingFreeModel = aiJobActive && aiElapsedSec >= 90;
 
   if (shellPending) {
     return (
@@ -645,11 +631,15 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     }
     setStrategyLoading(true);
     try {
-      await generateStrategy(company, website, competitorInputs.map(({ name, website: competitorUrl, focus }) => ({
-        name,
-        website: competitorUrl,
-        focus,
-      })));
+      const notify = await requestAiCompletionNotifyPreference("strategy");
+      await generateStrategy(company, website, {
+        competitors: competitorInputs.map(({ name, website: competitorUrl, focus }) => ({
+          name,
+          website: competitorUrl,
+          focus,
+        })),
+        completionNotify: notify,
+      });
       push("Strategy is updated with your latest company, website, and market details.");
     } catch (e) {
       push(apiErrorMessage(e));
@@ -665,7 +655,8 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     }
     setContentLoading(true);
     try {
-      await generateContent(calendarDays);
+      const notify = await requestAiCompletionNotifyPreference("content");
+      await generateContent(calendarDays, { completionNotify: notify });
       setContentQueuePage(0);
       push(`Content calendar refreshed (${calendarDays} slots).`);
     } catch (e) {
@@ -861,9 +852,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                   </p>
                   {aiJobActive && aiFeelsSlow ? (
                     <p className="text-xs font-medium text-amber-900 dark:text-amber-200/95">
-                      {aiUsingFreeModel
-                        ? "Your OpenRouter credits are low — the system switched to a free AI model. Free models are queued and can take 5–10 minutes. Top up at openrouter.ai for faster runs."
-                        : "Still working. Full setup may take several minutes for larger workspaces."}
+                      Still working. Full setup may take several minutes; Groq and Gemini are tried before OpenRouter.
                     </p>
                   ) : null}
                   {!aiJobActive && lastRunUsedFreeModel ? (

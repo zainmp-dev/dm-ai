@@ -19,7 +19,7 @@ const PASSWORD_REGEX = /^(?=.*[A-Za-z])(?=.*\d).{6,}$/;
 
 function getPasswordEstimate(score: number) {
   if (score <= 2) return "Estimated crack time: minutes to hours";
-  if (score <= 4) return "Estimated crack time: days to weeks";
+  if (score <= 3) return "Estimated crack time: days to weeks";
   return "Estimated crack time: months+";
 }
 
@@ -73,9 +73,9 @@ export default function SignupPage() {
     (/\d/.test(password) ? 1 : 0) +
     (/[^A-Za-z0-9]/.test(password) ? 1 : 0);
   const passwordStrengthLabel =
-    password.length === 0 ? "" : passwordStrength <= 2 ? "Weak" : passwordStrength <= 4 ? "Medium" : "Strong";
+    password.length === 0 ? "" : passwordStrength <= 2 ? "Weak" : passwordStrength <= 3 ? "Medium" : "Strong";
   const passwordStrengthBarColor =
-    password.length === 0 ? "#cbd5e1" : passwordStrength <= 2 ? "#ef4444" : passwordStrength <= 4 ? "#eab308" : "#10b981";
+    password.length === 0 ? "#cbd5e1" : passwordStrength <= 2 ? "#ef4444" : passwordStrength <= 3 ? "#eab308" : "#10b981";
   const passwordStrengthBarWidth = password.length === 0 ? "0%" : `${Math.max(passwordStrength, 1) * 20}%`;
 
   const handleTogglePassword = () => {

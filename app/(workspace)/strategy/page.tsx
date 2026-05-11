@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { format, parseISO } from "date-fns";
 import { ChevronLeft, ChevronRight, Search, X } from "lucide-react";
 import { startTransition, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -10,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
+import { requestAiCompletionNotifyPreference } from "@/components/ai-completion-notify-bridge";
 import { stashCompetitorView } from "@/lib/competitor-view-cache";
 import { primaryRegionLabel } from "@/lib/primary-region";
 import { useWorkspaceStore } from "@/lib/workspace-store";
@@ -17,21 +17,9 @@ import { useWorkspaceStore } from "@/lib/workspace-store";
 const COMPETITORS_PAGE_SIZE = 4;
 const GAPS_PAGE_SIZE = 6;
 
-function formatStrategySaved(iso: string | undefined, version: number | undefined): string {
-  let t = "";
-  if (iso?.trim()) {
-    try {
-      const d = parseISO(String(iso));
-      if (!Number.isNaN(d.getTime())) t = format(d, "MMM d, yyyy · h:mm a");
-    } catch {
-      // ignore
-    }
-  }
-  if (!t && version == null) return "";
-  const parts: string[] = [];
-  if (t) parts.push(`Saved · ${t}`);
-  if (version != null) parts.push(`v${version}`);
-  return parts.join(" · ");
+function formatStrategyVersionLine(version: number | undefined): string {
+  if (version == null) return "";
+  return `v${version}`;
 }
 
 function PaginationRow({
@@ -111,7 +99,10 @@ export default function StrategyPage() {
   const runAnalysis = async () => {
     setLoading(true);
     try {
-      await generateStrategy(companyName || workspace?.companyName || "", website || workspace?.companyWebsite || "");
+      const notify = await requestAiCompletionNotifyPreference("strategy");
+      await generateStrategy(companyName || workspace?.companyName || "", website || workspace?.companyWebsite || "", {
+        completionNotify: notify,
+      });
       push("Agent 1 finished: strategy and competitors updated.");
     } catch {
       push("Strategy run failed. Check AI keys and try again.");
@@ -127,7 +118,8 @@ export default function StrategyPage() {
     }
     setLoading(true);
     try {
-      await generateStrategy(workspace.companyName, workspace.companyWebsite);
+      const notify = await requestAiCompletionNotifyPreference("strategy");
+      await generateStrategy(workspace.companyName, workspace.companyWebsite, { completionNotify: notify });
       push("Agent 1 (strategy) regenerated with latest workspace settings.");
     } catch {
       push("Strategy run failed. Check AI keys and try again.");
@@ -139,8 +131,8 @@ export default function StrategyPage() {
   const competitorRows = useMemo(() => workspace?.competitors ?? [], [workspace?.competitors]);
 
   const strategyResearchMetaLine = useMemo(
-    () => formatStrategySaved(workspace?.strategyUpdatedAt, workspace?.strategyVersion),
-    [workspace?.strategyUpdatedAt, workspace?.strategyVersion],
+    () => formatStrategyVersionLine(workspace?.strategyVersion),
+    [workspace?.strategyVersion],
   );
 
   // Combined filter: globalSearch OR competitorSearch

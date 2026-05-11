@@ -1,3 +1,5 @@
+import { clearFirstLoginWizardKeys } from "@/lib/first-login-wizard";
+
 const TOKEN_KEY = "flowpilot_token";
 const USER_KEY = "flowpilot_user";
 
@@ -34,6 +36,7 @@ export function setAuthSession(token: string, user: AuthUser) {
 
 export function clearAuthSession() {
   if (typeof window === "undefined") return;
+  clearFirstLoginWizardKeys();
   sessionStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
   const secureFlag = window.location.protocol === "https:" ? "; secure" : "";

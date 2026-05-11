@@ -25,6 +25,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { labelForAiModel } from "@/lib/ai-models";
 import { platformLabel } from "@/lib/platform";
 import { primaryRegionLabel } from "@/lib/primary-region";
+import { setOAuthPostConnectReturn } from "@/lib/first-login-wizard";
 import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
@@ -425,6 +426,7 @@ function SettingsContent() {
                   onClick={() => {
                     if (linkedinConnecting) return;
                     setLinkedinConnecting(true);
+                    setOAuthPostConnectReturn("/settings?section=integrations");
                     void connectLinkedin("_self")
                       .then((ok) =>
                         push(ok ? "Redirecting to LinkedIn…" : "LinkedIn connect is unavailable right now.", { durationMs: 6000 }),
@@ -510,6 +512,7 @@ function SettingsContent() {
                   onClick={() => {
                     if (metaConnecting) return;
                     setMetaConnecting(true);
+                    setOAuthPostConnectReturn("/settings?section=integrations");
                     void connectMeta("_self")
                       .then((ok) =>
                         push(ok ? "Redirecting to Meta…" : "Meta connect is unavailable right now.", { durationMs: 6000 }),
