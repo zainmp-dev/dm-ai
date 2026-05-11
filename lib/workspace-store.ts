@@ -9,6 +9,7 @@ import {
   apiErrorMessage,
   apiGetWorkspace,
   type MasterContentSuggestion,
+  apiPatchWorkspaceResearch,
   apiPostClearAiOutputs,
   apiPostContent,
   apiPostStrategy,
@@ -166,6 +167,10 @@ interface WorkspaceStore {
   generateStrategy: (companyName: string, website: string, competitors?: CompetitorSetupInput[]) => Promise<void>;
   generateContent: (calendarDays?: number) => Promise<void>;
   clearAiOutputs: () => Promise<void>;
+  patchWorkspaceResearch: (patch: {
+    deleteCompetitorIds?: string[];
+    removeMarketGaps?: string[];
+  }) => Promise<void>;
   suggestMasterContent: (suggestHint?: string) => Promise<MasterContentSuggestion>;
   createContentItem: (payload: {
     title: string;
@@ -304,6 +309,16 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   clearAiOutputs: async () => {
     try {
       const snapshot = await apiPostClearAiOutputs();
+      set({ workspace: snapshot, error: null });
+    } catch (e) {
+      const message = apiErrorMessage(e);
+      set({ error: message });
+      throw new Error(message);
+    }
+  },
+  patchWorkspaceResearch: async (patch) => {
+    try {
+      const snapshot = await apiPatchWorkspaceResearch(patch);
       set({ workspace: snapshot, error: null });
     } catch (e) {
       const message = apiErrorMessage(e);

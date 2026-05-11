@@ -53,6 +53,7 @@ def generate_carousel(*, topic: str, brand_context: str = "", preferred_model: s
         preferred_model=preferred_model,
         task_type="carousel",
         response_format={"type": "json_object"},
+        prefer_groq_first=True,
         prefer_gemini=True,
     )
     try:

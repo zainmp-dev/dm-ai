@@ -6,6 +6,7 @@ import { useEffect, type ReactNode } from "react";
 import {
   Bell,
   Check,
+  ChevronDown,
   ChevronsUpDown,
   Images,
   LayoutDashboard,
@@ -221,99 +222,6 @@ export function AppShell({ children }: { children: ReactNode }) {
                   );
                 })}
           </nav>
-
-          {/* Bottom: settings + user */}
-          <div className="shrink-0 border-t border-[#e5e7eb]">
-            {!collapsed && (
-              <div className="px-2 py-2">
-                <Link
-                  href="/settings"
-                  className="flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-[13px] text-[#6b7280] transition-colors hover:bg-[#f5f7fa] hover:text-[#111827]"
-                >
-                  <Plug className="size-[16px] shrink-0 text-[#1a56db]" strokeWidth={1.75} />
-                  Connect accounts
-                </Link>
-              </div>
-            )}
-            {collapsed && (
-              <div className="flex justify-center px-0 py-2">
-                <Link
-                  href="/settings"
-                  title="Connect accounts in Settings"
-                  className="flex size-9 items-center justify-center rounded-lg text-[#9ca3af] transition-colors hover:bg-[#f5f7fa] hover:text-[#374151]"
-                >
-                  <Plug className="size-4" strokeWidth={1.75} />
-                </Link>
-              </div>
-            )}
-
-            {/* User profile row */}
-            <div className={cn("border-t border-[#e5e7eb] px-2 py-2", collapsed && "flex justify-center px-0")}>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  {collapsed ? (
-                    <button
-                      type="button"
-                      className="flex size-9 items-center justify-center rounded-lg transition-colors hover:bg-[#f5f7fa]"
-                      aria-label="Account menu"
-                    >
-                      <span className="flex size-7 items-center justify-center rounded-full bg-[#1a56db] text-[11px] font-semibold text-white">
-                        {initials}
-                      </span>
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-[#f5f7fa]"
-                      aria-label="Account menu"
-                    >
-                      <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-[#1a56db] text-[11px] font-semibold text-white">
-                        {shellPending && !profile ? (
-                          <Skeleton className="size-7 rounded-full" />
-                        ) : (
-                          initials
-                        )}
-                      </span>
-                      {profile && (
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-[12.5px] font-medium leading-tight text-[#111827]">
-                            {profile.name}
-                          </span>
-                          <span className="block truncate text-[11px] leading-tight text-[#6b7280]">
-                            {profile.email}
-                          </span>
-                        </span>
-                      )}
-                    </button>
-                  )}
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align={collapsed ? "end" : "start"} side="top" className="w-52 rounded-xl">
-                  <DropdownMenuLabel>Account</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
-                    <Link href="/workspace-setup">
-                      {visibleWorkspace?.workspaceConfigured ? "Change workspace setup" : "Set up workspace"}
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/profile">Profile</Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href="/settings">Settings</Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    onClick={() => {
-                      clearAuthSession();
-                      router.replace("/login");
-                    }}
-                  >
-                    Logout
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          </div>
         </aside>
       )}
 
@@ -508,6 +416,62 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild>
                   <Link href="/notifications">View all notifications</Link>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Account: workspace setup, profile, logout */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="flex max-w-[10rem] items-center gap-1.5 rounded-lg py-1 pl-1 pr-1.5 text-left transition-colors hover:bg-[#f5f7fa] dark:hover:bg-zinc-800"
+                  aria-label="Account menu"
+                >
+                  <span className="relative flex size-8 shrink-0 items-center justify-center rounded-full bg-[#1a56db] text-[11px] font-semibold text-white dark:bg-blue-600">
+                    {shellPending && !profile ? <Skeleton className="size-8 rounded-full bg-blue-700/90" /> : initials}
+                  </span>
+                  {profile && (
+                    <span className="hidden min-w-0 md:block">
+                      <span className="block truncate text-[12px] font-medium leading-tight text-[#111827] dark:text-zinc-100">
+                        {profile.name}
+                      </span>
+                      <span className="block truncate text-[10px] leading-tight text-[#6b7280] dark:text-zinc-400">
+                        {profile.email}
+                      </span>
+                    </span>
+                  )}
+                  <ChevronDown className="size-4 shrink-0 opacity-50" strokeWidth={1.75} aria-hidden />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" side="bottom" className="w-56 rounded-xl">
+                <DropdownMenuLabel>Account</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem asChild>
+                  <Link href="/settings" className="flex items-center gap-2">
+                    <Plug className="size-3.5 text-[#1a56db]" strokeWidth={1.75} aria-hidden />
+                    Connect accounts
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/workspace-setup">
+                    {visibleWorkspace?.workspaceConfigured ? "Change workspace setup" : "Set up workspace"}
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/profile">Profile</Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/settings">Settings</Link>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => {
+                    clearAuthSession();
+                    router.replace("/login");
+                  }}
+                >
+                  Logout
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

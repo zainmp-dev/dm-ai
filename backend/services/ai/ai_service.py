@@ -183,6 +183,60 @@ class AIService:
         except Exception as exc:
             raise AIServiceError("Gemini returned invalid response shape") from exc
 
+    def _call_groq(
+        self,
+        *,
+        task_type: str,
+        prompt: str,
+        max_tokens: int | None,
+        temperature: float,
+        response_format: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        key = (getattr(settings, "groq_api_key", "") or "").strip()
+        if not key:
+            raise AIServiceError("GROQ_API_KEY is not configured", status_code=401)
+        base_raw = getattr(settings, "groq_base_url", "") or "https://api.groq.com/openai/v1"
+        base = str(base_raw).rstrip("/")
+        model_raw = getattr(settings, "groq_model", "") or "llama-3.3-70b-versatile"
+        model = str(model_raw).strip() or "llama-3.3-70b-versatile"
+        system_prompt = build_system_prompt(task_type)
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": temperature,
+            "max_tokens": max(1, min(max_tokens or self.max_tokens, 32768)),
+        }
+        if response_format:
+            payload["response_format"] = response_format
+        try:
+            response = requests.post(
+                f"{base}/chat/completions",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=self.timeout_seconds,
+            )
+        except requests.Timeout as exc:
+            raise AIServiceError(f"Groq timed out after {self.timeout_seconds}s", status_code=408) from exc
+        except requests.RequestException as exc:
+            detail = exc.response.text[:600] if getattr(exc, "response", None) is not None else str(exc)
+            raise AIServiceError(f"Groq request failed: {detail}") from exc
+
+        raw = response.text or ""
+        if response.status_code >= 400:
+            raise AIServiceError(f"Groq HTTP {response.status_code}: {raw[:600]}", status_code=response.status_code)
+        try:
+            data = response.json()
+            text = str(data["choices"][0]["message"]["content"]).strip()
+            usage = data.get("usage") if isinstance(data, dict) else {}
+            if not isinstance(usage, dict):
+                usage = {}
+            return {"text": text, "usage": usage}
+        except Exception as exc:
+            raise AIServiceError("Groq returned invalid response shape") from exc
+
     def gemini_request(
         self,
         *,
@@ -226,6 +280,52 @@ class AIService:
             retries=0,
         )
 
+    def groq_only_request(
+        self,
+        *,
+        prompt: str,
+        task_type: str | None = None,
+        max_tokens: int | None = None,
+        temperature: float = 0.7,
+        response_format: dict[str, Any] | None = None,
+    ) -> AIResult | None:
+        """One Groq completion when GROQ_API_KEY is set; returns None so callers can try Gemini/OpenRouter."""
+        key = (getattr(settings, "groq_api_key", "") or "").strip()
+        if not key:
+            return None
+        routed_task = detect_task_type(prompt=prompt, explicit=task_type)
+        started = time.time()
+        try:
+            with self._gate:
+                groq_result = self._call_groq(
+                    task_type=routed_task,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format=response_format,
+                )
+            groq_text = groq_result.get("text", "").strip()
+            if not groq_text:
+                return None
+            latency = int((time.time() - started) * 1000)
+            label = "groq/" + (getattr(settings, "groq_model", "") or "llama-3.3-70b-versatile").strip()
+            logger.info(
+                "AI success provider=groq (preflight-only) model=%s task=%s latency_ms=%s",
+                label,
+                routed_task,
+                latency,
+            )
+            return AIResult(
+                text=groq_text,
+                model_used=label,
+                latency_ms=latency,
+                usage=groq_result.get("usage", {}),
+                retries=0,
+            )
+        except AIServiceError as exc:
+            logger.warning("Groq-only preflight failed (status=%s): %s", exc.status_code, str(exc)[:300])
+            return None
+
     def retry_request(
         self,
         *,
@@ -235,14 +335,54 @@ class AIService:
         max_tokens: int | None = None,
         temperature: float = 0.7,
         response_format: dict[str, Any] | None = None,
+        prefer_groq_first: bool = False,
         prefer_gemini: bool = False,
     ) -> AIResult:
         routed_task = detect_task_type(prompt=prompt, explicit=task_type)
         model = (preferred_model or "").strip() or select_best_model(routed_task, self.models)
 
-        # ── Gemini first (opt-in only) ─────────────────────────────────────────
-        # Only used when prefer_gemini=True (e.g. strategy agent). All other agents
-        # go straight to OpenRouter so credits are not burned by duplicate Gemini calls.
+        # ── Groq first (opt-in): fast completions; falls through on quota/rate/other errors ──
+        if prefer_groq_first:
+            groq_key = (getattr(settings, "groq_api_key", "") or "").strip()
+            if groq_key:
+                groq_started = time.time()
+                try:
+                    with self._gate:
+                        groq_result = self._call_groq(
+                            task_type=routed_task,
+                            prompt=prompt,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            response_format=response_format,
+                        )
+                    groq_text = groq_result.get("text", "").strip()
+                    if groq_text:
+                        groq_latency = int((time.time() - groq_started) * 1000)
+                        groq_model_label = (
+                            "groq/" + (getattr(settings, "groq_model", "") or "llama-3.3-70b-versatile").strip()
+                        )
+                        logger.info(
+                            "AI success provider=groq model=%s task=%s latency_ms=%s usage=%s",
+                            groq_model_label,
+                            routed_task,
+                            groq_latency,
+                            json.dumps(groq_result.get("usage", {}), ensure_ascii=True),
+                        )
+                        return AIResult(
+                            text=groq_text,
+                            model_used=groq_model_label,
+                            latency_ms=groq_latency,
+                            usage=groq_result.get("usage", {}),
+                            retries=0,
+                        )
+                except AIServiceError as exc:
+                    logger.warning(
+                        "Groq failed (status=%s), falling back to next providers: %s",
+                        exc.status_code,
+                        str(exc)[:300],
+                    )
+
+        # ── Gemini (opt-in): after Groq when prefer_groq_first, else first when only prefer_gemini ──
         if prefer_gemini:
             gemini_key = (getattr(settings, "google_ai_api_key", "") or "").strip()
             if gemini_key:
@@ -280,7 +420,6 @@ class AIService:
                         exc.status_code,
                         str(exc)[:300],
                     )
-                    # Fall through to OpenRouter.
         retries = 0
         last_error: AIServiceError | None = None
         # Track effective max_tokens across retries so a 402 budget hint sticks for the next attempt.

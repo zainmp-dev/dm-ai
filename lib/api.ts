@@ -116,7 +116,8 @@ function classifyGlobalLoading(config: InternalAxiosRequestConfig): FlowApiLoadi
   if (
     path.endsWith("/analytics/analyze") ||
     path.endsWith("/workspace/search") ||
-    path.endsWith("/workspace/clear-ai")
+    path.endsWith("/workspace/clear-ai") ||
+    path.endsWith("/workspace/research-patch")
   )
     return "ai";
   return "default";
@@ -128,6 +129,7 @@ function resolveProcessLabel(config: InternalAxiosRequestConfig): string {
 
   if (path.endsWith("/workspace/search")) return "Workspace search";
   if (path.endsWith("/workspace/clear-ai")) return "Clearing AI library";
+  if (path.endsWith("/workspace/research-patch")) return "Updating research";
   if (path.endsWith("/strategy")) return "Generating strategy";
   if (path.endsWith("/analytics/analyze")) return "Analyzing performance";
   if (path.endsWith("/publish")) return "Publishing to channels";
@@ -851,6 +853,17 @@ export async function apiDeleteWorkspace(): Promise<WorkspaceSnapshot> {
 
 export async function apiPostClearAiOutputs(): Promise<WorkspaceSnapshot> {
   const { data } = await apiClient.post<Record<string, unknown>>("/workspace/clear-ai", {});
+  return normalizeWorkspace(data);
+}
+
+export async function apiPatchWorkspaceResearch(patch: {
+  deleteCompetitorIds?: string[];
+  removeMarketGaps?: string[];
+}): Promise<WorkspaceSnapshot> {
+  const { data } = await apiClient.post<Record<string, unknown>>("/workspace/research-patch", {
+    delete_competitor_ids: patch.deleteCompetitorIds ?? [],
+    remove_market_gaps: patch.removeMarketGaps ?? [],
+  });
   return normalizeWorkspace(data);
 }
 

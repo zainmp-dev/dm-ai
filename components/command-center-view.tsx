@@ -1,9 +1,8 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { format, parseISO } from "date-fns";
-import { AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Search, Sparkles, X } from "lucide-react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FacebookPostPreview } from "@/components/previews/facebook-post-preview";
 import { InstagramPostPreview } from "@/components/previews/instagram-post-preview";
 import { LinkedInPostPreview } from "@/components/previews/linkedin-post-preview";
@@ -24,7 +23,6 @@ import { apiErrorMessage, sanitizeMediaUrl } from "@/lib/api";
 import { shouldUseVideoElement } from "@/lib/media-detect";
 import { primaryRegionLabel } from "@/lib/primary-region";
 import type { ContentItem, PublishingPlatform, WorkspaceSnapshot } from "@/lib/types";
-import { stashCompetitorView } from "@/lib/competitor-view-cache";
 import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
 import { useElapsedSecondsWhileActive, useSimulatedAiProgress } from "@/hooks/use-simulated-ai-progress";
@@ -151,9 +149,25 @@ function formatIsoDateTime(iso: string | undefined): string {
 }
 
 const COMPETITOR_RESEARCH_PAGE_SIZE = 4;
+const STRATEGY_THEMES_PAGE_SIZE = 8;
+const STRATEGY_GAPS_PAGE_SIZE = 5;
 /** XL grid is 3 columns; 12 cards = 4 rows per page for a dense first view. */
 const CONTENT_QUEUE_PAGE_SIZE = 12;
 const MAX_GAPS_PER_COMPETITOR_CARD = 10;
+
+type ResearchHoverPreviewRow = {
+  id: string;
+  name: string;
+  website: string;
+  domain: string;
+  positioning: string;
+  marketRank: string;
+  marketGap: string;
+  marketingPurpose: string;
+  strengths: string[];
+  weaknesses: string[];
+  source: "Setup" | "Generated";
+};
 
 function gapLinesForCompetitorCard(
   c: { source: "Setup" | "Generated"; marketGap: string; weaknesses: string[] },
@@ -269,10 +283,10 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
   const generateContent = useWorkspaceStore((s) => s.generateContent);
   const lastRunUsedFreeModel = useWorkspaceStore((s) => s.lastRunUsedFreeModel);
   const bulkDeleteContentItems = useWorkspaceStore((s) => s.bulkDeleteContentItems);
+  const patchWorkspaceResearch = useWorkspaceStore((s) => s.patchWorkspaceResearch);
   const approve = useWorkspaceStore((s) => s.approve);
   const reject = useWorkspaceStore((s) => s.reject);
   const { push } = useToast();
-  const router = useRouter();
 
   const [competitorName, setCompetitorName] = useState("");
   const [competitorWebsite, setCompetitorWebsite] = useState("");
@@ -292,7 +306,59 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
   const [competitorUploadOpen, setCompetitorUploadOpen] = useState(false);
   const [bootstrapLoading, setBootstrapLoading] = useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [competitorAllDeleteOpen, setCompetitorAllDeleteOpen] = useState(false);
+  const [researchPatchBusy, setResearchPatchBusy] = useState(false);
+  const [strategyOutputQuery, setStrategyOutputQuery] = useState("");
+  const [strategyThemesPage, setStrategyThemesPage] = useState(0);
+  const [strategyGapsPage, setStrategyGapsPage] = useState(0);
+  const [researchCardSelected, setResearchCardSelected] = useState<string[]>([]);
+  const [marketGapSelected, setMarketGapSelected] = useState<string[]>([]);
+  const [marketGapModalText, setMarketGapModalText] = useState<string | null>(null);
+  const [researchHoverModal, setResearchHoverModal] = useState<ResearchHoverPreviewRow | null>(null);
+  const researchHoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const marketGapHoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bootstrapStartedRef = useRef(false);
+
+  const cancelResearchHoverClose = useCallback(() => {
+    if (researchHoverCloseTimerRef.current != null) {
+      clearTimeout(researchHoverCloseTimerRef.current);
+      researchHoverCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleResearchHoverClose = useCallback(() => {
+    cancelResearchHoverClose();
+    researchHoverCloseTimerRef.current = setTimeout(() => {
+      setResearchHoverModal(null);
+      researchHoverCloseTimerRef.current = null;
+    }, 300);
+  }, [cancelResearchHoverClose]);
+
+  const cancelMarketGapHoverClose = useCallback(() => {
+    if (marketGapHoverCloseTimerRef.current != null) {
+      clearTimeout(marketGapHoverCloseTimerRef.current);
+      marketGapHoverCloseTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleMarketGapHoverClose = useCallback(() => {
+    cancelMarketGapHoverClose();
+    marketGapHoverCloseTimerRef.current = setTimeout(() => {
+      setMarketGapModalText(null);
+      marketGapHoverCloseTimerRef.current = null;
+    }, 300);
+  }, [cancelMarketGapHoverClose]);
+
+  useEffect(() => {
+    return () => {
+      if (researchHoverCloseTimerRef.current != null) {
+        clearTimeout(researchHoverCloseTimerRef.current);
+      }
+      if (marketGapHoverCloseTimerRef.current != null) {
+        clearTimeout(marketGapHoverCloseTimerRef.current);
+      }
+    };
+  }, []);
 
   const updateContentItem = useWorkspaceStore((s) => s.updateContentItem);
 
@@ -370,6 +436,59 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       ),
     [filteredResearchCompetitors, safeResearchPage],
   );
+
+  const strategyOutQ = strategyOutputQuery.trim().toLowerCase();
+
+  const filteredStrategyThemes = useMemo(() => {
+    const themes = workspace?.strategy?.contentThemes ?? [];
+    if (!strategyOutQ) return themes;
+    return themes.filter((t) => t.toLowerCase().includes(strategyOutQ));
+  }, [workspace?.strategy?.contentThemes, strategyOutQ]);
+
+  const filteredStrategyGaps = useMemo(() => {
+    const gaps = workspace?.strategy?.marketGaps ?? [];
+    if (!strategyOutQ) return gaps;
+    return gaps.filter((g) => g.toLowerCase().includes(strategyOutQ));
+  }, [workspace?.strategy?.marketGaps, strategyOutQ]);
+
+  const audienceMatches = useMemo(() => {
+    const ta = workspace?.strategy?.targetAudience ?? "";
+    if (!strategyOutQ) return true;
+    return ta.toLowerCase().includes(strategyOutQ);
+  }, [workspace?.strategy?.targetAudience, strategyOutQ]);
+
+  const themesPageCount = Math.max(1, Math.ceil(filteredStrategyThemes.length / STRATEGY_THEMES_PAGE_SIZE));
+  const safeStrategyThemesPage = Math.min(strategyThemesPage, Math.max(0, themesPageCount - 1));
+  const themesSlice = useMemo(
+    () =>
+      filteredStrategyThemes.slice(
+        safeStrategyThemesPage * STRATEGY_THEMES_PAGE_SIZE,
+        (safeStrategyThemesPage + 1) * STRATEGY_THEMES_PAGE_SIZE,
+      ),
+    [filteredStrategyThemes, safeStrategyThemesPage],
+  );
+
+  const strategyGapsPageCount = Math.max(1, Math.ceil(filteredStrategyGaps.length / STRATEGY_GAPS_PAGE_SIZE));
+  const safeStrategyGapsPage = Math.min(strategyGapsPage, Math.max(0, strategyGapsPageCount - 1));
+  const gapsSlice = useMemo(
+    () =>
+      filteredStrategyGaps.slice(
+        safeStrategyGapsPage * STRATEGY_GAPS_PAGE_SIZE,
+        (safeStrategyGapsPage + 1) * STRATEGY_GAPS_PAGE_SIZE,
+      ),
+    [filteredStrategyGaps, safeStrategyGapsPage],
+  );
+
+  useEffect(() => {
+    startTransition(() => {
+      setStrategyThemesPage(0);
+      setStrategyGapsPage(0);
+    });
+  }, [strategyOutputQuery]);
+
+  useEffect(() => {
+    setMarketGapSelected([]);
+  }, [strategyOutputQuery]);
 
   const strategyResearchMeta = useMemo(() => {
     const t = workspace ? formatIsoDateTime(workspace.strategyUpdatedAt) : "";
@@ -575,6 +694,107 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     }
   };
 
+  const toggleResearchCardSelect = (id: string) => {
+    setResearchCardSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const selectAllResearchOnPage = () => {
+    const ids = researchSlice.map((c) => c.id);
+    const allSelected = ids.length > 0 && ids.every((id) => researchCardSelected.includes(id));
+    setResearchCardSelected((prev) => {
+      if (allSelected) return prev.filter((id) => !ids.includes(id));
+      return Array.from(new Set([...prev, ...ids]));
+    });
+  };
+
+  const toggleMarketGapSelect = (gap: string) => {
+    setMarketGapSelected((prev) => (prev.includes(gap) ? prev.filter((g) => g !== gap) : [...prev, gap]));
+  };
+
+  const selectAllGapsOnPage = () => {
+    const gaps = gapsSlice;
+    const allSelected = gaps.length > 0 && gaps.every((g) => marketGapSelected.includes(g));
+    setMarketGapSelected((prev) => {
+      if (allSelected) return prev.filter((x) => !gaps.includes(x));
+      return Array.from(new Set([...prev, ...gaps]));
+    });
+  };
+
+  const runDeleteSelectedResearch = async () => {
+    if (researchCardSelected.length === 0) return;
+    setResearchPatchBusy(true);
+    try {
+      const apiIds: string[] = [];
+      for (const id of researchCardSelected) {
+        const row = researchCompetitors.find((r) => r.id === id);
+        if (row?.source === "Generated") apiIds.push(id);
+      }
+      if (researchCardSelected.includes("primary-competitor")) {
+        setCompetitorName("");
+        setCompetitorWebsite("");
+      }
+      setCompetitorDrafts((prev) => prev.filter((d) => !researchCardSelected.includes(d.id)));
+      if (apiIds.length > 0) {
+        await patchWorkspaceResearch({ deleteCompetitorIds: apiIds });
+      }
+      const hadLocal =
+        researchCardSelected.includes("primary-competitor") ||
+        researchCardSelected.some((id) => id.startsWith("draft-"));
+      setResearchCardSelected([]);
+      if (apiIds.length > 0 && hadLocal) {
+        push(`Removed ${apiIds.length} saved card(s) and cleared local setup rows.`);
+      } else if (apiIds.length > 0) {
+        push(`Removed ${apiIds.length} saved competitor card(s).`);
+      } else if (hadLocal) {
+        push("Cleared local competitor setup rows.");
+      }
+    } catch (e) {
+      push(apiErrorMessage(e));
+    } finally {
+      setResearchPatchBusy(false);
+    }
+  };
+
+  const runDeleteAllSavedCompetitors = async () => {
+    const ids = (workspace?.competitors ?? []).map((c) => c.id).filter(Boolean);
+    if (ids.length === 0) {
+      push("No saved competitor cards to delete.");
+      return;
+    }
+    setCompetitorAllDeleteOpen(false);
+    setResearchPatchBusy(true);
+    try {
+      await patchWorkspaceResearch({ deleteCompetitorIds: ids });
+      setResearchCardSelected([]);
+      setCompetitorResearchPage(0);
+      push(`Deleted ${ids.length} saved competitor card(s).`);
+    } catch (e) {
+      push(apiErrorMessage(e));
+    } finally {
+      setResearchPatchBusy(false);
+    }
+  };
+
+  const runRemoveSelectedGaps = async () => {
+    const gaps = marketGapSelected;
+    if (gaps.length === 0) return;
+    setResearchPatchBusy(true);
+    try {
+      await patchWorkspaceResearch({ removeMarketGaps: gaps });
+      if (marketGapModalText && gaps.includes(marketGapModalText)) {
+        cancelMarketGapHoverClose();
+        setMarketGapModalText(null);
+      }
+      setMarketGapSelected([]);
+      startTransition(() => setStrategyGapsPage(0));
+      push(`Removed ${gaps.length} market gap line(s).`);
+    } catch (e) {
+      push(apiErrorMessage(e));
+    } finally {
+      setResearchPatchBusy(false);
+    }
+  };
+
   const openEdit = (item: ContentItem) => {
     setEditItem(item);
     setEditTitle(item.title);
@@ -770,83 +990,320 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
             ) : null}
           </Card>
 
-          <Card className="flex min-h-0 flex-1 flex-col rounded-2xl border-blue-200/80 bg-gradient-to-b from-blue-50/50 to-white shadow-sm dark:border-blue-500/25 dark:from-blue-950/20 dark:to-zinc-950">
-            <CardHeader className="space-y-2 border-b border-blue-100/80 pb-3 dark:border-blue-500/20">
-              <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <CardTitle className="text-lg font-semibold tracking-tight text-blue-950 dark:text-blue-100">
-                    Competitor research
-                  </CardTitle>
-                  <p className="text-xs font-medium text-blue-800/80 dark:text-blue-200/70">
-                    Strategy output · gap marking
+          <Card className="flex min-h-0 flex-1 flex-col rounded-2xl border-blue-100/90 bg-white shadow-sm shadow-blue-900/[0.03] dark:border-blue-900/50 dark:bg-zinc-900/40 xl:min-h-[46rem]">
+            <CardHeader className="shrink-0 border-b border-blue-100/80 pb-3 dark:border-blue-900/40">
+              <div className="flex w-full flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <CardTitle className="text-base text-slate-900 dark:text-zinc-50">Competitor research</CardTitle>
+                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                    Strategy output · gap marking · pagination above lists
                   </p>
+                  {strategyResearchMeta ? (
+                    <p className="mt-1 text-[11px] font-medium tabular-nums text-zinc-500 dark:text-zinc-400">{strategyResearchMeta}</p>
+                  ) : null}
                 </div>
-                {strategyResearchMeta ? (
-                  <p className="max-w-[min(100%,20rem)] text-[11px] font-medium leading-snug tracking-tight text-blue-900/90 dark:text-blue-200/90 sm:text-right">
-                    {strategyResearchMeta}
-                  </p>
-                ) : null}
+                <div className="ml-auto flex shrink-0 flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="rounded-xl"
+                    disabled={researchPatchBusy || researchCardSelected.length === 0}
+                    onClick={() => void runDeleteSelectedResearch()}
+                  >
+                    Delete selected
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="rounded-xl"
+                    disabled={researchPatchBusy || (workspace?.competitors?.length ?? 0) === 0}
+                    onClick={() => setCompetitorAllDeleteOpen(true)}
+                  >
+                    Delete all saved
+                  </Button>
+                </div>
               </div>
-              <p className="text-[11px] leading-snug text-zinc-600 dark:text-zinc-400">
-                <span className="font-medium text-zinc-700 dark:text-zinc-300">Strategy refresh</span> replaces this list each run - use{" "}
-                <span className="font-medium">View</span> for an exportable snapshot. Content queue regenerates separately.
+              <p className="mt-2 text-[11px] leading-snug text-zinc-600 dark:text-zinc-400">
+                <span className="font-medium text-zinc-700 dark:text-zinc-300">Strategy refresh</span> replaces saved competitor cards each run
+                — use <span className="font-medium">View</span> for an exportable snapshot. Content queue regenerates separately.
               </p>
             </CardHeader>
-            <CardContent className="flex min-h-0 flex-1 flex-col space-y-3 pt-3">
-              <div className="rounded-2xl border border-blue-100/90 bg-white/90 p-3 text-sm text-zinc-700 shadow-sm dark:border-blue-500/20 dark:bg-zinc-900/40 dark:text-zinc-200">
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-blue-600/90 dark:text-blue-300/80">
-                  Strategy output
-                </p>
+            <CardContent className="flex min-h-0 flex-1 flex-col gap-3 pt-3 pb-5">
+              <div className="rounded-2xl border border-blue-100/90 bg-white p-4 text-sm shadow-sm dark:border-blue-900/50 dark:bg-zinc-900/80">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Strategy output</p>
+                <div className="relative mt-2">
+                  <Search
+                    className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-zinc-400"
+                    aria-hidden
+                  />
+                  <Input
+                    id="cc-strategy-output-filter"
+                    value={strategyOutputQuery}
+                    onChange={(e) => {
+                      setStrategyOutputQuery(e.target.value);
+                      startTransition(() => {
+                        setStrategyThemesPage(0);
+                        setStrategyGapsPage(0);
+                      });
+                    }}
+                    placeholder="Filter audience, themes, gaps…"
+                    className="h-9 rounded-xl border-blue-100/90 pl-8 pr-8 text-[13px] dark:border-blue-900/50"
+                  />
+                  {strategyOutputQuery.trim() ? (
+                    <button
+                      type="button"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-zinc-400 transition-colors hover:text-zinc-600"
+                      aria-label="Clear filter"
+                      onClick={() => {
+                        setStrategyOutputQuery("");
+                        startTransition(() => {
+                          setStrategyThemesPage(0);
+                          setStrategyGapsPage(0);
+                        });
+                      }}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null}
+                </div>
+
                 {workspace.strategy ? (
-                  <div className="mt-2 space-y-2">
-                    <p>
-                      <span className="font-medium text-zinc-800 dark:text-zinc-200">Target audience:</span>{" "}
-                      <span className="leading-relaxed">{workspace.strategy.targetAudience}</span>
-                    </p>
-                    <p>
-                      <span className="font-medium text-zinc-800 dark:text-zinc-200">Content themes:</span>{" "}
-                      {workspace.strategy.contentThemes.join(", ")}
-                    </p>
+                  <div className="mt-4 space-y-4">
+                    {audienceMatches ? (
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                          Target audience
+                        </p>
+                        <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-700 dark:text-zinc-200">
+                          {workspace.strategy.targetAudience}
+                        </p>
+                      </div>
+                    ) : strategyOutQ ? (
+                      <p className="text-xs text-zinc-500">No target audience match for that filter.</p>
+                    ) : null}
+
                     <div>
-                      <span className="font-medium text-zinc-800 dark:text-zinc-200">Market gaps:</span>
-                      <ul className="mt-1.5 list-disc space-y-1.5 pl-4 text-[13px] leading-relaxed text-zinc-700 dark:text-zinc-300">
-                        {workspace.strategy.marketGaps.map((g, i) => (
-                          <li key={`strategy-gap-${i}`}>{g}</li>
-                        ))}
-                      </ul>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                        Content themes
+                      </p>
+                      {filteredStrategyThemes.length > STRATEGY_THEMES_PAGE_SIZE ? (
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-b border-blue-100/80 pb-3 dark:border-blue-900/40">
+                          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                            Showing {safeStrategyThemesPage * STRATEGY_THEMES_PAGE_SIZE + 1}–
+                            {Math.min(
+                              (safeStrategyThemesPage + 1) * STRATEGY_THEMES_PAGE_SIZE,
+                              filteredStrategyThemes.length,
+                            )}{" "}
+                            of {filteredStrategyThemes.length}
+                          </p>
+                          <div className="flex items-center gap-1.5">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-8 gap-0.5 rounded-lg px-2"
+                              disabled={safeStrategyThemesPage <= 0}
+                              onClick={() => setStrategyThemesPage((p) => Math.max(0, p - 1))}
+                              aria-label="Previous themes page"
+                            >
+                              <ChevronLeft className="h-4 w-4" />
+                            </Button>
+                            <span className="min-w-[5.5rem] text-center tabular-nums text-xs text-zinc-600 dark:text-zinc-400">
+                              Page {safeStrategyThemesPage + 1} / {themesPageCount}
+                            </span>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-8 gap-0.5 rounded-lg px-2"
+                              disabled={safeStrategyThemesPage >= themesPageCount - 1}
+                              onClick={() => setStrategyThemesPage((p) => Math.min(themesPageCount - 1, p + 1))}
+                              aria-label="Next themes page"
+                            >
+                              <ChevronRight className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      ) : null}
+                      {themesSlice.length > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {themesSlice.map((theme, i) => (
+                            <span
+                              key={`th-${safeStrategyThemesPage}-${i}`}
+                              className="inline-flex max-w-full rounded-lg bg-blue-50 px-2.5 py-1 text-[12px] font-medium text-blue-900 dark:bg-blue-950/40 dark:text-blue-100"
+                            >
+                              {theme}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs text-zinc-500">No themes match that filter.</p>
+                      )}
+                    </div>
+
+                    <div>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                            Market gaps
+                          </p>
+                          <p className="mt-0.5 text-[10.5px] text-zinc-400 dark:text-zinc-500">
+                            Hover gap text for the full modal — pointer away closes it (checkbox selects for bulk remove).
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {gapsSlice.length > 0 ? (
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 text-xs text-zinc-600"
+                              onClick={() => selectAllGapsOnPage()}
+                            >
+                              {gapsSlice.every((g) => marketGapSelected.includes(g)) ? "Deselect page" : "Select page"}
+                            </Button>
+                          ) : null}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-7 rounded-lg text-xs"
+                            disabled={researchPatchBusy || marketGapSelected.length === 0}
+                            onClick={() => void runRemoveSelectedGaps()}
+                          >
+                            Remove selected gaps
+                          </Button>
+                        </div>
+                      </div>
+                      {filteredStrategyGaps.length > STRATEGY_GAPS_PAGE_SIZE ? (
+                        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-b border-blue-100/80 pb-3 dark:border-blue-900/40">
+                          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                            Showing {safeStrategyGapsPage * STRATEGY_GAPS_PAGE_SIZE + 1}–
+                            {Math.min(
+                              (safeStrategyGapsPage + 1) * STRATEGY_GAPS_PAGE_SIZE,
+                              filteredStrategyGaps.length,
+                            )}{" "}
+                            of {filteredStrategyGaps.length}
+                          </p>
+                          <div className="flex items-center gap-1.5">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-8 gap-0.5 rounded-lg px-2"
+                              disabled={safeStrategyGapsPage <= 0}
+                              onClick={() => setStrategyGapsPage((p) => Math.max(0, p - 1))}
+                              aria-label="Previous gaps page"
+                            >
+                              <ChevronLeft className="h-4 w-4" />
+                            </Button>
+                            <span className="min-w-[5.5rem] text-center tabular-nums text-xs text-zinc-600 dark:text-zinc-400">
+                              Page {safeStrategyGapsPage + 1} / {strategyGapsPageCount}
+                            </span>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-8 gap-0.5 rounded-lg px-2"
+                              disabled={safeStrategyGapsPage >= strategyGapsPageCount - 1}
+                              onClick={() => setStrategyGapsPage((p) => Math.min(strategyGapsPageCount - 1, p + 1))}
+                              aria-label="Next gaps page"
+                            >
+                              <ChevronRight className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+                      ) : null}
+                      {gapsSlice.length > 0 ? (
+                        <ul className="mt-2 space-y-2">
+                          {gapsSlice.map((g, i) => (
+                            <li
+                              key={`gap-${safeStrategyGapsPage}-${i}`}
+                              className="group flex gap-2.5 rounded-xl border border-blue-100/90 bg-white px-3 py-2.5 text-[12.5px] leading-relaxed text-zinc-700 shadow-sm transition-[border-color,box-shadow] dark:border-blue-900/50 dark:bg-zinc-900/60 dark:text-zinc-200 dark:hover:border-blue-700/60"
+                            >
+                              <input
+                                type="checkbox"
+                                className="mt-1 size-3.5 shrink-0 rounded border-zinc-300 text-blue-600"
+                                checked={marketGapSelected.includes(g)}
+                                onChange={() => toggleMarketGapSelect(g)}
+                                onClick={(e) => e.stopPropagation()}
+                                aria-label={`Select market gap ${safeStrategyGapsPage * STRATEGY_GAPS_PAGE_SIZE + i + 1}`}
+                              />
+                              <div
+                                className="-mx-1 -my-1 min-w-0 flex-1 cursor-default rounded-lg px-2 py-1 text-left transition-colors hover:bg-blue-50/90 dark:hover:bg-zinc-800/90"
+                                onMouseEnter={() => {
+                                  cancelMarketGapHoverClose();
+                                  cancelResearchHoverClose();
+                                  setResearchHoverModal(null);
+                                  setMarketGapModalText(g);
+                                }}
+                                onMouseLeave={scheduleMarketGapHoverClose}
+                              >
+                                <span className="line-clamp-3 block">{g}</span>
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-2 text-xs text-zinc-500">
+                          {(workspace.strategy.marketGaps?.length ?? 0) === 0 ? "—" : "No gaps match that filter."}
+                        </p>
+                      )}
                     </div>
                   </div>
                 ) : (
-                  <p className="mt-2 text-zinc-500">Run strategy to populate audience and themes.</p>
+                  <p className="mt-3 text-sm text-zinc-500">Run strategy to populate audience and themes.</p>
                 )}
               </div>
+
               <div className="space-y-3">
-                <div className="space-y-1.5">
-                  <Label
-                    htmlFor="cc-competitor-search"
-                    className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
-                  >
-                    Search and filter
-                  </Label>
-                  <Input
-                    id="cc-competitor-search"
-                    value={competitorResearchQuery}
-                    onChange={(e) => {
-                      setCompetitorResearchQuery(e.target.value);
-                      setCompetitorResearchPage(0);
-                    }}
-                    placeholder="Filter by name, domain, positioning, strengths…"
-                    className="rounded-xl border-blue-100/90 dark:border-blue-900/50"
-                  />
+                <div className="flex flex-wrap items-end justify-between gap-2">
+                  <div>
+                    <Label
+                      htmlFor="cc-competitor-search"
+                      className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400"
+                    >
+                      Research and gaps
+                    </Label>
+                    <p className="mt-1 max-w-[20rem] text-[10.5px] leading-snug text-zinc-400 dark:text-zinc-500">
+                      Hover a competitor card for the full detail modal — pointer away from the card closes it.
+                    </p>
+                  </div>
+                  {researchSlice.length > 0 ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs text-zinc-600"
+                      onClick={() => selectAllResearchOnPage()}
+                    >
+                      {researchSlice.every((c) => researchCardSelected.includes(c.id)) ? "Deselect page" : "Select page"}
+                    </Button>
+                  ) : null}
                 </div>
+                <Input
+                  id="cc-competitor-search"
+                  value={competitorResearchQuery}
+                  onChange={(e) => {
+                    setCompetitorResearchQuery(e.target.value);
+                    setCompetitorResearchPage(0);
+                  }}
+                  placeholder="Filter by name, domain, positioning, strengths…"
+                  className="rounded-xl border-blue-100/90 dark:border-blue-900/50"
+                />
                 {filteredResearchCompetitors.length > 0 ? (
-                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-100/80 bg-blue-50/40 px-3 py-2 dark:border-blue-900/45 dark:bg-blue-950/25">
-                    <p className="text-[11px] font-medium tabular-nums text-zinc-600 dark:text-zinc-400">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-100/80 pb-3 dark:border-blue-900/40">
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
                       Showing {safeResearchPage * COMPETITOR_RESEARCH_PAGE_SIZE + 1}–
-                      {Math.min((safeResearchPage + 1) * COMPETITOR_RESEARCH_PAGE_SIZE, filteredResearchCompetitors.length)} of{" "}
-                      {filteredResearchCompetitors.length}
+                      {Math.min(
+                        (safeResearchPage + 1) * COMPETITOR_RESEARCH_PAGE_SIZE,
+                        filteredResearchCompetitors.length,
+                      )}{" "}
+                      of {filteredResearchCompetitors.length}
                       {researchCompetitors.length !== filteredResearchCompetitors.length ? (
-                        <span className="font-normal text-zinc-500"> ({researchCompetitors.length} total)</span>
+                        <span> ({researchCompetitors.length} total)</span>
                       ) : null}
                     </p>
                     <div className="flex items-center gap-1.5">
@@ -854,7 +1311,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="h-8 gap-0.5 rounded-lg border-blue-200/80 bg-white px-2 dark:border-blue-800 dark:bg-zinc-900"
+                        className="h-8 gap-0.5 rounded-lg px-2"
                         disabled={safeResearchPage <= 0}
                         onClick={() => setCompetitorResearchPage((p) => Math.max(0, p - 1))}
                         aria-label="Previous page"
@@ -868,7 +1325,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="h-8 gap-0.5 rounded-lg border-blue-200/80 bg-white px-2 dark:border-blue-800 dark:bg-zinc-900"
+                        className="h-8 gap-0.5 rounded-lg px-2"
                         disabled={safeResearchPage >= researchPageCount - 1}
                         onClick={() => setCompetitorResearchPage((p) => Math.min(researchPageCount - 1, p + 1))}
                         aria-label="Next page"
@@ -878,9 +1335,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                     </div>
                   </div>
                 ) : null}
-                <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-                  Research and gaps
-                </p>
                 {filteredResearchCompetitors.length === 0 && (
                   <p className="text-sm text-zinc-500">
                     {researchCompetitors.length === 0 ? "No competitor cards yet." : "No matches—try a different search."}
@@ -890,10 +1344,25 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                   {researchSlice.map((c) => (
                     <div
                       key={c.id}
-                      className="rounded-2xl border border-blue-100/90 bg-white p-3.5 text-sm shadow-sm transition hover:border-blue-200 dark:border-blue-900/50 dark:bg-zinc-900/60 dark:hover:border-blue-800"
+                      onMouseEnter={() => {
+                        cancelResearchHoverClose();
+                        cancelMarketGapHoverClose();
+                        setMarketGapModalText(null);
+                        setResearchHoverModal(c);
+                      }}
+                      onMouseLeave={scheduleResearchHoverClose}
+                      className="flex min-h-[14rem] flex-col gap-2 rounded-2xl border border-blue-100/90 bg-white p-4 text-sm shadow-sm outline-none transition hover:border-blue-200 hover:shadow-md dark:border-blue-900/50 dark:bg-zinc-900/80 dark:hover:border-blue-800"
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
+                      <div className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          className="mt-1 size-3.5 shrink-0 rounded border-zinc-300 text-blue-600"
+                          checked={researchCardSelected.includes(c.id)}
+                          onChange={() => toggleResearchCardSelect(c.id)}
+                          onClick={(e) => e.stopPropagation()}
+                          aria-label={`Select ${c.name}`}
+                        />
+                        <div className="min-w-0 flex-1">
                           <p className="font-medium text-zinc-900 dark:text-zinc-50">{c.name}</p>
                           {c.domain ? (
                             <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">Domain: {c.domain}</p>
@@ -904,51 +1373,29 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                             <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">Segment / rank: {c.marketRank}</p>
                           ) : null}
                         </div>
-                        <div className="flex shrink-0 flex-col items-end gap-1.5">
-                          <Badge
-                            className={
-                              c.source === "Setup" ? "bg-blue-100 text-blue-700 dark:bg-blue-950/50 dark:text-blue-200" : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200"
-                            }
-                          >
-                            {c.source}
-                          </Badge>
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="outline"
-                            className="h-7 rounded-lg text-xs"
-                            onClick={() => {
-                              stashCompetitorView({
-                                id: c.id,
-                                name: c.name,
-                                website: c.website,
-                                domain: c.domain,
-                                positioning: c.positioning,
-                                marketRank: c.marketRank,
-                                marketGap: c.marketGap,
-                                marketingPurpose: c.marketingPurpose,
-                                strengths: c.strengths,
-                                weaknesses: c.weaknesses,
-                                source: c.source === "Setup" ? "Setup" : "Generated",
-                              });
-                              router.push(`/competitors/${encodeURIComponent(c.id)}`);
-                            }}
-                          >
-                            View
-                          </Button>
-                        </div>
+                        <Badge
+                          className={
+                            c.source === "Setup"
+                              ? "shrink-0 bg-blue-100 text-blue-700 dark:bg-blue-950/50 dark:text-blue-200"
+                              : "shrink-0 bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200"
+                          }
+                        >
+                          {c.source}
+                        </Badge>
                       </div>
-                      <p className="mt-2 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">{c.positioning}</p>
-                      <p className="mt-2 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">
+                      <p className="mt-1 text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">{c.positioning}</p>
+                      <p className="mt-auto text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">
                         <span className="font-medium text-zinc-700 dark:text-zinc-300">Strengths:</span> {c.strengths.join(", ")}
                       </p>
-                      <p className="mt-1.5 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">
-                        <span className="font-medium text-zinc-700 dark:text-zinc-300">Weaknesses:</span>{" "}
-                        {c.weaknesses.join(", ")}
+                      <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">
+                        <span className="font-medium text-zinc-700 dark:text-zinc-300">Weaknesses:</span> {c.weaknesses.join(", ")}
                       </p>
-                      <div className="mt-2.5 flex flex-wrap gap-1.5">
+                      <div className="flex flex-wrap gap-1.5 border-t border-blue-100/80 pt-2 dark:border-blue-900/40">
                         {gapLinesForCompetitorCard(c, workspace.strategy?.marketGaps).map((gap, index) => (
-                          <Badge key={`${c.id}-gap-${index}`} className="bg-amber-100 text-amber-900 dark:bg-amber-950/35 dark:text-amber-100">
+                          <Badge
+                            key={`${c.id}-gap-${index}`}
+                            className="bg-amber-100 text-amber-900 dark:bg-amber-950/35 dark:text-amber-100"
+                          >
                             Gap {index + 1}: {gap}
                           </Badge>
                         ))}
@@ -1167,6 +1614,178 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
               Yes, delete all
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={competitorAllDeleteOpen} onOpenChange={setCompetitorAllDeleteOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Delete all saved competitors?</DialogTitle>
+            <DialogDescription>
+              This removes{" "}
+              <span className="font-semibold text-foreground">{(workspace?.competitors ?? []).length}</span> saved competitor card
+              {(workspace?.competitors ?? []).length !== 1 ? "s" : ""} from your workspace. Manual rows in this panel are unchanged. This
+              cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="flex gap-2 sm:gap-2">
+            <Button variant="outline" className="flex-1 rounded-xl" onClick={() => setCompetitorAllDeleteOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="destructive" className="flex-1 rounded-xl" onClick={() => void runDeleteAllSavedCompetitors()}>
+              Delete all
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        modal={false}
+        open={marketGapModalText !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            cancelMarketGapHoverClose();
+            setMarketGapModalText(null);
+          }
+        }}
+      >
+        <DialogContent
+          overlayClassName="pointer-events-none bg-zinc-900/25 backdrop-blur-[1px]"
+          className="flex max-h-[85vh] max-w-lg flex-col gap-0 overflow-hidden p-0 sm:rounded-2xl"
+          onMouseEnter={cancelMarketGapHoverClose}
+          onMouseLeave={scheduleMarketGapHoverClose}
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          onCloseAutoFocus={(e) => e.preventDefault()}
+        >
+          {marketGapModalText ? (
+            <>
+              <DialogHeader className="shrink-0 border-b border-zinc-100 px-6 py-4 dark:border-zinc-800">
+                <DialogTitle>Market gap</DialogTitle>
+                <DialogDescription className="text-zinc-500">
+                  Hover a gap line to open — move the pointer off the row and this panel to close.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-800 dark:text-zinc-100">{marketGapModalText}</p>
+              </div>
+              <DialogFooter className="shrink-0 border-t border-zinc-100 bg-zinc-50/80 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/80">
+                <Button
+                  type="button"
+                  className="rounded-xl"
+                  onClick={() => {
+                    cancelMarketGapHoverClose();
+                    setMarketGapModalText(null);
+                  }}
+                >
+                  Close
+                </Button>
+              </DialogFooter>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        modal={false}
+        open={researchHoverModal !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            cancelResearchHoverClose();
+            setResearchHoverModal(null);
+          }
+        }}
+      >
+        <DialogContent
+          overlayClassName="pointer-events-none bg-zinc-900/25 backdrop-blur-[1px]"
+          className="flex max-h-[85vh] max-w-lg flex-col gap-0 overflow-hidden p-0 sm:rounded-2xl"
+          onMouseEnter={cancelResearchHoverClose}
+          onMouseLeave={scheduleResearchHoverClose}
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          onCloseAutoFocus={(e) => e.preventDefault()}
+        >
+          {researchHoverModal ? (
+            <>
+              <DialogHeader className="shrink-0 border-b border-zinc-100 px-6 py-4 dark:border-zinc-800">
+                <div className="flex flex-wrap items-start justify-between gap-2 pr-6">
+                  <DialogTitle className="text-left leading-snug">{researchHoverModal.name}</DialogTitle>
+                  <Badge
+                    className={
+                      researchHoverModal.source === "Setup"
+                        ? "shrink-0 bg-blue-100 text-blue-700 dark:bg-blue-950/50 dark:text-blue-200"
+                        : "shrink-0 bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200"
+                    }
+                  >
+                    {researchHoverModal.source}
+                  </Badge>
+                </div>
+                <DialogDescription className="text-zinc-500">
+                  Hover a research card to open this panel — move the pointer away from the card and this window to close.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4 text-sm leading-relaxed text-zinc-800 dark:text-zinc-100">
+                {researchHoverModal.domain ? (
+                  <p>
+                    <span className="font-medium text-zinc-600 dark:text-zinc-300">Domain:</span> {researchHoverModal.domain}
+                  </p>
+                ) : researchHoverModal.website ? (
+                  <p>
+                    <span className="font-medium text-zinc-600 dark:text-zinc-300">Site:</span> {researchHoverModal.website}
+                  </p>
+                ) : null}
+                {researchHoverModal.marketRank ? (
+                  <p>
+                    <span className="font-medium text-zinc-600 dark:text-zinc-300">Segment / rank:</span>{" "}
+                    {researchHoverModal.marketRank}
+                  </p>
+                ) : null}
+                <p>
+                  <span className="font-medium text-zinc-600 dark:text-zinc-300">Positioning</span>
+                </p>
+                <p className="text-zinc-700 dark:text-zinc-200">{researchHoverModal.positioning}</p>
+                {researchHoverModal.marketGap ? (
+                  <p>
+                    <span className="font-medium text-zinc-600 dark:text-zinc-300">Gap:</span> {researchHoverModal.marketGap}
+                  </p>
+                ) : null}
+                {researchHoverModal.marketingPurpose ? (
+                  <p>
+                    <span className="font-medium text-zinc-600 dark:text-zinc-300">Purpose:</span>{" "}
+                    {researchHoverModal.marketingPurpose}
+                  </p>
+                ) : null}
+                <p>
+                  <span className="font-medium text-zinc-600 dark:text-zinc-300">Strengths:</span>{" "}
+                  {researchHoverModal.strengths.join(", ")}
+                </p>
+                <p>
+                  <span className="font-medium text-zinc-600 dark:text-zinc-300">Weaknesses:</span>{" "}
+                  {researchHoverModal.weaknesses.join(", ")}
+                </p>
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {gapLinesForCompetitorCard(researchHoverModal, workspace?.strategy?.marketGaps).map((gap, index) => (
+                    <Badge
+                      key={`modal-${researchHoverModal.id}-gap-${index}`}
+                      className="bg-amber-100 text-amber-900 dark:bg-amber-950/35 dark:text-amber-100"
+                    >
+                      Gap {index + 1}: {gap}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+              <DialogFooter className="shrink-0 border-t border-zinc-100 bg-zinc-50/80 px-6 py-4 dark:border-zinc-800 dark:bg-zinc-900/80">
+                <Button
+                  type="button"
+                  className="rounded-xl"
+                  onClick={() => {
+                    cancelResearchHoverClose();
+                    setResearchHoverModal(null);
+                  }}
+                >
+                  Close
+                </Button>
+              </DialogFooter>
+            </>
+          ) : null}
         </DialogContent>
       </Dialog>
 

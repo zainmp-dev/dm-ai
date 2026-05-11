@@ -139,6 +139,16 @@ class Settings:
     token_encryption_keys: str = field(default_factory=lambda: _str_env("TOKEN_ENCRYPTION_KEYS"))
     google_ai_api_key: str = field(default_factory=lambda: _str_env("GOOGLE_AI_API_KEY"))
     gemini_model: str = field(default_factory=lambda: _str_env("GEMINI_MODEL", "gemini-2.0-flash") or "gemini-2.0-flash")
+    # Groq (OpenAI-compatible). Used ahead of Gemini/OpenRouter when keys are present.
+    groq_api_key: str = field(default_factory=lambda: _str_env("GROQ_API_KEY"))
+    groq_base_url: str = field(
+        default_factory=lambda: _str_env("GROQ_BASE_URL", "https://api.groq.com/openai/v1") or "https://api.groq.com/openai/v1"
+    )
+    groq_model: str = field(
+        default_factory=lambda: _str_env("GROQ_MODEL", "llama-3.3-70b-versatile") or "llama-3.3-70b-versatile"
+    )
+    # Pexels stock photos/video (optional — fills calendar media_preview when blank)
+    pexels_api_key: str = field(default_factory=lambda: _str_env("PEXELS_API_KEY"))
     google_client_id: str = field(default_factory=lambda: _str_env("GOOGLE_CLIENT_ID"))
     google_client_secret: str = field(default_factory=lambda: _str_env("GOOGLE_CLIENT_SECRET"))
     google_redirect_uri: str = field(default_factory=lambda: _str_env("GOOGLE_REDIRECT_URI"))

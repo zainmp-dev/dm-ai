@@ -25,6 +25,7 @@ def generate_image_prompt(
         task_type="image_generation",
         max_tokens=600,
         temperature=0.6,
+        prefer_groq_first=True,
         prefer_gemini=True,
     )
     return {"image_prompt": out.text, "_ai_model_used": out.model_used}

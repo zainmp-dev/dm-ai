@@ -2,12 +2,8 @@
 prompts.py — FlowPilot AI Agent Prompts (v2, advanced)
 
 All LLM prompt templates live here.
-System message used by every agent (set in agents.py _openrouter_single_model):
-
-    SYSTEM_PROMPT = (
-        "You are a senior marketing automation AI. "
-        "Return exactly what the user requests, with no filler."
-    )
+Task-specific system wording is composed in `services.ai.prompt_builder.build_system_prompt`
+and sent on every Groq / Gemini / OpenRouter completion.
 
 Canonical BrandContext is the single source of truth for brand data passed
 into every agent. Build it with build_brand_context() before calling any prompt.
@@ -24,7 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# System prompt — import and use this in agents.py _openrouter_single_model
+# Minimal default system line — extended per task in prompt_builder
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = (
@@ -582,10 +578,9 @@ Each calendar post object MUST have:
 - content: full body (short paragraphs; platform-appropriate length)
 - cta: one specific action
 - hashtags: 3–6 plain tags (no # prefix in strings)
-- media_type: Image|Video|Carousel
-- media_preview_prompt: direct https URL OR empty string "" when unsure
-  - Never use placeholder, random stock, or unrelated URLs
-  - If provided, URL must visually match the post's topic and platform intent
+- media_type: Image|Video|Carousel — pick the best format for the post (Image for single shots, Carousel for multi-step stories, Video for motion-native ideas).
+- media_preview_prompt: Use a real https URL from a stock library (e.g. images.pexels.com, images.unsplash.com) that matches the post topic and {context.brand_name}'s industry, OR set to "" — the server can fill from Pexels when PEXELS_API_KEY is configured and the query is blank.
+  Do not invent fake domains. Do not use unrelated or placeholder stock. When you return a URL it must clearly match this post's subject and audience.
 
 ---
 
@@ -681,10 +676,9 @@ PLATFORM VOICE
 
 MEDIA PRESERVATION (CRITICAL)
 □ Preserve media_type exactly as in the draft.
-□ Preserve media_preview_prompt exactly as in the draft — it must remain a
-  direct https URL. If the draft had media_preview instead of
-  media_preview_prompt, copy the value into media_preview_prompt.
-□ Do NOT replace any URL with a text description.
+□ Preserve media_preview_prompt when it holds a usable https/data URL OR an empty "" (do not substitute prose).
+□ If the draft had media_preview instead of media_preview_prompt, copy the value into media_preview_prompt.
+□ Do NOT replace URLs with vague text descriptions unless the draft URL was obviously broken.
 
 ━━━ OUTPUT FORMAT ━━━
 Return ONLY the improved valid JSON array. No explanation. No markdown fences.
@@ -781,17 +775,16 @@ post draft for immediate scheduling.
    - media_type: Choose the best fit — Image, Carousel (step-by-step tips or
      listicles), or Video (demos, testimonials, reels, tutorials).
      Vary the format across posts; do not default to Image every time.
-   - media_preview_prompt: A direct https image URL that visually fits this
-     post (used as poster/thumbnail for Video and cover for Carousel).
-     Use https://picsum.photos/seed/<unique-descriptive-word>/800/450
-     or a real Unsplash URL. Must start with https://.
+   - media_preview_prompt: A real https URL from a reputable stock host (e.g. Pexels, Unsplash)
+     that visually matches this post for {context.brand_name}. If unsure, use "" and the server
+     may resolve a Pexels asset when PEXELS_API_KEY is set. Never fabricate URLs on unknown domains.
 
 6. QUALITY GATE — before returning, verify:
    □ Hook does not start with a cliché opener.
    □ Brand name is used naturally (not stuffed).
    □ No hype language ("game-changer", "revolutionary", "unlock your potential").
    □ content_text has no # characters; hashtags are only in the array.
-   □ media_preview_prompt is a valid https URL.
+   □ media_preview_prompt is either "" or a valid https URL you would trust as a marketer.
    □ All JSON fields are present.
 
 ━━━ OUTPUT FORMAT ━━━

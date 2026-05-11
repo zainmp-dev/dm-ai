@@ -340,13 +340,15 @@ def _parse_openrouter_affordable_max_tokens(error_body: str) -> int | None:
 
 
 def _openrouter_single_model(model: str, prompt: str) -> str:
+    """Same LLM stack as workspace agents: Groq → Gemini → OpenRouter (preferred_model)."""
     try:
         result = ai_service.retry_request(
             prompt=prompt,
             preferred_model=model,
             max_tokens=settings.openrouter_max_tokens,
             temperature=0.7,
-            prefer_gemini=False,
+            prefer_groq_first=True,
+            prefer_gemini=True,
         )
         return result.text
     except AIServiceError as exc:
@@ -357,14 +359,15 @@ def call_openrouter_with_fallback(
     prompt: str,
     preferred_model: str | None = None,
 ) -> tuple[str, str]:
-    """Call OpenRouter only (no Gemini). Used by all agents except strategy."""
+    """Groq first (when configured), then Gemini, then OpenRouter with model routing."""
     try:
         result = ai_service.retry_request(
             prompt=prompt,
             preferred_model=preferred_model,
             max_tokens=settings.openrouter_max_tokens,
             temperature=0.7,
-            prefer_gemini=False,
+            prefer_groq_first=True,
+            prefer_gemini=True,
         )
         return result.text, result.model_used
     except AIServiceError as exc:
@@ -375,18 +378,25 @@ def call_gemini_with_openrouter_fallback(
     prompt: str,
     preferred_openrouter_model: str | None = None,
 ) -> tuple[str, str]:
-    """Strategy-agent multi-tier fallback chain (cost-optimised, highest quality first).
+    """Strategy-agent multi-tier chain: Groq → Gemini → OpenRouter.
 
     Priority:
-    1. Gemini 2.5 Flash    — free quota, fast, large context
-    2. anthropic/claude-sonnet-4 — best reasoning quality (via OpenRouter)
-    3. openai/gpt-4o-mini  — reliable structured output fallback
-    4. openai/gpt-5-mini   — final safe fallback
+    1. Groq (GROQ_API_KEY) — low-latency inference; skips ahead on quota/rate errors
+    2. Gemini (GOOGLE_AI_API_KEY)
+    3. anthropic/claude-sonnet-4 — via OpenRouter
+    4. openai/gpt-4o-mini / openai/gpt-5-mini — reliable structured fallbacks
 
     If ``preferred_openrouter_model`` is set it is tried first in the OpenRouter
     chain (before Claude Sonnet), giving callers a manual override path.
     """
-    # ── 1. Gemini (free, fast) ─────────────────────────────────────────────
+    groq_try = ai_service.groq_only_request(
+        prompt=prompt,
+        max_tokens=settings.openrouter_max_tokens,
+        temperature=0.7,
+    )
+    if groq_try is not None:
+        return groq_try.text, groq_try.model_used
+
     gemini_key = (getattr(settings, "google_ai_api_key", "") or "").strip()
     if gemini_key:
         try:
@@ -428,6 +438,7 @@ def call_gemini_with_openrouter_fallback(
                 preferred_model=model,
                 max_tokens=settings.openrouter_max_tokens,
                 temperature=0.7,
+                prefer_groq_first=False,
                 prefer_gemini=False,
             )
             logger.info("agents.strategy openrouter_success model=%s", model)
@@ -1114,6 +1125,7 @@ def run_workspace_content_agent(
 
     result = post_items
     content: list[dict[str, str]] = []
+    seed_key = (company_name or "workspace").strip() or "workspace"
     for item in result:
         if not isinstance(item, dict):
             continue
@@ -1136,12 +1148,36 @@ def run_workspace_content_agent(
         media_type = str(item.get("media_type", "")).strip()
         if media_type not in {"Image", "Video", "Carousel"}:
             media_type = "Image"
+        raw_preview = (
+            str(item.get("media_preview", "")).strip()
+            or str(item.get("media_preview_prompt", "")).strip()
+            or str(item.get("media_url", "")).strip()
+            or str(item.get("image_url", "")).strip()
+            or str(item.get("thumbnail", "")).strip()
+        )
+        mt, url = _finalize_workspace_content_media(
+            raw_preview=raw_preview,
+            media_type=media_type,
+            index=len(content),
+            seed_key=seed_key,
+        )
+        if not url:
+            url = _pexels_stock_fallback_url(
+                company_name=company_name,
+                scenario=scenario,
+                title=title,
+                hook=hook,
+                media_type=mt,
+            )
+        if not url:
+            h = hashlib.sha256(f"{seed_key}:{len(content)}:{title}".encode()).hexdigest()[:16]
+            url = f"https://picsum.photos/seed/{h}/800/450"
         content.append(
             {
                 "title": title[:220],
                 "content_text": content_text,
-                "media_type": media_type,
-                "media_preview": str(item.get("media_preview") or item.get("media_preview_prompt") or "").strip(),
+                "media_type": mt,
+                "media_preview": url,
             }
         )
     if not content:
@@ -1229,6 +1265,31 @@ def _finalize_workspace_content_media(
     return mt, url
 
 
+def _pexels_stock_fallback_url(
+    *,
+    company_name: str,
+    scenario: str,
+    title: str,
+    hook: str,
+    media_type: str,
+) -> str:
+    """When calendar media is blank, search Pexels using company + scenario + topic text."""
+    from services.media.pexels_stock import search_pexels_for_post
+
+    if not getattr(settings, "pexels_api_key", "").strip():
+        return ""
+    parts = [
+        (company_name or "").strip(),
+        (scenario or "").replace("-", " ").strip(),
+        (title or "").strip(),
+        (hook or "").strip()[:220],
+    ]
+    query = " ".join(p for p in parts if p).strip()
+    if not query:
+        return ""
+    return search_pexels_for_post(query=query[:400], media_type=media_type)
+
+
 def suggest_master_content_post(
     *,
     company_name: str,
@@ -1283,6 +1344,14 @@ def suggest_master_content_post(
     # LLM returned a static image URL.
     if not media_preview.startswith("https://") and not media_preview.startswith("data:"):
         media_preview = ""
+    if not media_preview:
+        media_preview = _pexels_stock_fallback_url(
+            company_name=company_name,
+            scenario=scenario,
+            title=title,
+            hook=(content_text or "").strip().split("\n", 1)[0][:240],
+            media_type=media_type,
+        )
     tag_list = _string_list(result.get("hashtags"), [])
     content_text = merge_social_hashtags_into_body(content_text, _dedupe_hashtag_list(tag_list), platform=out_platform or "linkedin")
     return (
@@ -2025,6 +2094,9 @@ def _normalize_workspace_research(
             index=len(normalized_content),
             seed_key=seed_key,
         )
+        if not url:
+            h = hashlib.sha256(f"{seed_key}:{len(normalized_content)}:{title}".encode()).hexdigest()[:16]
+            url = f"https://picsum.photos/seed/{h}/800/450"
         normalized_content.append(
             {
                 "title": title[:220],

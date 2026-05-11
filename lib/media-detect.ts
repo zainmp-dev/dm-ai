@@ -8,6 +8,8 @@ export function isImageLikeUrl(url: string): boolean {
   const u = url.trim();
   if (!u) return false;
   const l = u.toLowerCase();
+  // Prefer file extension over hostnames (e.g. videos.pexels.com/…/clip.mp4)
+  if (/\.(mp4|webm|mov|m4v|m3u8|ogv)(\?|#|$)/i.test(l)) return false;
   if (l.startsWith("data:image/")) return true;
   if (l.includes("/api/media-assets/") || l.includes("/api/backend/media-assets/")) {
     if (!/\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(l)) return true;

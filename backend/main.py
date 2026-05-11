@@ -207,6 +207,11 @@ class StrategyRequest(BaseModel):
     competitors: list[CompetitorInput] = Field(default_factory=list)
 
 
+class ResearchPatchRequest(BaseModel):
+    delete_competitor_ids: list[str] = Field(default_factory=list, max_length=500)
+    remove_market_gaps: list[str] = Field(default_factory=list, max_length=200)
+
+
 class ContentLibraryRequest(BaseModel):
     action: str = Field(default="generate", max_length=20)
     content_id: str | None = Field(default=None, max_length=120)
@@ -1586,6 +1591,32 @@ def _insert_flowpilot_strategy(
     db.execute(text(sql), params)
 
 
+def _resolved_media_preview_for_storage(
+    media_preview: str | None,
+    *,
+    workspace_id: str,
+    content_id: str,
+    title: str,
+) -> str:
+    """Never persist empty or prose-only preview text — UI needs a real URL (or app-relative path)."""
+    s = str(media_preview or "").strip()
+    if s.lower() in {"null", "none", "undefined"}:
+        s = ""
+    if s:
+        sl = s.lower()
+        ok = (
+            sl.startswith("https://")
+            or sl.startswith("http://")
+            or sl.startswith("data:image/")
+            or sl.startswith("data:video/")
+            or s.startswith("/")
+        )
+        if ok:
+            return s.split()[0].rstrip(").,;]")
+    h = hashlib.sha256(f"{workspace_id}:{content_id}:{title}".encode()).hexdigest()[:16]
+    return f"https://picsum.photos/seed/{h}/800/450"
+
+
 def _insert_flowpilot_content_row(
     db: Session,
     *,
@@ -1629,7 +1660,12 @@ def _insert_flowpilot_content_row(
         "title": title,
         "content_text": content_text,
         "media_type": media_type,
-        "media_preview": media_preview,
+        "media_preview": _resolved_media_preview_for_storage(
+            media_preview,
+            workspace_id=workspace_id,
+            content_id=new_id,
+            title=title,
+        ),
         "status": status,
         "selected_platform": selected_platform,
         "scheduled_at": scheduled_at,
@@ -2020,6 +2056,68 @@ def _db_text_array_to_list(value: object) -> list[str]:
                     return [str(x).strip() for x in parsed if str(x).strip()]
         return [s]
     return []
+
+
+def _apply_workspace_research_patch(
+    db: Session,
+    *,
+    workspace_id: str,
+    delete_competitor_ids: list[str],
+    remove_market_gaps: list[str],
+) -> tuple[int, int]:
+    """Returns (deleted competitor rows, number of market-gap lines removed)."""
+    deleted = 0
+    removed_gap_lines = 0
+
+    if delete_competitor_ids:
+        deduped_ids: list[str] = []
+        seen_ids: set[str] = set()
+        for cid in delete_competitor_ids:
+            val = str(cid or "").strip()
+            if not val or val in seen_ids:
+                continue
+            seen_ids.add(val)
+            deduped_ids.append(val)
+        if deduped_ids:
+            res = db.execute(
+                text(
+                    "delete from flowpilot_competitors where workspace_id = :workspace_id and id = any(:ids)"
+                ),
+                {"workspace_id": workspace_id, "ids": deduped_ids},
+            )
+            try:
+                deleted = int(res.rowcount or 0)
+            except Exception:
+                deleted = len(deduped_ids)
+
+    if remove_market_gaps:
+        to_strip = {_clean_text(g, max_len=4000) for g in remove_market_gaps if _clean_text(g, max_len=4000)}
+        if to_strip:
+            strat_row = db.execute(
+                text("select market_gaps from flowpilot_strategy where workspace_id = :workspace_id"),
+                {"workspace_id": workspace_id},
+            ).mappings().first()
+            if strat_row is not None:
+                current = _clean_string_list(
+                    _db_text_array_to_list(strat_row["market_gaps"]),
+                    max_items=200,
+                    item_max_len=4000,
+                )
+                next_gaps = [g for g in current if g not in to_strip]
+                removed_gap_lines = len(current) - len(next_gaps)
+                if removed_gap_lines:
+                    expr = _list_expr(db, "flowpilot_strategy", "market_gaps", "market_gaps")
+                    params: dict[str, Any] = {
+                        "workspace_id": workspace_id,
+                        "market_gaps": _list_value(db, "flowpilot_strategy", "market_gaps", next_gaps),
+                    }
+                    sql = (
+                        "update flowpilot_strategy set market_gaps = "
+                        f"{expr}, updated_at = now() where workspace_id = :workspace_id"
+                    )
+                    db.execute(text(sql), params)
+
+    return deleted, removed_gap_lines
 
 
 def _strategy_output_bundle_from_db(db: Session, workspace_id: str) -> dict[str, Any] | None:
@@ -2932,6 +3030,45 @@ def clear_workspace_ai_outputs(
     return workspace_snapshot(db, workspace_id, user)
 
 
+@app.post("/workspace/research-patch")
+def patch_workspace_research(
+    body: ResearchPatchRequest,
+    db: Session = Depends(get_db),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    workspace_id = str(user["id"])
+    if not body.delete_competitor_ids and not body.remove_market_gaps:
+        raise HTTPException(status_code=400, detail="Provide delete_competitor_ids and/or remove_market_gaps")
+
+    dc = list(body.delete_competitor_ids)[:500]
+    rg = list(body.remove_market_gaps)[:200]
+
+    try:
+        deleted_n, gaps_removed = _apply_workspace_research_patch(
+            db,
+            workspace_id=workspace_id,
+            delete_competitor_ids=dc,
+            remove_market_gaps=rg,
+        )
+    except Exception:
+        logger.exception("workspace research-patch failed")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to apply research edits") from None
+
+    note_parts: list[str] = []
+    if dc:
+        note_parts.append(f"removed {deleted_n} competitor card(s)")
+    if rg:
+        note_parts.append(
+            f"removed {gaps_removed} matching market gap line(s)" if gaps_removed else "no matching market gaps removed"
+        )
+    if note_parts:
+        record_activity(db, workspace_id, "Research edits: " + ", ".join(note_parts) + ".")
+
+    db.commit()
+    return workspace_snapshot(db, workspace_id, user)
+
+
 @app.post("/workspace")
 def setup_workspace(
     body: WorkspaceRequest,
@@ -3189,7 +3326,7 @@ def workspace_content(
             title=(body.title or "Untitled content").strip(),
             content_text=(body.content_text or "").strip(),
             media_type=body.media_type or "Image",
-            media_preview=body.media_preview or f"https://picsum.photos/seed/{workspace_id}-{uuid.uuid4().hex[:6]}/800/450",
+            media_preview=(body.media_preview or "").strip(),
             status=status,
             selected_platform=activation_platform,
             scheduled_at=scheduled_at_utc,
