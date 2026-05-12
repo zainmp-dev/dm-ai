@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any
 
@@ -14,6 +15,9 @@ from database import get_db
 from services import ads_service
 from utils.token_crypto import decrypt_secret
 
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/ads", tags=["ads"])
 
 
@@ -25,7 +29,10 @@ def _current_user(request: Request, db: Session) -> dict[str, str]:
     if not token.startswith("flowpilot-"):
         raise HTTPException(status_code=401, detail="Invalid auth token")
     user_id = token.removeprefix("flowpilot-").rsplit("-", 1)[0]
-    row = db.execute(text("select id from flowpilot_users where id = :id"), {"id": user_id}).mappings().first()
+    row = db.execute(
+        text("select id from flowpilot_users where id = :id and deleted_at is null"),
+        {"id": user_id},
+    ).mappings().first()
     if not row:
         raise HTTPException(status_code=401, detail="Invalid auth token")
     return {"user_id": user_id, "workspace_id": user_id}
@@ -169,7 +176,7 @@ def create_boost_campaign(body: AdsBoostRequest, request: Request, db: Session =
             api_version=s.meta_graph_api_version,
             timeout_seconds=s.request_timeout_seconds,
         )
-    except Exception as exc:
+    except Exception:
         db.execute(
             text(
                 """
@@ -192,7 +199,8 @@ def create_boost_campaign(body: AdsBoostRequest, request: Request, db: Session =
             },
         )
         db.commit()
-        raise HTTPException(status_code=400, detail=str(exc)[:500]) from exc
+        logger.exception("Meta ads boost creation failed")
+        raise HTTPException(status_code=400, detail="Could not create boost campaign. Try again later.") from None
 
     db.execute(
         text(

@@ -29,7 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
-import { apiAdminOverview, type AdminOverview } from "@/lib/api";
+import { apiAdminOverview, flowSuccessMessages, type AdminOverview } from "@/lib/api";
 import { clearAuthSession, getAuthToken, getAuthUser, type AuthUser } from "@/lib/auth";
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
@@ -119,7 +119,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
 
   const handleSignOut = useCallback(() => {
     clearAuthSession();
-    toastPush("Signed out.", { kind: "success" });
+    toastPush(flowSuccessMessages.signedOut, { kind: "success" });
     router.replace("/login");
   }, [router, toastPush]);
 

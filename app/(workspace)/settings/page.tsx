@@ -49,7 +49,7 @@ const SECTIONS = [
   { id: "assistant" as const, label: "Voice & AI flow", short: "Mic", icon: Mic },
   { id: "security" as const, label: "API & security", short: "API", icon: KeyRound },
   { id: "preferences" as const, label: "Preferences", short: "Defaults", icon: SlidersHorizontal },
-  { id: "account" as const, label: "Account", short: "Delete", icon: UserX },
+  { id: "account" as const, label: "Account", short: "Close", icon: UserX },
 ];
 
 const SECTION_PARAM_IDS: (typeof SECTIONS)[number]["id"][] = [
@@ -715,9 +715,9 @@ function SettingsContent() {
                   <UserX className="size-6" />
                 </div>
                 <div className="min-w-0 space-y-1">
-                  <CardTitle className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">Delete account</CardTitle>
+                  <CardTitle className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">Close account</CardTitle>
                   <CardDescription className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
-                    Remove your login and all workspace data from FlowPilot. You can register again with the same email later.
+                    Deactivate your login and remove workspace data. Your user record is kept with a closed flag; you can sign up again with the same email.
                   </CardDescription>
                 </div>
               </div>
@@ -726,15 +726,15 @@ function SettingsContent() {
               <ul className="space-y-2.5 text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">
                 <li className="flex gap-2.5">
                   <span className="mt-2 size-1 shrink-0 rounded-full bg-red-500/80" aria-hidden />
-                  <span>Profile, workspaces, drafts, strategy, and activity history are erased.</span>
+                  <span>Workspace content, drafts, and analytics in FlowPilot are deleted; social publish tokens are cleared.</span>
                 </li>
                 <li className="flex gap-2.5">
                   <span className="mt-2 size-1 shrink-0 rounded-full bg-red-500/80" aria-hidden />
-                  <span>LinkedIn and Meta tokens stored for publishing are removed.</span>
+                  <span>Your login is deactivated (account row kept with a closed timestamp); Google or Facebook links on the profile are cleared.</span>
                 </li>
                 <li className="flex gap-2.5">
                   <span className="mt-2 size-1 shrink-0 rounded-full bg-red-500/80" aria-hidden />
-                  <span>You will be signed out immediately after you confirm.</span>
+                  <span>You are signed out right away after you confirm.</span>
                 </li>
               </ul>
               <Button
@@ -743,7 +743,7 @@ function SettingsContent() {
                 className="h-11 rounded-xl px-6 font-semibold shadow-sm"
                 onClick={() => setDeleteAccountOpen(true)}
               >
-                Delete my account
+                Close my account
               </Button>
             </CardContent>
           </Card>
@@ -760,17 +760,17 @@ function SettingsContent() {
           <div className="relative rounded-[1.25rem] border border-zinc-200/90 bg-white p-6 pt-10 shadow-2xl ring-1 ring-black/[0.04] dark:border-zinc-700 dark:bg-zinc-900 dark:ring-white/[0.06] sm:p-8 sm:pt-11">
             <DialogHeader className="space-y-3 text-left">
               <DialogTitle className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-                Delete your account?
+                Close your account?
               </DialogTitle>
               <DialogDescription asChild>
                 <div className="space-y-4 text-left text-sm text-zinc-600 dark:text-zinc-300">
                   <p>
-                    This permanently deletes data for{" "}
-                    <span className="font-medium text-zinc-900 dark:text-zinc-100">{workspace.profile.email}</span>
-                    — workspace, content library, integrations, and credentials.
+                    Workspace data and integrations for{" "}
+                    <span className="font-medium text-zinc-900 dark:text-zinc-100">{workspace.profile.email}</span> will be removed. Your account will
+                    be deactivated (soft delete); you cannot log in until you sign up again.
                   </p>
                   <p className="rounded-xl border border-amber-200/90 bg-amber-50/90 px-3.5 py-3 text-amber-950 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-100">
-                    This cannot be undone. Make sure you have exported anything you need before continuing.
+                    Export anything you need first. This stops access immediately after you confirm.
                   </p>
                 </div>
               </DialogDescription>
@@ -787,7 +787,7 @@ function SettingsContent() {
                     .then(() => {
                       resetAfterAccountDeletion();
                       clearAuthSession();
-                      push("Your account has been deleted.");
+                      push("Your account has been closed.");
                       setDeleteAccountOpen(false);
                       router.replace("/login");
                     })
@@ -797,7 +797,7 @@ function SettingsContent() {
                     .finally(() => setDeleteAccountBusy(false));
                 }}
               >
-                {deleteAccountBusy ? "Deleting…" : "Yes, delete my account permanently"}
+                {deleteAccountBusy ? "Closing…" : "Yes, close my account"}
               </Button>
               <Button
                 type="button"

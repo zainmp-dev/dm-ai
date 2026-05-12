@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime
 from typing import Any
@@ -16,6 +17,8 @@ from services.posting_service import publish_post
 from services.token_service import list_social_accounts
 from utils.rate_limit import check_rate_limit
 
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["social"])
 
@@ -47,7 +50,10 @@ def _current_user(request: Request, db: Session) -> dict[str, str]:
     if not token.startswith("flowpilot-"):
         raise HTTPException(status_code=401, detail="Invalid auth token")
     user_id = token.removeprefix("flowpilot-").rsplit("-", 1)[0]
-    row = db.execute(text("select id from flowpilot_users where id = :id"), {"id": user_id}).mappings().first()
+    row = db.execute(
+        text("select id from flowpilot_users where id = :id and deleted_at is null"),
+        {"id": user_id},
+    ).mappings().first()
     if not row:
         raise HTTPException(status_code=401, detail="Invalid auth token")
     return {"user_id": user_id, "workspace_id": user_id}
@@ -68,11 +74,9 @@ def get_connect_linkedin(request: Request, db: Session = Depends(get_db), worksp
         )
         db.commit()
         return {"auth_url": auth_url}
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.get("/connect/meta")
+    except Exception:
+        logger.exception("Social router: LinkedIn connect URL failed")
+        raise HTTPException(status_code=400, detail="Could not start LinkedIn connection.") from None
 def get_connect_meta(request: Request, db: Session = Depends(get_db), workspace_id: str | None = Query(default=None)) -> dict[str, Any]:
     if not check_rate_limit(f"connect-meta:{request.client.host if request.client else 'unknown'}", max_requests=20, window_seconds=60):
         raise HTTPException(status_code=429, detail="Too many requests")
@@ -87,11 +91,9 @@ def get_connect_meta(request: Request, db: Session = Depends(get_db), workspace_
         )
         db.commit()
         return {"auth_url": auth_url}
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.get("/auth/linkedin/callback")
+    except Exception:
+        logger.exception("Social router: Meta connect URL failed")
+        raise HTTPException(status_code=400, detail="Could not start Meta connection.") from None
 @router.get("/linkedin/callback")
 def auth_linkedin_callback(
     request: Request,
@@ -101,13 +103,15 @@ def auth_linkedin_callback(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     if error:
-        raise HTTPException(status_code=400, detail=f"LinkedIn OAuth error: {error}")
+        logger.warning("LinkedIn OAuth callback error param present")
+        raise HTTPException(status_code=400, detail="LinkedIn sign-in was cancelled or failed. Try again.")
     if not code or not state:
         raise HTTPException(status_code=400, detail="LinkedIn callback missing code/state")
     try:
         info = linkedin_callback(db, code=code, state=state, app_origin=_request_origin(request))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("LinkedIn OAuth callback failed")
+        raise HTTPException(status_code=400, detail="LinkedIn connection failed. Try again.") from None
     db.execute(
         text(
             "insert into flowpilot_integrations (workspace_id, platform, connected, account_name, account_handle, account_url, updated_at) "
@@ -140,13 +144,15 @@ def auth_meta_callback(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     if error:
-        raise HTTPException(status_code=400, detail=f"Meta OAuth error: {error}")
+        logger.warning("Meta OAuth callback error param present")
+        raise HTTPException(status_code=400, detail="Meta sign-in was cancelled or failed. Try again.")
     if not code or not state:
         raise HTTPException(status_code=400, detail="Meta callback missing code/state")
     try:
         payload = meta_callback(db, code=code, state=state, app_origin=_request_origin(request))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("Meta OAuth callback failed")
+        raise HTTPException(status_code=400, detail="Meta connection failed. Try again.") from None
     db.execute(
         text(
             "insert into flowpilot_integrations (workspace_id, platform, connected, account_name, account_handle, account_url, updated_at) "
@@ -223,10 +229,12 @@ def publish_post_now(post_id: str, request: Request, db: Session = Depends(get_d
     identity = _current_user(request, db)
     try:
         result = publish_post(db, post_id=post_id, user_id=identity["user_id"], workspace_id=identity["workspace_id"])
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError:
+        logger.warning("publish_post_now not found or invalid", exc_info=True)
+        raise HTTPException(status_code=404, detail="Post not found") from None
+    except Exception:
+        logger.exception("publish_post_now failed")
+        raise HTTPException(status_code=400, detail="Could not publish post") from None
     return result
 
 

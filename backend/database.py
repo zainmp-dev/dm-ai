@@ -109,7 +109,24 @@ def _init_workspace_tables(connection: object) -> None:
         # 'admin' bypasses workspace setup entirely and lands on /admin.
         "alter table flowpilot_users add column if not exists role text not null default 'user'",
         "update flowpilot_users set role = 'user' where role is null or trim(role) = ''",
-        "create unique index if not exists uq_flowpilot_users_auth_identity on flowpilot_users(auth_provider, auth_subject) where auth_provider is not null and auth_subject is not null",
+        # Soft-delete: keep user row with deleted_at set; allow re-signup with same email (only one active row per email).
+        "alter table flowpilot_users add column if not exists deleted_at timestamptz",
+        """
+        do $$
+        begin
+          if exists (
+            select 1 from pg_constraint c
+            join pg_class t on t.oid = c.conrelid
+            where t.relname = 'flowpilot_users' and c.conname = 'flowpilot_users_email_key'
+          ) then
+            alter table flowpilot_users drop constraint flowpilot_users_email_key;
+          end if;
+        end $$;
+        """,
+        "drop index if exists uq_flowpilot_users_email_active",
+        "create unique index if not exists uq_flowpilot_users_email_active on flowpilot_users (lower(trim(email))) where deleted_at is null",
+        "drop index if exists uq_flowpilot_users_auth_identity",
+        "create unique index if not exists uq_flowpilot_users_auth_identity on flowpilot_users (auth_provider, auth_subject) where auth_provider is not null and auth_subject is not null and deleted_at is null",
         # Speed up POST /login (case-insensitive email lookup) so a password check is one indexed scan,
         # not a sequential table scan over flowpilot_users.
         "create index if not exists idx_flowpilot_users_email_lower on flowpilot_users(lower(email))",
@@ -480,6 +497,12 @@ def get_content(db: Session, content_id: uuid.UUID) -> Content | None:
 
 def get_all_content(db: Session) -> list[Content]:
     return list(db.scalars(select(Content).order_by(Content.created_at.desc())).all())
+
+
+def list_content_slice(db: Session, *, limit: int, offset: int) -> list[Content]:
+    return list(
+        db.scalars(select(Content).order_by(Content.created_at.desc()).limit(limit).offset(offset)).all()
+    )
 
 
 def get_due_posts(db: Session, now: datetime | None = None) -> list[Content]:

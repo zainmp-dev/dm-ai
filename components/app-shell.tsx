@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { NotificationEntry } from "@/components/notification-entry";
+import { flowSuccessMessages } from "@/lib/api";
 import { clearAuthSession } from "@/lib/auth";
 import { AI_MODEL_GROUPS, labelForAiModel } from "@/lib/ai-models";
 import { HeaderThemeControl } from "@/components/header-theme-control";
@@ -547,6 +548,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <DropdownMenuItem
                   onClick={() => {
                     clearAuthSession();
+                    pushToast(flowSuccessMessages.signedOut, { kind: "success" });
                     router.replace("/login");
                   }}
                 >

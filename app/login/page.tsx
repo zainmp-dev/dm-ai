@@ -10,9 +10,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
 import { PublicThemeToggle } from "@/components/public-theme-toggle";
-import { apiErrorMessage, apiLogin, apiStartOAuth } from "@/lib/api";
+import { apiErrorMessage, apiLogin, apiStartOAuth, flowSuccessMessages } from "@/lib/api";
 import { setAuthSession } from "@/lib/auth";
-import axios from "axios";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PASSWORD_REGEX = /^(?=.*[A-Za-z])(?=.*\d).{6,}$/;
@@ -74,7 +73,7 @@ export default function LoginPage() {
     void apiLogin({ email: trimmedEmail, password })
       .then((res) => {
         setAuthSession(res.token, res.user);
-        push("Welcome back.", { kind: "success" });
+        push(flowSuccessMessages.login, { kind: "success" });
         // Admins skip the workspace shell entirely; regular users land on the dashboard
         // and the AppShell handles the workspace-setup redirect if needed.
         if (res.user.role === "admin") {
@@ -84,18 +83,7 @@ export default function LoginPage() {
         }
       })
       .catch((error: unknown) => {
-        if (axios.isAxiosError(error)) {
-          if (error.code === "ECONNABORTED" || !error.response) {
-            push("Server is slow to respond — please try again in a few seconds.", { kind: "error" });
-            return;
-          }
-          const detail = error.response?.data?.detail;
-          if (typeof detail === "string" && detail.trim()) {
-            push(detail, { kind: "error" });
-            return;
-          }
-        }
-        push("Invalid credentials. Create an account first if this is your first login.", { kind: "error" });
+        push(apiErrorMessage(error), { kind: "error" });
       })
       .finally(() => setLoading(false));
   };

@@ -41,7 +41,7 @@ from agents import (
     suggest_master_content_post,
 )
 from config import fresh_settings, settings, user_media_dir
-from database import Content, create_many_content, get_all_content, get_content, get_db, init_db, increment_retry, update_status
+from database import Content, create_many_content, get_content, get_db, init_db, increment_retry, list_content_slice, update_status
 from emailer import content_action_email, safe_send_email
 from publisher import publish_post
 from services.posting_service import publish_flowpilot_workspace_item
@@ -53,6 +53,7 @@ from services.boost_link_service import boost_url_for_target
 from services.oauth_service import linkedin_connect_url, meta_connect_url
 from utils.http_client import request_json
 from utils.rate_limit import check_rate_limit
+from utils.password_hashing import hash_password, verify_and_maybe_upgrade_password
 from utils.state_signing import encode_state, new_nonce, verify_state
 
 
@@ -71,7 +72,8 @@ def _http_for_agent_error(exc: AgentError) -> tuple[int, str]:
             "https://openrouter.ai/settings/credits or pick a cheaper model and try again."
         )
         return 402, friendly
-    return 502, msg[:800] + "…" if len(msg) > 800 else msg
+    logger.warning("AgentError (non-402): %s", msg[:1200])
+    return 502, "AI generation failed. Try again or choose another model."
 
 
 def _request_origin(request: Request) -> str:
@@ -431,13 +433,16 @@ def _upsert_oauth_user(
     row = db.execute(
         text(
             "select id, name, email, role, auth_provider, auth_subject "
-            "from flowpilot_users where auth_provider = :provider and auth_subject = :subject"
+            "from flowpilot_users where auth_provider = :provider and auth_subject = :subject and deleted_at is null"
         ),
         {"provider": provider, "subject": subject},
     ).mappings().first()
     if row is None:
         row = db.execute(
-            text("select id, name, email, role, auth_provider, auth_subject from flowpilot_users where lower(email) = :email"),
+            text(
+                "select id, name, email, role, auth_provider, auth_subject from flowpilot_users "
+                "where lower(email) = :email and deleted_at is null"
+            ),
             {"email": email_norm},
         ).mappings().first()
     if row is None:
@@ -626,7 +631,7 @@ def get_current_user(authorization: str | None = Header(default=None), db: Sessi
 
     user_id = token.removeprefix("flowpilot-").rsplit("-", 1)[0]
     row = db.execute(
-        text("select id, name, email, role from flowpilot_users where id = :id"),
+        text("select id, name, email, role from flowpilot_users where id = :id and deleted_at is null"),
         {"id": user_id},
     ).mappings().first()
     if row is None:
@@ -690,7 +695,7 @@ def _admin_user_row_from_rd(rd: dict) -> AdminUserRow:
 
 def _admin_users_where_params(*, setup: str, role: str, auth: str, q: str) -> tuple[str, dict[str, Any]]:
     params: dict[str, Any] = {}
-    clauses: list[str] = []
+    clauses: list[str] = ["u.deleted_at is null"]
     if setup == "configured":
         clauses.append("(w.workspace_id is not null and coalesce(w.workspace_configured, false))")
     elif setup == "in_progress":
@@ -2312,7 +2317,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(settings.cors_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2522,8 +2527,9 @@ def auth_oauth_start(body: OAuthStartRequest, request: Request) -> OAuthStartRes
             auth_url = _oauth_google_auth_url(state=state, redirect_uri=redirect_uri)
         else:
             auth_url = _oauth_facebook_auth_url(state=state, redirect_uri=redirect_uri)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError:
+        logger.exception("OAuth start configuration failed provider=%s", provider)
+        raise HTTPException(status_code=400, detail="Could not start sign-in. Check OAuth configuration.") from None
     return OAuthStartResponse(auth_url=auth_url)
 
 
@@ -2538,8 +2544,9 @@ def auth_oauth_callback(
         raise HTTPException(status_code=400, detail="Missing OAuth code/state")
     try:
         payload = _verify_oauth_state(state)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError:
+        logger.warning("OAuth state verification failed")
+        raise HTTPException(status_code=400, detail="Invalid or expired sign-in session. Please try again.") from None
     provider = payload["provider"]
     request_origin = _request_origin(request)
     redirect_uri = _oauth_redirect_uri(provider, request_origin)
@@ -2555,31 +2562,30 @@ def auth_oauth_callback(
             email=profile["email"],
             name=profile["name"],
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError:
+        logger.exception("OAuth callback failed provider=%s", provider)
+        raise HTTPException(status_code=400, detail="Sign-in failed. Please try again.") from None
     return AuthResponse(token=auth_token(user_row["id"]), user=serialize_auth_user(dict(user_row)))
-
-
-@app.post("/signup", response_model=AuthResponse)
 def signup(body: SignupRequest, db: Session = Depends(get_db)) -> AuthResponse:
     email = body.email.strip().lower()
     name = body.name.strip()
     password = body.password
 
     existing = db.execute(
-        text("select id from flowpilot_users where lower(email) = :email"),
+        text("select id from flowpilot_users where lower(email) = :email and deleted_at is null"),
         {"email": email},
     ).mappings().first()
     if existing is not None:
         raise HTTPException(status_code=409, detail="Account already exists. Please log in.")
 
     user_id = f"usr-{uuid.uuid4().hex[:10]}"
+    password_hash = hash_password(password)
     db.execute(
         text(
             "insert into flowpilot_users (id, name, email, password, role, created_at) "
             "values (:id, :name, :email, :password, 'user', now())"
         ),
-        {"id": user_id, "name": name, "email": email, "password": password},
+        {"id": user_id, "name": name, "email": email, "password": password_hash},
     )
     db.commit()
 
@@ -2591,16 +2597,29 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)) -> AuthResponse:
 def login(body: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
     row = db.execute(
         text(
-            "select id, name, email, role from flowpilot_users "
-            "where lower(email) = :email and password = :password"
+            "select id, name, email, role, password from flowpilot_users "
+            "where lower(email) = :email and deleted_at is null"
         ),
-        {"email": body.email.strip().lower(), "password": body.password},
+        {"email": body.email.strip().lower()},
     ).mappings().first()
 
     if row is None:
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    return AuthResponse(token=auth_token(str(row["id"])), user=serialize_auth_user(dict(row)))
+    stored_pw = str(row.get("password") or "")
+    ok, upgraded_hash = verify_and_maybe_upgrade_password(stored_pw, body.password)
+    if not ok:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    if upgraded_hash is not None:
+        db.execute(
+            text("update flowpilot_users set password = :password where id = :id"),
+            {"password": upgraded_hash, "id": str(row["id"])},
+        )
+        db.commit()
+
+    user_row = {k: row[k] for k in ("id", "name", "email", "role")}
+    return AuthResponse(token=auth_token(str(row["id"])), user=serialize_auth_user(user_row))
 
 
 @app.get("/admin/overview", response_model=AdminOverviewResponse)
@@ -2609,13 +2628,13 @@ def admin_overview(db: Session = Depends(get_db), _admin: dict[str, Any] = Depen
         text(
             """
             select
-                (select count(*)::int from flowpilot_users) as total_users,
-                (select count(*)::int from flowpilot_users where lower(coalesce(role, '')) = 'admin') as admin_count,
+                (select count(*)::int from flowpilot_users where deleted_at is null) as total_users,
+                (select count(*)::int from flowpilot_users where deleted_at is null and lower(coalesce(role, '')) = 'admin') as admin_count,
                 (select count(*)::int from flowpilot_workspace) as workspace_rows,
                 (select count(*)::int from flowpilot_workspace where workspace_configured) as configured_workspaces,
-                (select count(*)::int from flowpilot_users where auth_provider is not null and trim(auth_provider) <> '')
+                (select count(*)::int from flowpilot_users where deleted_at is null and auth_provider is not null and trim(auth_provider) <> '')
                     as oauth_users,
-                (select count(*)::int from flowpilot_users where auth_provider is null or trim(coalesce(auth_provider, '')) = '')
+                (select count(*)::int from flowpilot_users where deleted_at is null and (auth_provider is null or trim(coalesce(auth_provider, '')) = ''))
                     as password_only_users,
                 (select count(*)::int from flowpilot_content) as total_content_items
             """
@@ -2740,7 +2759,7 @@ def _workspaces_where_params(*, configured: str, q: str) -> tuple[str, dict[str,
 
 _ADMIN_WORKSPACE_JOIN = """
 from flowpilot_workspace w
-join flowpilot_users u on u.id = w.workspace_id
+join flowpilot_users u on u.id = w.workspace_id and u.deleted_at is null
 left join (
     select workspace_id, count(*)::int as cnt from flowpilot_content group by workspace_id
 ) c on c.workspace_id = w.workspace_id
@@ -2877,7 +2896,7 @@ def admin_integrations(
 
     join_sql = """
 from flowpilot_integrations i
-join flowpilot_users u on u.id = i.workspace_id
+join flowpilot_users u on u.id = i.workspace_id and u.deleted_at is null
 """
 
     count_row = db.execute(
@@ -3034,13 +3053,23 @@ def delete_workspace(db: Session = Depends(get_db), user: dict[str, Any] = Depen
 
 @app.delete("/account")
 def delete_account(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    """Permanently delete the signed-in user and all workspace data. Session token becomes invalid."""
+    """Soft-delete: mark user as closed, revoke credentials and OAuth, purge workspace data. Row kept with deleted_at."""
     user_id = str(user["id"])
     _purge_user_workspace_tables(db, user_id)
-    db.execute(text("delete from flowpilot_users where id = :id"), {"id": user_id})
+    dead_password = f"deleted-{uuid.uuid4().hex}"
+    closed_id = db.execute(
+        text(
+            "update flowpilot_users set deleted_at = now(), password = :pw, auth_provider = null, auth_subject = null "
+            "where id = :id and deleted_at is null returning id"
+        ),
+        {"id": user_id, "pw": dead_password},
+    ).scalar_one_or_none()
+    if closed_id is None:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Account is already closed.")
     db.commit()
     _AUTH_USER_CACHE.clear()
-    return {"deleted": True}
+    return {"deleted": True, "soft_deleted": True}
 
 
 @app.post("/workspace/clear-ai")
@@ -3644,9 +3673,9 @@ def publish_workspace_content(
             else:
                 warnings.append(f"{title}: {result.message}")
                 _insert_publishing_log(db, workspace_id, content_id, platform, "Failed")
-        except Exception as exc:
+        except Exception:
             logger.exception("Workspace publish failed for content_id=%s", content_id)
-            warnings.append(f"Content {content_id}: {str(exc)[:240]}")
+            warnings.append(f"Content {content_id}: publishing failed")
     record_activity(db, workspace_id, f"Publish step completed: {published_count} item(s) published.")
     db.commit()
     snapshot = workspace_snapshot(db, workspace_id, user)
@@ -3697,8 +3726,12 @@ def connect_linkedin(
             app_origin=_request_origin(request),
         )
         db.commit()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("LinkedIn connect URL failed user=%s", user_id)
+        raise HTTPException(
+            status_code=400,
+            detail="Could not start LinkedIn connection. Try again or contact support.",
+        ) from None
     return {"auth_url": auth_url, "integrations": workspace_snapshot(db, workspace_id, user)["integrations"]}
 
 
@@ -3723,12 +3756,12 @@ def connect_meta(
             app_origin=_request_origin(request),
         )
         db.commit()
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"auth_url": auth_url, "integrations": workspace_snapshot(db, workspace_id, user)["integrations"]}
-
-
-@app.get("/profile")
+    except Exception:
+        logger.exception("Meta connect URL failed user=%s", user_id)
+        raise HTTPException(
+            status_code=400,
+            detail="Could not start Meta connection. Try again or contact support.",
+        ) from None
 def get_profile(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     workspace_id = str(user["id"])
     return {"profile": workspace_snapshot(db, workspace_id, user)["profile"]}
@@ -3996,11 +4029,16 @@ def remove_media_library_item(body: MediaRemoveRequest, db: Session = Depends(ge
 
 
 @app.post("/analytics/analyze")
-def analyze_content(body: AnalyticsRequest) -> dict[str, Any]:
+def analyze_content(
+    body: AnalyticsRequest,
+    _user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     try:
         return run_analytics_agent(body.content, body.likes, body.comments, body.reach, body.ai_model)
     except AgentError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        logger.exception("Analytics agent failed")
+        status, detail = _http_for_agent_error(exc)
+        raise HTTPException(status_code=status, detail=detail) from None
 
 
 @app.post("/ai/carousel")
@@ -4011,11 +4049,9 @@ def ai_carousel(body: CarouselRequest, _user: dict[str, Any] = Depends(get_curre
             brand_context=(body.brand_context or "").strip(),
             preferred_model=body.ai_model,
         )
-    except AIServiceError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@app.post("/ai/image-prompt")
+    except AIServiceError:
+        logger.exception("Carousel generation failed")
+        raise HTTPException(status_code=502, detail="Carousel generation failed. Try again later.") from None
 def ai_image_prompt(body: ImagePromptRequest, _user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     try:
         return generate_image_prompt(
@@ -4024,33 +4060,51 @@ def ai_image_prompt(body: ImagePromptRequest, _user: dict[str, Any] = Depends(ge
             platform=(body.platform or "instagram").strip(),
             preferred_model=body.ai_model,
         )
-    except AIServiceError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except AIServiceError:
+        logger.exception("Image prompt generation failed")
+        raise HTTPException(status_code=502, detail="Image prompt generation failed. Try again later.") from None
 
 
 @app.post("/generate", response_model=GenerateResponse)
-def generate(body: GenerateRequest, db: Session = Depends(get_db)) -> GenerateResponse:
+def generate(
+    body: GenerateRequest,
+    db: Session = Depends(get_db),
+    _admin: dict[str, Any] = Depends(require_admin),
+) -> GenerateResponse:
     try:
         strategy, posts = generate_reviewed_content(body.niche.strip())
         rows = create_many_content(db, posts)
     except AgentError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
+        logger.exception("Legacy niche generate failed")
+        status, detail = _http_for_agent_error(exc)
+        raise HTTPException(status_code=status, detail=detail) from None
+    except ValueError:
+        logger.exception("Legacy niche generate validation failed")
+        raise HTTPException(status_code=400, detail="Invalid request") from None
+    except Exception:
         logger.exception("Content generation failed")
-        raise HTTPException(status_code=500, detail="Content generation failed") from exc
+        raise HTTPException(status_code=500, detail="Content generation failed") from None
 
     return GenerateResponse(strategy=strategy, content=[serialize_content(row) for row in rows])
 
 
 @app.get("/content", response_model=list[ContentResponse])
-def content(db: Session = Depends(get_db)) -> list[ContentResponse]:
-    return [serialize_content(row) for row in get_all_content(db)]
+def legacy_content_table_list(
+    db: Session = Depends(get_db),
+    _admin: dict[str, Any] = Depends(require_admin),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> list[ContentResponse]:
+    return [serialize_content(row) for row in list_content_slice(db, limit=limit, offset=offset)]
 
 
 @app.post("/approve/{content_id}", response_model=ContentResponse)
-def approve(content_id: uuid.UUID, body: ApproveRequest, db: Session = Depends(get_db)) -> ContentResponse:
+def approve(
+    content_id: uuid.UUID,
+    body: ApproveRequest,
+    db: Session = Depends(get_db),
+    _admin: dict[str, Any] = Depends(require_admin),
+) -> ContentResponse:
     row = update_status(db, content_id, "approved", scheduled_time=body.scheduled_time)
     if row is None:
         raise HTTPException(status_code=404, detail="Content not found")
@@ -4059,7 +4113,11 @@ def approve(content_id: uuid.UUID, body: ApproveRequest, db: Session = Depends(g
 
 
 @app.post("/reject/{content_id}", response_model=ContentResponse)
-def reject(content_id: uuid.UUID, db: Session = Depends(get_db)) -> ContentResponse:
+def reject(
+    content_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _admin: dict[str, Any] = Depends(require_admin),
+) -> ContentResponse:
     row = update_status(db, content_id, "rejected")
     if row is None:
         raise HTTPException(status_code=404, detail="Content not found")
@@ -4068,7 +4126,11 @@ def reject(content_id: uuid.UUID, db: Session = Depends(get_db)) -> ContentRespo
 
 
 @app.post("/publish/{content_id}", response_model=PublishResponse)
-def publish(content_id: uuid.UUID, db: Session = Depends(get_db)) -> PublishResponse:
+def publish(
+    content_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _admin: dict[str, Any] = Depends(require_admin),
+) -> PublishResponse:
     row = get_content(db, content_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Content not found")

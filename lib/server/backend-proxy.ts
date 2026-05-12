@@ -137,12 +137,14 @@ export async function proxyToFastapi(request: NextRequest, pathSegments: string[
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Upstream fetch failed";
-    return NextResponse.json(
-      {
-        detail: `Cannot reach FastAPI at ${backendBase} (${message}). Start: npm run backend:dev`,
-      },
-      { status: 502 },
-    );
+    const isProdLike =
+      process.env.NODE_ENV === "production" ||
+      process.env.VERCEL === "1" ||
+      Boolean(process.env.FLY_APP_NAME?.trim());
+    const detail = isProdLike
+      ? "Backend service unavailable."
+      : `Cannot reach FastAPI at ${backendBase} (${message}). Start: npm run backend:dev`;
+    return NextResponse.json({ detail }, { status: 502 });
   }
 }
 

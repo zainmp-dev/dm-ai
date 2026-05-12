@@ -45,13 +45,22 @@ def _int_env(name: str, default: int) -> int:
 
 
 _DEFAULT_OPENROUTER_MODEL = "openai/gpt-5-mini"
-# Replaced with _DEFAULT_OPENROUTER_MODEL when the env still points at removed or invalid slugs.
+
+
+def _parse_cors_origins() -> list[str]:
+    raw = _str_env("CORS_ORIGINS")
+    if not raw:
+        return ["http://127.0.0.1:3000", "http://localhost:3000"]
+    parts = [x.strip().rstrip("/") for x in raw.split(",") if x.strip()]
+    return parts if parts else ["http://127.0.0.1:3000", "http://localhost:3000"]
+
+
 _LEGACY_OPENROUTER_MODELS: frozenset[str] = frozenset(
     {
         "mistralai/mixtral-8x7b",
     }
 )
-
+# Replaced with _DEFAULT_OPENROUTER_MODEL when the env still points at removed or invalid slugs.
 
 def _openrouter_model_from_env() -> str:
     raw = (_str_env("OPENROUTER_MODEL", _DEFAULT_OPENROUTER_MODEL) or _DEFAULT_OPENROUTER_MODEL).strip()
@@ -157,6 +166,10 @@ class Settings:
     facebook_redirect_uri: str = field(default_factory=lambda: _str_env("FACEBOOK_REDIRECT_URI"))
     # Public API prefix used in returned app-relative URLs (default keeps current dev behavior).
     public_api_prefix: str = field(default_factory=lambda: _str_env_first("FLOWPILOT_API_PREFIX", "PUBLIC_API_PREFIX") or "/api/backend")
+    # Comma-separated browser origins for CORS (no trailing slashes). Production must set this to real app URLs.
+    cors_origins: tuple[str, ...] = field(
+        default_factory=lambda: tuple(_parse_cors_origins()),
+    )
 
 
 def fresh_settings() -> Settings:

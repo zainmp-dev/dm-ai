@@ -10,8 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
 import { PublicThemeToggle } from "@/components/public-theme-toggle";
-import axios from "axios";
-import { apiErrorMessage, apiSignup, apiStartOAuth } from "@/lib/api";
+import { apiErrorMessage, apiSignup, apiStartOAuth, flowSuccessMessages } from "@/lib/api";
 import { setAuthSession } from "@/lib/auth";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -105,7 +104,7 @@ export default function SignupPage() {
     void apiSignup({ name: trimmedName, email: trimmedEmail, password })
       .then((res) => {
         setAuthSession(res.token, res.user);
-        push("Account created successfully.", { kind: "success" });
+        push(flowSuccessMessages.signup, { kind: "success" });
         // Defensive: signup always creates role='user' today, but if that ever changes
         // we don't want a freshly-minted admin to be redirected into the setup wizard.
         if (res.user.role === "admin") {
@@ -115,11 +114,7 @@ export default function SignupPage() {
         }
       })
       .catch((error: unknown) => {
-        if (axios.isAxiosError(error) && (error.code === "ECONNABORTED" || !error.response)) {
-          push("Server is slow to respond — please try again in a few seconds.", { kind: "error" });
-          return;
-        }
-        push(apiErrorMessage(error) || "Unable to create account", { kind: "error" });
+        push(apiErrorMessage(error), { kind: "error" });
       })
       .finally(() => setLoading(false));
   };

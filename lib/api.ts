@@ -1,4 +1,5 @@
 import axios, { type InternalAxiosRequestConfig } from "axios";
+import { formatApiErrorMessage, flowSuccessMessages } from "@/lib/api-errors";
 import { notifyApiRequestEnd, notifyApiRequestStart, type FlowApiLoadingKind } from "@/lib/api-loading-store";
 import { clearAuthSession, getAuthToken } from "@/lib/auth";
 import { normalizePrimaryRegionCode } from "@/lib/primary-region";
@@ -222,44 +223,25 @@ apiClient.interceptors.response.use(
     if (id) notifyApiRequestEnd(id);
     const status = error?.response?.status as number | undefined;
     if (status === 401 && typeof window !== "undefined") {
-      clearAuthSession();
-      if (window.location.pathname !== "/login") {
-        window.location.replace("/login");
+      const path = error.config ? requestPathKey(error.config) : "";
+      const isCredentialAttempt = path.endsWith("/login") || path.endsWith("/signup");
+      if (!isCredentialAttempt) {
+        clearAuthSession();
+        if (window.location.pathname !== "/login") {
+          window.location.replace("/login");
+        }
       }
     }
     return Promise.reject(error);
   },
 );
 
-/** FastAPI/axios: surface `detail` for user-visible errors. */
+/** User-visible message for axios / FastAPI errors (see `lib/api-errors.ts`). */
 export function apiErrorMessage(error: unknown): string {
-  const fallback = "Something went wrong. Please try again.";
-  if (axios.isAxiosError(error)) {
-    const code = (error as { code?: string }).code;
-    if (error.code === "ECONNABORTED" || code === "ECONNABORTED") {
-      return "Request timed out. Start the API backend (see README) or check your network, then try again.";
-    }
-    if (error.code === "ERR_NETWORK" || code === "ERR_NETWORK" || !error.response) {
-      return "Cannot reach the server. Ensure the backend is running and NEXT_PUBLIC_API_PREFIX is correct.";
-    }
-    const status = error.response?.status;
-    const data = error.response?.data;
-    if (data && typeof data === "object" && "detail" in data) {
-      const d = (data as { detail: unknown }).detail;
-      if (typeof d === "string") {
-        const detail = d.trim();
-        if (!detail) return fallback;
-        const sensitive = /traceback|exception|stack|token|secret|password|sql|internal/i.test(detail);
-        if (sensitive || (typeof status === "number" && status >= 500)) return fallback;
-        return detail;
-      }
-    }
-    if (typeof status === "number" && status >= 500) return fallback;
-    if (error.message) return error.message;
-  }
-  if (error instanceof Error) return error.message || fallback;
-  return fallback;
+  return formatApiErrorMessage(error);
 }
+
+export { flowSuccessMessages };
 
 export type OpenrouterBalance = {
   configured: boolean;

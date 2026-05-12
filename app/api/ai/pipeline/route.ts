@@ -1,6 +1,6 @@
 /**
  * TS AI pipeline route — calls OpenRouter only via lib/ai (chat completions).
- * Protected by FLOW_AI_PIPELINE_SECRET when set (Bearer token).
+ * Protected by FLOW_AI_PIPELINE_SECRET (Bearer) in production / when FORCE_PIPELINE_AUTH=1 / whenever the secret is set.
  *
  * SAMPLE REQUEST:
  * POST /api/ai/pipeline
@@ -32,7 +32,23 @@ export const runtime = "nodejs";
 
 export async function POST(request: Request): Promise<NextResponse> {
   const secret = process.env.FLOW_AI_PIPELINE_SECRET?.trim();
-  if (secret) {
+  const forcePipelineAuth = process.env.FORCE_PIPELINE_AUTH === "1";
+  const isProductionLike =
+    process.env.NODE_ENV === "production" ||
+    process.env.VERCEL === "1" ||
+    Boolean(process.env.FLY_APP_NAME?.trim());
+  const mustAuthenticate = Boolean(secret) || forcePipelineAuth || isProductionLike;
+
+  if (mustAuthenticate) {
+    if (!secret) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "FLOW_AI_PIPELINE_SECRET must be configured for this environment.",
+        },
+        { status: 503 },
+      );
+    }
     const auth = request.headers.get("authorization")?.trim() ?? "";
     const expected = `Bearer ${secret}`;
     if (auth !== expected) {
@@ -124,12 +140,14 @@ export async function POST(request: Request): Promise<NextResponse> {
   } catch (e) {
     if (e instanceof OpenRouterChatError) {
       const status = e.status ?? 502;
-      return NextResponse.json(
-        { ok: false, error: e.message, role: "pipeline" },
-        { status: status >= 400 && status < 600 ? status : 502 },
-      );
+      const httpStatus = status >= 400 && status < 600 ? status : 502;
+      let error = "AI pipeline request failed.";
+      if (status === 402 || status === 429) {
+        error = "AI credits or rate limits exceeded. Try again later or adjust your plan.";
+      }
+      return NextResponse.json({ ok: false, error, role: "pipeline" }, { status: httpStatus });
     }
-    const message = e instanceof Error ? e.message : "Pipeline failed";
-    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+    console.error("pipeline route failed", e);
+    return NextResponse.json({ ok: false, error: "Pipeline failed." }, { status: 500 });
   }
 }
