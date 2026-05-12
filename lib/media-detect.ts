@@ -67,6 +67,30 @@ export function isWorkspaceLibraryMediaUrl(url: string): boolean {
   return false;
 }
 
+/**
+ * SPA / dashboard URLs pasted as media often resolve to HTML pages (looks like a broken screenshot in <img>).
+ * Prefer direct CDN or `/api/(backend/)media-assets/` links with a proper file suffix.
+ */
+export function looksLikeEmbeddedAppPageUrl(url: string): boolean {
+  const s = url.trim();
+  if (!s || s.startsWith("data:")) return false;
+  if (!/^https?:\/\//i.test(s) && !/^\/\//i.test(s)) return false;
+  try {
+    const normalized = /^\/\//i.test(s) ? `https:${s}` : s;
+    const parsed = new URL(normalized);
+    const path = parsed.pathname.toLowerCase();
+    if (/\.(jpe?g|png|gif|webp|avif|svg|bmp|ico|mp4|webm|mov|m4v|ogv)(\?|#|$)/i.test(path)) return false;
+    if (/\/api\/(?:backend\/)?media-assets\//i.test(path)) return false;
+    const host = parsed.hostname.toLowerCase();
+    if (host.includes("cloudinary.com")) return false;
+    if (host.endsWith(".googleapis.com")) return false;
+    if (/^\/(?:pipeline|login|campaigns|settings|analytics|dashboard|notifications|workflow)(\/|$|\?)/i.test(path)) return true;
+  } catch {
+    /* malformed URL */
+  }
+  return false;
+}
+
 export function normalizeApiMediaType(raw: string | undefined, fallback: MediaType = "Image"): MediaType {
   const s = (raw || "").trim();
   if (s === "Video" || s === "Image" || s === "Carousel" || s === "Media") {

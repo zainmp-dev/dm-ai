@@ -1,7 +1,7 @@
 "use client";
 
 import { startTransition, useEffect, useState } from "react";
-import { shouldUseVideoElement } from "@/lib/media-detect";
+import { looksLikeEmbeddedAppPageUrl, shouldUseVideoElement } from "@/lib/media-detect";
 import { sanitizeMediaUrl } from "@/lib/api";
 import type { MediaType } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -24,20 +24,28 @@ export function MediaPreviewBlock({ url, mediaType = "Image", className, videoCl
   const isCarousel = mediaType === "Carousel";
   /** e.g. AI set Video but URL is still an image placeholder — show still + label */
   const videoPlaceholder = mediaType === "Video" && !useVideo;
+  const appPageMisuse = Boolean(safe && looksLikeEmbeddedAppPageUrl(safe));
 
   useEffect(() => {
     startTransition(() => setBroken(false));
   }, [safe, mediaType]);
 
-  if (!safe || broken) {
+  if (!safe || broken || appPageMisuse) {
     return (
       <div
         className={cn(
           "flex min-h-28 w-full items-center justify-center rounded-lg border border-dashed border-zinc-200 bg-zinc-50 p-3 text-center text-xs text-zinc-500",
+          appPageMisuse && "border-amber-200 bg-amber-50/70 text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/25 dark:text-amber-50",
           className,
         )}
       >
-        {broken ? "Preview failed to load. Check the URL or re-upload." : "No media selected."}
+        {appPageMisuse ? (
+          <span>This URL looks like an app link, not image or video. Use Upload or paste a storage link (CDN or media-assets URL).</span>
+        ) : broken ? (
+          "Preview failed to load. Check the URL or re-upload."
+        ) : (
+          "No media selected."
+        )}
       </div>
     );
   }

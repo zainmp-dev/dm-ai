@@ -107,6 +107,8 @@ function classifyGlobalLoading(config: InternalAxiosRequestConfig): FlowApiLoadi
   if (method === "GET") return "skip";
 
   if (path.endsWith("/strategy")) return "skip";
+  /** Media uploads: dropzone/spinner carries progress; skip full-screen blocker for faster-feeling uploads. */
+  if (path.includes("/media/upload/cloudinary") || path.includes("/media/upload/local")) return "skip";
   if (path.endsWith("/content") && method === "POST") {
     const action = extractContentAction(config.data);
     if (action === "generate" || action === "suggest" || action === "delete") return "skip";

@@ -16,6 +16,7 @@ import { useToast } from "@/components/ui/toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ContentStatus, MediaType, PublishingPlatform } from "@/lib/types";
 import { apiErrorMessage, apiUploadMediaLocal, apiUploadMediaToCloudinary, sanitizeMediaUrl } from "@/lib/api";
+import { prepareFileForUpload } from "@/lib/prepare-upload-file";
 import { shouldUseVideoElement } from "@/lib/media-detect";
 import { isPlatformConnected, platformLabel } from "@/lib/platform";
 import {
@@ -45,6 +46,17 @@ const STATUS_FILTER_LABELS: Record<(typeof STATUS_FILTERS)[number], string> = {
   PUBLISHED: "Published",
 };
 const PAGE_SIZE_OPTIONS = [8, 12] as const;
+
+const MEDIA_PICKER_HELPER_DISMISSED_KEY = "dm-ai-pipeline-media-picker-helper-dismissed";
+
+function mediaPickerHelperStillWanted(): boolean {
+  if (typeof globalThis.window === "undefined") return false;
+  try {
+    return globalThis.localStorage?.getItem(MEDIA_PICKER_HELPER_DISMISSED_KEY) !== "1";
+  } catch {
+    return true;
+  }
+}
 
 function QueueThumb({ url, mediaType }: { url: string; mediaType: MediaType }) {
   const safe = sanitizeMediaUrl(url);
@@ -118,6 +130,8 @@ export function ApprovalTab() {
   const [allPlatformsChecked, setAllPlatformsChecked] = useState(false);
   const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
   const [mediaPickerView, setMediaPickerView] = useState<"upload" | "library">("upload");
+  const [mediaUploadPaneNonce, setMediaUploadPaneNonce] = useState(0);
+  const [mediaPickerHelperAcked, setMediaPickerHelperAcked] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState(false);
 
   const content = useMemo(() => workspace?.content ?? [], [workspace?.content]);
@@ -226,6 +240,17 @@ export function ApprovalTab() {
     setAllPlatformsChecked(checked);
     setSelectedPlatforms(checked ? ACTIVE_PLATFORM_OPTIONS.map((opt) => opt.id) : []);
   };
+
+  const dismissMediaPickerHelper = () => {
+    try {
+      globalThis.localStorage?.setItem(MEDIA_PICKER_HELPER_DISMISSED_KEY, "1");
+    } catch {
+      /* ignore quota / privacy mode */
+    }
+    setMediaPickerHelperAcked(true);
+  };
+
+  const showMediaPickerHelper = mediaPickerOpen && !mediaPickerHelperAcked && mediaPickerHelperStillWanted();
 
   if (shellPending) {
     return <Skeleton className="h-96 w-full rounded-2xl" />;
@@ -428,7 +453,9 @@ export function ApprovalTab() {
               </div>
               <div className="grid gap-2">
                 <Label className="text-zinc-600">Media</Label>
-                <p className="text-xs text-zinc-500">Preview, paste an image or video URL, or pick from upload / library.</p>
+                <p className="text-xs text-zinc-500">
+                  Preview, paste a URL, or open upload / library — that picker stays on top of this sheet so you never lose context.
+                </p>
                 <div className="rounded-xl border border-zinc-200 bg-zinc-50/80 p-3 dark:border-zinc-700 dark:bg-zinc-900/40">
                   <div className="mx-auto max-w-md">
                     <MediaPreviewBlock
@@ -468,7 +495,16 @@ export function ApprovalTab() {
                           className="mt-1 rounded-xl"
                         />
                       </div>
-                      <Button type="button" variant="secondary" className="rounded-xl" onClick={() => setMediaPickerOpen(true)}>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        className="rounded-xl"
+                        onClick={() => {
+                          setMediaPickerView("upload");
+                          setMediaUploadPaneNonce((n) => n + 1);
+                          setMediaPickerOpen(true);
+                        }}
+                      >
                         Upload or library…
                       </Button>
                       <Button
@@ -706,27 +742,44 @@ export function ApprovalTab() {
         </Dialog>
       )}
       <Dialog open={mediaPickerOpen} onOpenChange={setMediaPickerOpen}>
-        <DialogContent className="z-[100] max-w-3xl">
+        <DialogContent overlayClassName="z-[110]" className="z-[111] max-w-3xl">
           <DialogHeader className="space-y-1 text-left">
             <DialogTitle>Media</DialogTitle>
             <DialogDescription>Upload a file or pick from this workspace library.</DialogDescription>
           </DialogHeader>
+          {showMediaPickerHelper ? (
+            <div
+              className="flex flex-col gap-2 rounded-xl border border-sky-200/90 bg-sky-50/80 px-3 py-2.5 text-sm text-sky-950 dark:border-sky-800/70 dark:bg-sky-950/35 dark:text-sky-50 sm:flex-row sm:items-center sm:justify-between"
+              role="status"
+            >
+              <p className="leading-snug">
+                This picker opens <span className="font-medium">above</span> the review sheet. Finish here, close the picker, then continue approving or scheduling.
+              </p>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="shrink-0 rounded-lg text-sky-900 hover:bg-sky-100/80 dark:text-sky-100 dark:hover:bg-sky-900/60"
+                onClick={dismissMediaPickerHelper}
+              >
+                Got it
+              </Button>
+            </div>
+          ) : null}
           <div className="grid gap-4 md:grid-cols-[180px_1fr]">
             <div className="space-y-2">
               <Button
                 type="button"
                 variant={mediaPickerView === "upload" ? "default" : "secondary"}
                 className="w-full rounded-xl"
-                onClick={() => setMediaPickerView("upload")}
+                onClick={() => {
+                  setMediaPickerView("upload");
+                  setMediaUploadPaneNonce((n) => n + 1);
+                }}
               >
                 From computer
               </Button>
-              <Button
-                type="button"
-                variant={mediaPickerView === "library" ? "default" : "secondary"}
-                className="w-full rounded-xl"
-                onClick={() => setMediaPickerView("library")}
-              >
+              <Button type="button" variant={mediaPickerView === "library" ? "default" : "secondary"} className="w-full rounded-xl" onClick={() => setMediaPickerView("library")}>
                 Media library
               </Button>
             </div>
@@ -735,6 +788,7 @@ export function ApprovalTab() {
                 <div className="space-y-3">
                   <Label className="text-zinc-700 dark:text-zinc-300">Upload from your device</Label>
                   <MediaLocalDropzone
+                    key={mediaUploadPaneNonce}
                     busy={uploadingMedia}
                     disabled={uploadingMedia}
                     onFiles={(fl) => {
@@ -752,17 +806,18 @@ export function ApprovalTab() {
                           let lastUrl = "";
                           let lastType: MediaType = "Image";
                           for (const file of files) {
-                            const dataUrl = await fileToDataUrl(file);
-                            const mediaType: MediaType = file.type.startsWith("video/") ? "Video" : "Image";
+                            const prepared = await prepareFileForUpload(file);
+                            const dataUrl = await fileToDataUrl(prepared);
+                            const mediaType: MediaType = prepared.type.startsWith("video/") ? "Video" : "Image";
                             const { mediaUrl, mediaType: uploadedMediaType } = workspace.cloudinaryUploadsReady
                               ? await apiUploadMediaToCloudinary({
                                   dataUrl,
-                                  fileName: file.name,
+                                  fileName: prepared.name,
                                   mediaType,
                                 })
                               : await apiUploadMediaLocal({
                                   dataUrl,
-                                  fileName: file.name,
+                                  fileName: prepared.name,
                                   mediaType,
                                 });
                             lastUrl = mediaUrl;
@@ -794,19 +849,41 @@ export function ApprovalTab() {
               ) : null}
               {mediaPickerView === "library" ? (
                 <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-200/90 bg-zinc-50/80 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900/50">
+                    <p className="text-sm text-zinc-600 dark:text-zinc-300">Browsing workspace files — upload new anytime.</p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="rounded-lg"
+                      onClick={() => {
+                        setMediaPickerView("upload");
+                        setMediaUploadPaneNonce((n) => n + 1);
+                      }}
+                    >
+                      Upload from computer
+                    </Button>
+                  </div>
                   <Label>Choose saved media</Label>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    Scroll sideways (~3 tiles) — tap one to attach. Carousel is first-slide URL only.
+                  </p>
                   {mediaLibrary.length === 0 ? (
                     <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                      No media in this workspace yet. Use &quot;From computer&quot; to upload.
+                      No media in this workspace yet. Use &quot;From computer&quot; or the button above to upload.
                     </p>
                   ) : (
-                    <div className="grid gap-2 md:grid-cols-3">
-                      {mediaLibrary.slice(0, 12).map((asset) => {
+                    <div
+                      role="list"
+                      className="flex snap-x snap-mandatory gap-2.5 overflow-x-auto overscroll-x-contain pb-2 pt-0.5 [-webkit-overflow-scrolling:touch] [scrollbar-width:thin]"
+                    >
+                      {mediaLibrary.slice(0, 48).map((asset) => {
                         const locked = usedMediaByOtherItems.has(asset.mediaUrl);
                         return (
                           <div
                             key={`approval-picker-${asset.id}`}
-                            className="rounded-xl border border-zinc-200 bg-white p-2 dark:border-zinc-700 dark:bg-zinc-900/80"
+                            role="listitem"
+                            className="w-[148px] shrink-0 snap-start rounded-xl border border-zinc-200 bg-white p-2 sm:w-[160px] dark:border-zinc-700 dark:bg-zinc-900/80"
                           >
                             <button
                               type="button"

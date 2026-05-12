@@ -29,6 +29,7 @@ import { MediaPreviewBlock } from "@/components/media-preview-block";
 import { MediaLocalDropzone } from "@/components/media-local-dropzone";
 import { SocialPostPreview } from "@/components/social-post-preview";
 import { apiErrorMessage, apiUploadMediaLocal, apiUploadMediaToCloudinary, sanitizeMediaUrl } from "@/lib/api";
+import { prepareFileForUpload } from "@/lib/prepare-upload-file";
 import { isWorkspaceLibraryMediaUrl, normalizeApiMediaType, shouldUseVideoElement } from "@/lib/media-detect";
 import { isPlatformConnected, platformLabel } from "@/lib/platform";
 import type { ContentItem, MediaType, PublishingPlatform } from "@/lib/types";
@@ -60,6 +61,17 @@ const TIME_OPTIONS = [
 ] as const;
 
 const LIBRARY_PAGE_SIZE_OPTIONS = [8, 12] as const;
+
+const MEDIA_PICKER_HELPER_DISMISSED_KEY = "dm-ai-pipeline-media-picker-helper-dismissed";
+
+function mediaPickerHelperStillWanted(): boolean {
+  if (typeof globalThis.window === "undefined") return false;
+  try {
+    return globalThis.localStorage?.getItem(MEDIA_PICKER_HELPER_DISMISSED_KEY) !== "1";
+  } catch {
+    return true;
+  }
+}
 
 function LibraryThumb({
   url,
@@ -139,6 +151,8 @@ export function ContentWorkspaceView() {
   const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
   const [mediaPickerTarget, setMediaPickerTarget] = useState<"create" | "edit">("create");
   const [mediaPickerView, setMediaPickerView] = useState<"upload" | "library">("upload");
+  const [mediaUploadPaneNonce, setMediaUploadPaneNonce] = useState(0);
+  const [mediaPickerHelperAcked, setMediaPickerHelperAcked] = useState(false);
   const [suggestHint, setSuggestHint] = useState("");
   const [suggesting, setSuggesting] = useState(false);
   const [newMediaType, setNewMediaType] = useState<MediaType>("Image");
@@ -220,8 +234,20 @@ export function ContentWorkspaceView() {
   const openMediaPicker = (target: "create" | "edit") => {
     setMediaPickerTarget(target);
     setMediaPickerView("upload");
+    setMediaUploadPaneNonce((n) => n + 1);
     setMediaPickerOpen(true);
   };
+
+  const dismissMediaPickerHelper = () => {
+    try {
+      globalThis.localStorage?.setItem(MEDIA_PICKER_HELPER_DISMISSED_KEY, "1");
+    } catch {
+      /* ignore quota / privacy mode */
+    }
+    setMediaPickerHelperAcked(true);
+  };
+
+  const showMediaPickerHelper = mediaPickerOpen && !mediaPickerHelperAcked && mediaPickerHelperStillWanted();
 
   if (shellPending) {
     return <Skeleton className="h-96 w-full rounded-2xl" />;
@@ -1272,12 +1298,12 @@ export function ContentWorkspaceView() {
 
       {activeItem && (
         <Dialog open={Boolean(activeItem)} onOpenChange={(o) => !o && setEditingId(null)}>
-          <DialogContent className="max-h-[90vh] gap-0 overflow-hidden p-0 sm:max-w-lg">
-            <DialogHeader className="space-y-1 border-b border-zinc-100 px-6 pb-4 pt-6 text-left dark:border-zinc-800">
+          <DialogContent className="max-h-[92vh] gap-0 overflow-hidden p-0 sm:max-w-lg">
+            <DialogHeader className="space-y-1 border-b border-zinc-100 px-6 pb-3 pt-5 text-left dark:border-zinc-800">
               <DialogTitle>Edit content</DialogTitle>
-              <DialogDescription>Update copy, media, and schedule. Times use {contentTimeZone}.</DialogDescription>
+              <DialogDescription>Copy, attach media (image/video/cover), schedule — {contentTimeZone}.</DialogDescription>
             </DialogHeader>
-            <div className="max-h-[min(56vh,500px)] space-y-4 overflow-y-auto px-6 py-4">
+            <div className="max-h-[min(62vh,540px)] space-y-3 overflow-y-auto px-6 py-3">
               <div className="space-y-2">
                 <Label htmlFor="edit-title">Title</Label>
                 <Input id="edit-title" value={draftTitle} onChange={(e) => setDraftTitle(e.target.value)} className="rounded-xl" />
@@ -1299,22 +1325,23 @@ export function ContentWorkspaceView() {
                   >
                     <option value="Image">Image</option>
                     <option value="Video">Video</option>
-                    <option value="Carousel">Carousel</option>
+                    <option value="Carousel">Carousel (first-slide cover)</option>
                   </select>
                 </div>
                 <Button type="button" variant="secondary" className="rounded-xl" onClick={() => openMediaPicker("edit")}>
-                  Upload or choose media
+                  Add / change media
                 </Button>
               </div>
+              <p className="text-[10px] leading-snug text-zinc-400">Picker stacks on top • Library tiles scroll sideways</p>
               {draftMediaPreview && (
-                <div className="rounded-xl border border-zinc-200 p-2">
-                  <div className="h-40 w-full max-w-xl">
+                <div className="rounded-xl border border-zinc-200 bg-zinc-50/80 p-2 dark:border-zinc-700 dark:bg-zinc-900/40">
+                  <div className="relative mx-auto aspect-video w-full max-w-xl overflow-hidden rounded-lg bg-black/5 ring-1 ring-zinc-200/80 dark:bg-zinc-950/40 dark:ring-zinc-700">
                     <MediaPreviewBlock
                       url={draftMediaPreview}
                       mediaType={draftMediaType}
-                      className="h-full w-full"
-                      videoClassName="h-40"
-                      imgClassName="h-40"
+                      className="flex h-full min-h-[9rem] w-full items-center justify-center"
+                      videoClassName="max-h-[min(260px,40vh)] w-full object-contain"
+                      imgClassName="max-h-[min(260px,40vh)] w-full object-contain"
                     />
                   </div>
                   <Button
@@ -1546,27 +1573,39 @@ export function ContentWorkspaceView() {
       </Dialog>
 
       <Dialog open={mediaPickerOpen} onOpenChange={setMediaPickerOpen}>
-        <DialogContent className="z-[100] max-w-3xl">
+        <DialogContent overlayClassName="z-[110]" className="z-[111] max-w-3xl">
           <DialogHeader className="space-y-1 text-left">
             <DialogTitle>Media</DialogTitle>
             <DialogDescription>Upload a file or pick from this workspace library.</DialogDescription>
           </DialogHeader>
+          {showMediaPickerHelper ? (
+            <div
+              className="flex flex-col gap-2 rounded-xl border border-sky-200/90 bg-sky-50/80 px-3 py-2.5 text-sm text-sky-950 dark:border-sky-800/70 dark:bg-sky-950/35 dark:text-sky-50 sm:flex-row sm:items-center sm:justify-between"
+              role="status"
+            >
+              <p className="leading-snug">
+                This picker sits <span className="font-medium">on top</span> of your draft sheet. Upload new files here, or choose from the workspace library —
+                nothing is finalized until you save in &quot;Edit content&quot;.
+              </p>
+              <Button type="button" variant="ghost" size="sm" className="shrink-0 rounded-lg text-sky-900 hover:bg-sky-100/80 dark:text-sky-100 dark:hover:bg-sky-900/60" onClick={dismissMediaPickerHelper}>
+                Got it
+              </Button>
+            </div>
+          ) : null}
           <div className="grid gap-4 md:grid-cols-[180px_1fr]">
             <div className="space-y-2">
               <Button
                 type="button"
                 variant={mediaPickerView === "upload" ? "default" : "secondary"}
                 className="w-full rounded-xl"
-                onClick={() => setMediaPickerView("upload")}
+                onClick={() => {
+                  setMediaPickerView("upload");
+                  setMediaUploadPaneNonce((n) => n + 1);
+                }}
               >
                 From computer
               </Button>
-              <Button
-                type="button"
-                variant={mediaPickerView === "library" ? "default" : "secondary"}
-                className="w-full rounded-xl"
-                onClick={() => setMediaPickerView("library")}
-              >
+              <Button type="button" variant={mediaPickerView === "library" ? "default" : "secondary"} className="w-full rounded-xl" onClick={() => setMediaPickerView("library")}>
                 Media library
               </Button>
             </div>
@@ -1575,6 +1614,7 @@ export function ContentWorkspaceView() {
                 <div className="space-y-3">
                   <Label className="text-zinc-700 dark:text-zinc-300">Upload from your device</Label>
                   <MediaLocalDropzone
+                    key={mediaUploadPaneNonce}
                     busy={uploadingMedia}
                     disabled={uploadingMedia}
                     onFiles={(fl) => {
@@ -1592,17 +1632,18 @@ export function ContentWorkspaceView() {
                           let lastUrl = "";
                           let lastType: MediaType = "Image";
                           for (const file of files) {
-                            const dataUrl = await fileToDataUrl(file);
-                            const mediaType: MediaType = file.type.startsWith("video/") ? "Video" : "Image";
+                            const prepared = await prepareFileForUpload(file);
+                            const dataUrl = await fileToDataUrl(prepared);
+                            const mediaType: MediaType = prepared.type.startsWith("video/") ? "Video" : "Image";
                             const { mediaUrl, mediaType: uploadedMediaType } = workspace.cloudinaryUploadsReady
                               ? await apiUploadMediaToCloudinary({
                                   dataUrl,
-                                  fileName: file.name,
+                                  fileName: prepared.name,
                                   mediaType,
                                 })
                               : await apiUploadMediaLocal({
                                   dataUrl,
-                                  fileName: file.name,
+                                  fileName: prepared.name,
                                   mediaType,
                                 });
                             lastUrl = mediaUrl;
@@ -1634,17 +1675,39 @@ export function ContentWorkspaceView() {
               )}
               {mediaPickerView === "library" && (
                 <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-200/90 bg-zinc-50/80 px-3 py-2 dark:border-zinc-700 dark:bg-zinc-900/50">
+                    <p className="text-sm text-zinc-600 dark:text-zinc-300">Browsing workspace files — upload new anytime.</p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="rounded-lg"
+                      onClick={() => {
+                        setMediaPickerView("upload");
+                        setMediaUploadPaneNonce((n) => n + 1);
+                      }}
+                    >
+                      Upload from computer
+                    </Button>
+                  </div>
                   <Label>Choose saved media</Label>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    Scroll sideways (~3 tiles) — tap one to attach. Carousel is the first slide URL.
+                  </p>
                   {mediaLibrary.length === 0 ? (
-                    <p className="text-sm text-zinc-500 dark:text-zinc-400">No media in this workspace yet. Use &quot;From computer&quot; to upload.</p>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">No media in this workspace yet. Use &quot;From computer&quot; or the button above to upload.</p>
                   ) : (
-                    <div className="grid gap-2 md:grid-cols-3">
-                      {mediaLibrary.slice(0, 12).map((asset) => {
+                    <div
+                      role="list"
+                      className="flex snap-x snap-mandatory gap-2.5 overflow-x-auto overscroll-x-contain pb-2 pt-0.5 [-webkit-overflow-scrolling:touch] [scrollbar-width:thin]"
+                    >
+                      {mediaLibrary.slice(0, 48).map((asset) => {
                         const locked = usedMediaByOtherItems.has(asset.url);
                         return (
                           <div
                             key={`picker-${asset.id}`}
-                            className="rounded-xl border border-zinc-200 bg-white p-2 dark:border-zinc-700 dark:bg-zinc-900/80"
+                            role="listitem"
+                            className="w-[148px] shrink-0 snap-start rounded-xl border border-zinc-200 bg-white p-2 sm:w-[160px] dark:border-zinc-700 dark:bg-zinc-900/80"
                           >
                             <button
                               type="button"
