@@ -1,6 +1,6 @@
 "use client";
 
-import { format, parseISO } from "date-fns";
+import { format, formatDistanceToNow, parseISO } from "date-fns";
 import { AlertCircle, ChevronDown, ChevronLeft, ChevronRight, Search, Sparkles, X } from "lucide-react";
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FacebookPostPreview } from "@/components/previews/facebook-post-preview";
@@ -136,6 +136,27 @@ function formatQueueDate(item: ContentItem): string {
 
 function formatQueueBodyPreview(text: string): string {
   return text.replace(/\s+/g, " ").trim();
+}
+
+function formatSnapshotInstant(iso: string | null | undefined, empty = "—"): string {
+  if (!iso?.trim()) return empty;
+  try {
+    const d = parseISO(String(iso));
+    if (Number.isNaN(d.getTime())) return empty;
+    return format(d, "MMM d, yyyy · h:mm a");
+  } catch {
+    return empty;
+  }
+}
+
+function pickLatestContentCreatedIso(items: ContentItem[]): string | null {
+  let best: string | null = null;
+  for (const c of items) {
+    const v = c.createdAt;
+    if (!v?.trim()) continue;
+    if (!best || new Date(v) > new Date(best)) best = v;
+  }
+  return best;
 }
 
 const COMPETITOR_RESEARCH_PAGE_SIZE = 4;
@@ -480,13 +501,46 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     setMarketGapSelected([]);
   }, [strategyOutputQuery]);
 
+  const strategyCompetitorsPayload = useMemo(() => {
+    const rows = [...competitorDrafts];
+    if (competitorName.trim() || competitorWebsite.trim()) {
+      rows.unshift({
+        id: "primary-competitor",
+        name: competitorName.trim(),
+        website: competitorWebsite.trim(),
+        focus: "Manual competitor research target.",
+      });
+    }
+    return rows.map(({ name, website: competitorUrl, focus }) => ({
+      name,
+      website: competitorUrl,
+      focus,
+    }));
+  }, [competitorDrafts, competitorName, competitorWebsite]);
+
   const strategyResearchMeta = useMemo(() => {
     const v = workspace?.strategyVersion;
-    if (v == null) return "";
-    return `v${v}`;
-  }, [workspace]);
+    const updated = formatSnapshotInstant(workspace?.strategyUpdatedAt);
+    const rel =
+      workspace?.strategyUpdatedAt?.trim() && updated !== "—"
+        ? formatDistanceToNow(parseISO(workspace.strategyUpdatedAt!), { addSuffix: true })
+        : "";
+    const parts: string[] = [];
+    if (v != null) parts.push(`v${v}`);
+    if (updated !== "—") parts.push(`saved ${updated}`);
+    if (rel) parts.push(rel);
+    return parts.join(" · ");
+  }, [workspace?.strategyVersion, workspace?.strategyUpdatedAt]);
 
   const contentQueueItems = useMemo(() => workspace?.content ?? [], [workspace?.content]);
+  const latestContentCreatedAt = useMemo(() => pickLatestContentCreatedIso(contentQueueItems), [contentQueueItems]);
+  const contentCreatedMeta = useMemo(() => {
+    if (!latestContentCreatedAt) return "";
+    const abs = formatSnapshotInstant(latestContentCreatedAt);
+    if (abs === "—") return "";
+    const rel = formatDistanceToNow(parseISO(latestContentCreatedAt), { addSuffix: true });
+    return `Latest content created ${abs} · ${rel}`;
+  }, [latestContentCreatedAt]);
   const contentQueuePageCount = Math.max(1, Math.ceil(contentQueueItems.length / CONTENT_QUEUE_PAGE_SIZE) || 1);
   const safeContentQueuePage = Math.min(contentQueuePage, Math.max(0, contentQueuePageCount - 1));
 
@@ -551,6 +605,23 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
   }, [aiElapsedSec]);
 
   const aiFeelsSlow = aiJobActive && aiElapsedSec >= 90;
+
+  const buildStrategyCompetitorPayload = useCallback(() => {
+    const competitorInputs = [...competitorDrafts];
+    if (competitorName.trim() || competitorWebsite.trim()) {
+      competitorInputs.unshift({
+        id: "primary-competitor",
+        name: competitorName.trim(),
+        website: competitorWebsite.trim(),
+        focus: "Manual competitor research target.",
+      });
+    }
+    return competitorInputs.map(({ name, website: competitorUrl, focus }) => ({
+      name,
+      website: competitorUrl,
+      focus,
+    }));
+  }, [competitorDrafts, competitorName, competitorWebsite]);
 
   if (shellPending) {
     return (
@@ -620,24 +691,11 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       push("Complete company and workspace setup before running strategy.");
       return;
     }
-    const competitorInputs = [...competitorDrafts];
-    if (competitorName.trim() || competitorWebsite.trim()) {
-      competitorInputs.unshift({
-        id: "primary-competitor",
-        name: competitorName.trim(),
-        website: competitorWebsite.trim(),
-        focus: "Manual competitor research target.",
-      });
-    }
     setStrategyLoading(true);
     try {
       const notify = await requestAiCompletionNotifyPreference("strategy");
       await generateStrategy(company, website, {
-        competitors: competitorInputs.map(({ name, website: competitorUrl, focus }) => ({
-          name,
-          website: competitorUrl,
-          focus,
-        })),
+        competitors: buildStrategyCompetitorPayload(),
         completionNotify: notify,
       });
       push("Strategy is updated with your latest company, website, and market details.");
@@ -645,6 +703,44 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       push(apiErrorMessage(e));
     } finally {
       setStrategyLoading(false);
+    }
+  };
+
+  /** One click: Agent 1 (strategy / competitors) then Agent 2 (content calendar). */
+  const runStrategyThenContent = async () => {
+    if (!workspace) return;
+    const company = effectiveWorkspaceCompanyName(workspace);
+    const website = workspace.companyWebsite.trim();
+    if (!company) {
+      push("Add a company name in Profile or Workspace setup before generating strategy.");
+      return;
+    }
+    if (!workspaceReady) {
+      push("Complete company and workspace setup before running AI refresh.");
+      return;
+    }
+    setStrategyLoading(true);
+    try {
+      await generateStrategy(company, website, {
+        competitors: buildStrategyCompetitorPayload(),
+        completionNotify: false,
+      });
+    } catch (e) {
+      push(apiErrorMessage(e));
+      return;
+    } finally {
+      setStrategyLoading(false);
+    }
+    setContentLoading(true);
+    try {
+      const notify = await requestAiCompletionNotifyPreference("content");
+      await generateContent(calendarDays, { completionNotify: notify });
+      setContentQueuePage(0);
+      push(`Strategy saved and ${calendarDays}-day content library generated.`);
+    } catch (e) {
+      push(apiErrorMessage(e));
+    } finally {
+      setContentLoading(false);
     }
   };
 
@@ -905,17 +1001,39 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
             </CardHeader>
             <CardContent className="space-y-2 text-sm text-slate-700 dark:text-slate-300">
               <p className="text-xs text-slate-600 dark:text-slate-400">
-                Refresh strategy using your <span className="font-medium">latest</span> company, website, and market (
-                {primaryRegionLabel(workspace.primaryRegion)}). We recommend running this weekly, then refresh content when needed.
+                Use your <span className="font-medium">latest</span> company, website, and market ({primaryRegionLabel(workspace.primaryRegion)}).{" "}
+                <span className="font-medium">One tap</span> runs strategy research and rebuilds your content calendar — no second click.
               </p>
               <Button
                 type="button"
                 className="w-full rounded-2xl"
-                disabled={strategyLoading || !workspaceReady}
+                disabled={aiJobActive || !workspaceReady}
+                onClick={() => void runStrategyThenContent()}
+              >
+                {strategyLoading
+                  ? "Updating strategy…"
+                  : contentLoading
+                    ? "Creating content library…"
+                    : workspaceReady
+                      ? "Refresh strategy & content"
+                      : "Set up workspace first"}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full rounded-2xl"
+                disabled={aiJobActive || !workspaceReady}
                 onClick={() => void runStrategy()}
               >
-                {strategyLoading ? "Updating strategy…" : workspaceReady ? "Refresh strategy" : "Set up workspace first"}
+                {strategyLoading && !contentLoading
+                  ? "Updating strategy…"
+                  : workspaceReady
+                    ? "Strategy only (leave posts as-is)"
+                    : "Set up workspace first"}
               </Button>
+              <p className="text-[11px] font-medium tabular-nums text-slate-500 dark:text-slate-400">
+                Strategy saved: {strategyResearchMeta || "— not generated yet"}
+              </p>
             </CardContent>
           </Card>
           <Card className="rounded-2xl border-blue-100/90 bg-white shadow-sm dark:border-blue-900/50 dark:bg-zinc-900/40">
@@ -972,8 +1090,20 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                 onChange={(event) => void handleCompetitorFile(event.target.files)}
               />
             </div>
-            <Button type="button" variant="secondary" className="w-full rounded-2xl" disabled={strategyLoading || !workspaceReady} onClick={() => void runStrategy()}>
-              {strategyLoading ? "Working…" : workspaceReady ? "Run again with these competitors" : "Set up workspace first"}
+            <Button
+              type="button"
+              variant="secondary"
+              className="w-full rounded-2xl"
+              disabled={aiJobActive || !workspaceReady}
+              onClick={() => void runStrategyThenContent()}
+            >
+              {strategyLoading
+                ? "Updating strategy…"
+                : contentLoading
+                  ? "Creating content library…"
+                  : workspaceReady
+                    ? "Refresh strategy & content with these competitors"
+                    : "Set up workspace first"}
             </Button>
               </CardContent>
             ) : null}
@@ -1402,8 +1532,11 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
           <CardHeader className="shrink-0 pb-2">
             <div className="flex w-full items-start justify-between gap-2">
               <div className="min-w-0">
-              <CardTitle className="text-base text-slate-900 dark:text-zinc-50">Content queue</CardTitle>
-              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Pagination above the grid · uniform card height</p>
+                <CardTitle className="text-base text-slate-900 dark:text-zinc-50">Content queue</CardTitle>
+                <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">Pagination above the grid · uniform card height</p>
+                <p className="mt-1 text-[11px] font-medium tabular-nums text-slate-500 dark:text-slate-400">
+                  {contentCreatedMeta || "Latest content created: — (no posts in the library yet)"}
+                </p>
               </div>
               <div className="ml-auto flex shrink-0 items-center gap-2">
                 <Button
@@ -1416,8 +1549,15 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                 >
                   Delete all generated
                 </Button>
-                <Button type="button" variant="secondary" size="sm" className="rounded-xl" disabled={contentLoading || !workspaceReady} onClick={() => void runContent()}>
-                  {contentLoading ? "Refreshing…" : workspaceReady ? "Regenerate library" : "Setup required"}
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="rounded-xl"
+                  disabled={aiJobActive || !workspaceReady}
+                  onClick={() => void runContent()}
+                >
+                  {contentLoading ? "Refreshing…" : workspaceReady ? "Regenerate library only" : "Setup required"}
                 </Button>
               </div>
             </div>

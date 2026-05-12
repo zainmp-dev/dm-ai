@@ -87,8 +87,11 @@ export function formatApiErrorMessage(error: unknown): string {
   }
 
   const code = error.code;
+  if (code === "ERR_CANCELED") {
+    return "Request was cancelled (e.g. page changed or duplicate submit). Try again.";
+  }
   if (code === "ECONNABORTED") {
-    return "Request timed out. Check your connection or try again.";
+    return "Request timed out—the API or database took too long, or the server is still starting. Wait a moment and try again.";
   }
   if (code === "ERR_NETWORK" || !error.response) {
     return "Cannot reach the server. Check that the API is running and your network connection.";

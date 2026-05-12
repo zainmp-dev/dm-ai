@@ -1,21 +1,28 @@
 "use client";
 
 import { format, parseISO } from "date-fns";
-import { Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Copy, KeyRound, Search, Trash2, UserPlus } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
 import { AdminPaginationBar } from "@/components/admin/admin-pagination";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { useToast } from "@/components/ui/toast";
 import {
+  apiAdminCreateUser,
+  apiAdminDeleteUser,
+  apiAdminSetUserPassword,
   apiAdminUsers,
   apiErrorMessage,
   type AdminAuthFilter,
+  type AdminPasswordStorage,
   type AdminRoleFilter,
   type AdminUserRow,
   type AdminUsersPageResponse,
   type AdminUsersSetupFilter,
 } from "@/lib/api";
+import { getAuthUser } from "@/lib/auth";
 import { cn } from "@/lib/utils";
 
 function formatDt(iso: string | null | undefined): string {
@@ -44,10 +51,26 @@ function authLabel(provider: string | null): string {
   return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
+function passwordStorageLabel(storage: AdminPasswordStorage): string {
+  switch (storage) {
+    case "bcrypt":
+      return "Encrypted (bcrypt)";
+    case "oauth_placeholder":
+      return "OAuth account";
+    case "legacy_plaintext":
+      return "Legacy plaintext";
+    case "none":
+    default:
+      return "None";
+  }
+}
+
 export default function AdminUsersPage() {
+  const { push } = useToast();
   const [pack, setPack] = useState<AdminUsersPageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [listVersion, setListVersion] = useState(0);
 
   const [queryInput, setQueryInput] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
@@ -56,6 +79,16 @@ export default function AdminUsersPage() {
   const [authFilter, setAuthFilter] = useState<AdminAuthFilter>("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+
+  const [newEmail, setNewEmail] = useState("");
+  const [newName, setNewName] = useState("Admin");
+  const [newRole, setNewRole] = useState<"admin" | "user">("admin");
+  const [newPassword, setNewPassword] = useState("");
+  const [createBusy, setCreateBusy] = useState(false);
+
+  const [rowBusyId, setRowBusyId] = useState<string | null>(null);
+
+  const sessionEmail = (getAuthUser()?.email || "").trim().toLowerCase();
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedQ(queryInput.trim()), 320);
@@ -90,7 +123,92 @@ export default function AdminUsersPage() {
     return () => {
       cancelled = true;
     };
-  }, [page, pageSize, debouncedQ, setupFilter, roleFilter, authFilter]);
+  }, [page, pageSize, debouncedQ, setupFilter, roleFilter, authFilter, listVersion]);
+
+  async function copyText(label: string, text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      push(`${label} copied.`, { kind: "success" });
+    } catch {
+      push("Could not copy to clipboard.", { kind: "error" });
+    }
+  }
+
+  async function handleCreateUser(e: FormEvent) {
+    e.preventDefault();
+    if (createBusy) return;
+    const email = newEmail.trim().toLowerCase();
+    if (!email) {
+      push("Enter an email for the new account.", { kind: "error" });
+      return;
+    }
+    setCreateBusy(true);
+    try {
+      const res = await apiAdminCreateUser({
+        email,
+        name: newName.trim() || undefined,
+        role: newRole,
+        password: newPassword.trim() ? newPassword.trim() : undefined,
+      });
+      try {
+        await navigator.clipboard.writeText(res.initial_password);
+        push(`Created ${res.email}. Password copied to clipboard.`, { kind: "success" });
+      } catch {
+        push(`Created ${res.email}. Clipboard failed — note the password from your server logs if needed.`, {
+          kind: "error",
+        });
+      }
+      setNewEmail("");
+      setNewPassword("");
+      setListVersion((v) => v + 1);
+      setPage(1);
+    } catch (err: unknown) {
+      push(apiErrorMessage(err) || "Could not create user.", { kind: "error" });
+    } finally {
+      setCreateBusy(false);
+    }
+  }
+
+  async function handleRotatePassword(row: AdminUserRow) {
+    if (rowBusyId) return;
+    const ok = window.confirm(
+      `Set a new random password for ${row.email}? The previous password will stop working.`,
+    );
+    if (!ok) return;
+    setRowBusyId(row.id);
+    try {
+      const res = await apiAdminSetUserPassword(row.id, {});
+      try {
+        await navigator.clipboard.writeText(res.new_password);
+        push(`New password copied for ${row.email}.`, { kind: "success" });
+      } catch {
+        push("Password updated but clipboard was blocked.", { kind: "error" });
+      }
+      setListVersion((v) => v + 1);
+    } catch (err: unknown) {
+      push(apiErrorMessage(err) || "Could not update password.", { kind: "error" });
+    } finally {
+      setRowBusyId(null);
+    }
+  }
+
+  async function handleRemoveUser(row: AdminUserRow) {
+    if (rowBusyId) return;
+    const ok = window.confirm(
+      `Soft-delete ${row.email}? They will not be able to sign in. This cannot be undone from the UI.`,
+    );
+    if (!ok) return;
+    setRowBusyId(row.id);
+    try {
+      await apiAdminDeleteUser(row.id);
+      push(`Removed ${row.email}.`, { kind: "success" });
+      setListVersion((v) => v + 1);
+    } catch (err: unknown) {
+      push(apiErrorMessage(err) || "Could not remove user.", { kind: "error" });
+    } finally {
+      setRowBusyId(null);
+    }
+  }
 
   const setupPills: { id: AdminUsersSetupFilter; label: string }[] = [
     { id: "all", label: "All stages" },
@@ -117,11 +235,92 @@ export default function AdminUsersPage() {
   return (
     <div className="mx-auto flex max-w-[1400px] flex-col gap-6">
       <Card className="rounded-2xl border-[#e5e7eb] bg-white dark:border-zinc-800 dark:bg-[#161618]">
+        <CardHeader className="space-y-3 pb-4">
+          <div className="flex items-start gap-2">
+            <UserPlus className="mt-0.5 size-4 text-[#1a56db]" strokeWidth={1.75} />
+            <div>
+              <CardTitle className="text-[15px] font-semibold text-[#0f172a] dark:text-zinc-50">Create account</CardTitle>
+              <CardDescription className="text-[13px] text-[#64748b] dark:text-zinc-500">
+                Add an admin or standard user. Leave password empty to auto-generate one (shown once and copied to your
+                clipboard).
+              </CardDescription>
+            </div>
+          </div>
+          <form onSubmit={handleCreateUser} className="grid gap-3 sm:grid-cols-2 lg:grid-cols-12 lg:items-end">
+            <div className="sm:col-span-2 lg:col-span-3">
+              <Label htmlFor="admin-new-email" className="text-[12px]">
+                Email
+              </Label>
+              <Input
+                id="admin-new-email"
+                type="email"
+                autoComplete="off"
+                value={newEmail}
+                onChange={(e) => setNewEmail(e.target.value)}
+                placeholder="admin@company.com"
+                className="mt-1 h-10 rounded-xl border-[#e5e7eb] dark:border-zinc-700"
+              />
+            </div>
+            <div className="sm:col-span-2 lg:col-span-3">
+              <Label htmlFor="admin-new-name" className="text-[12px]">
+                Display name
+              </Label>
+              <Input
+                id="admin-new-name"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Admin"
+                className="mt-1 h-10 rounded-xl border-[#e5e7eb] dark:border-zinc-700"
+              />
+            </div>
+            <div className="sm:col-span-1 lg:col-span-2">
+              <Label htmlFor="admin-new-role" className="text-[12px]">
+                Role
+              </Label>
+              <select
+                id="admin-new-role"
+                value={newRole}
+                onChange={(e) => setNewRole(e.target.value as "admin" | "user")}
+                className="mt-1 h-10 w-full rounded-xl border border-[#e5e7eb] bg-white px-3 text-[13px] dark:border-zinc-700 dark:bg-zinc-900"
+              >
+                <option value="admin">admin</option>
+                <option value="user">user</option>
+              </select>
+            </div>
+            <div className="sm:col-span-2 lg:col-span-3">
+              <Label htmlFor="admin-new-password" className="text-[12px]">
+                Password <span className="font-normal text-[#94a3b8]">(optional)</span>
+              </Label>
+              <Input
+                id="admin-new-password"
+                type="password"
+                autoComplete="new-password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="Auto-generate if empty"
+                className="mt-1 h-10 rounded-xl border-[#e5e7eb] dark:border-zinc-700"
+              />
+            </div>
+            <div className="sm:col-span-2 lg:col-span-1">
+              <Button
+                type="submit"
+                disabled={createBusy}
+                className="mt-1 h-10 w-full rounded-xl bg-[#1a56db] font-medium hover:bg-[#1746b3] sm:mt-6 lg:mt-6"
+              >
+                {createBusy ? "Creating…" : "Create"}
+              </Button>
+            </div>
+          </form>
+        </CardHeader>
+      </Card>
+
+      <Card className="rounded-2xl border-[#e5e7eb] bg-white dark:border-zinc-800 dark:bg-[#161618]">
         <CardHeader className="space-y-4 pb-4">
           <div>
             <CardTitle className="text-[15px] font-semibold text-[#0f172a] dark:text-zinc-50">Directory</CardTitle>
             <CardDescription className="text-[13px] text-[#64748b] dark:text-zinc-500">
-              Server-side search and filters with pagination — scales to large directories.
+              Server-side search and filters with pagination — scales to large directories. Bcrypt passwords cannot be
+              recovered; legacy plaintext rows are shown until you rotate them.
             </CardDescription>
           </div>
 
@@ -231,30 +430,36 @@ export default function AdminUsersPage() {
           ) : (
             <>
               <div className="overflow-x-auto border-t border-[#f1f5f9] dark:border-zinc-800">
-                <table className="w-full min-w-[920px] border-collapse text-left text-[13px]">
+                <table className="w-full min-w-[1120px] border-collapse text-left text-[13px]">
                   <thead>
                     <tr className="border-b border-[#e5e7eb] bg-[#fafafa] text-[11px] font-semibold uppercase tracking-wide text-[#64748b] dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-500">
                       <th className="whitespace-nowrap px-4 py-3 pl-6">User</th>
                       <th className="whitespace-nowrap px-4 py-3">Role</th>
                       <th className="whitespace-nowrap px-4 py-3">Auth</th>
+                      <th className="whitespace-nowrap px-4 py-3">Password</th>
                       <th className="whitespace-nowrap px-4 py-3">Workspace setup</th>
                       <th className="whitespace-nowrap px-4 py-3">Company</th>
                       <th className="whitespace-nowrap px-4 py-3">Scenario / region</th>
                       <th className="whitespace-nowrap px-4 py-3 text-right">Library</th>
-                      <th className="whitespace-nowrap px-4 py-3 pr-6 text-right">Joined</th>
+                      <th className="whitespace-nowrap px-4 py-3 text-right">Joined</th>
+                      <th className="whitespace-nowrap px-4 py-3 pr-6 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#f1f5f9] dark:divide-zinc-800">
                     {loading && rows.length === 0
                       ? Array.from({ length: 6 }).map((_, i) => (
                           <tr key={i} className="animate-pulse bg-white dark:bg-[#161618]">
-                            <td colSpan={8} className="px-6 py-4">
+                            <td colSpan={10} className="px-6 py-4">
                               <div className="h-10 rounded-lg bg-[#f1f5f9] dark:bg-zinc-800" />
                             </td>
                           </tr>
                         ))
                       : rows.map((row) => {
                           const setup = setupLabel(row);
+                          const isSelf = Boolean(
+                            sessionEmail && row.email.trim().toLowerCase() === sessionEmail,
+                          );
+                          const busy = rowBusyId === row.id;
                           return (
                             <tr
                               key={row.id}
@@ -279,6 +484,47 @@ export default function AdminUsersPage() {
                               </td>
                               <td className="whitespace-nowrap px-4 py-3 align-top text-[#475569] dark:text-zinc-400">
                                 {authLabel(row.auth_provider)}
+                              </td>
+                              <td className="min-w-[200px] max-w-[260px] px-4 py-3 align-top">
+                                <p className="text-[11px] font-medium text-[#64748b] dark:text-zinc-500">
+                                  {passwordStorageLabel(row.password_storage)}
+                                </p>
+                                {row.password_visible ? (
+                                  <div className="mt-1 flex items-center gap-1">
+                                    <code className="block max-w-[200px] truncate rounded bg-[#f1f5f9] px-1.5 py-0.5 font-mono text-[11px] dark:bg-zinc-800">
+                                      {row.password_visible}
+                                    </code>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="sm"
+                                      className="size-7 min-w-7 shrink-0 p-0 text-[#64748b]"
+                                      aria-label="Copy password"
+                                      onClick={() => void copyText("Password", row.password_visible!)}
+                                    >
+                                      <Copy className="size-3.5" strokeWidth={1.75} />
+                                    </Button>
+                                  </div>
+                                ) : row.password_storage === "bcrypt" ? (
+                                  <p className="mt-0.5 text-[11px] leading-snug text-[#94a3b8] dark:text-zinc-600">
+                                    Original not retrievable.
+                                  </p>
+                                ) : row.password_storage === "oauth_placeholder" ? (
+                                  <p className="mt-0.5 text-[11px] leading-snug text-[#94a3b8] dark:text-zinc-600">
+                                    Use “New pwd” for email login.
+                                  </p>
+                                ) : null}
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={busy}
+                                  className="mt-2 h-8 gap-1 rounded-lg border-[#e5e7eb] px-2 text-[11px] font-medium dark:border-zinc-700"
+                                  onClick={() => void handleRotatePassword(row)}
+                                >
+                                  <KeyRound className="size-3.5" strokeWidth={1.75} />
+                                  New pwd
+                                </Button>
                               </td>
                               <td className="min-w-[140px] px-4 py-3 align-top">
                                 <span
@@ -331,13 +577,27 @@ export default function AdminUsersPage() {
                                   </>
                                 )}
                               </td>
-                              <td className="whitespace-nowrap px-4 py-3 pr-6 align-top text-right text-[#64748b] dark:text-zinc-500">
+                              <td className="whitespace-nowrap px-4 py-3 align-top text-right text-[#64748b] dark:text-zinc-500">
                                 {formatDt(row.created_at)}
                                 {row.workspace_updated_at ? (
                                   <span className="mt-0.5 block text-[11px] text-[#94a3b8] dark:text-zinc-600">
                                     WS {formatDt(row.workspace_updated_at)}
                                   </span>
                                 ) : null}
+                              </td>
+                              <td className="whitespace-nowrap px-4 py-3 pr-6 align-top text-right">
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={busy || isSelf}
+                                  title={isSelf ? "Cannot remove the signed-in account" : "Soft-delete user"}
+                                  className="h-8 gap-1 text-red-600 hover:bg-red-50 hover:text-red-700 dark:text-red-400 dark:hover:bg-red-950/40"
+                                  onClick={() => void handleRemoveUser(row)}
+                                >
+                                  <Trash2 className="size-3.5" strokeWidth={1.75} />
+                                  Remove
+                                </Button>
                               </td>
                             </tr>
                           );

@@ -15,8 +15,8 @@ Usage examples (from the repo root, with the backend's venv active):
     # Drop the row entirely (e.g. recreate from scratch)
     python backend/promote_admin.py --email admin@flowpilot.local --delete
 
-This script intentionally lives outside the HTTP layer so admin promotion can
-NEVER be triggered from the public API surface. Run it from a trusted shell.
+This script is useful for recovery when you cannot reach the admin UI. For day-to-day work,
+prefer Admin → Users in the app (create, rotate password, soft-delete). Run this from a trusted shell only.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sqlalchemy import text  # noqa: E402
 
 from database import SessionLocal  # noqa: E402
+from utils.password_hashing import hash_password  # noqa: E402
 
 
 def _require_session():
@@ -52,6 +53,7 @@ def cmd_create(email: str, password: str, name: str) -> None:
     email_norm = email.strip().lower()
     if not email_norm or not password:
         raise SystemExit("--email and --password are required for --create")
+    pw_hash = hash_password(password)
     session = _require_session()
     try:
         existing = _find_user(session, email_norm)
@@ -62,7 +64,7 @@ def cmd_create(email: str, password: str, name: str) -> None:
                     "set name = :name, password = :password, role = 'admin' "
                     "where id = :id"
                 ),
-                {"id": existing["id"], "name": name, "password": password},
+                {"id": existing["id"], "name": name, "password": pw_hash},
             )
             session.commit()
             print(f"Updated existing user '{email_norm}' → role=admin (id={existing['id']}).")
@@ -74,7 +76,7 @@ def cmd_create(email: str, password: str, name: str) -> None:
                 "insert into flowpilot_users (id, name, email, password, role, created_at) "
                 "values (:id, :name, :email, :password, 'admin', now())"
             ),
-            {"id": user_id, "name": name, "email": email_norm, "password": password},
+            {"id": user_id, "name": name, "email": email_norm, "password": pw_hash},
         )
         session.commit()
         print(f"Created admin '{email_norm}' (id={user_id}).")

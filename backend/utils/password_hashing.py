@@ -8,8 +8,11 @@ import bcrypt
 
 
 def hash_password(plain: str) -> str:
-    """Hash a UTF-8 password for storage (bcrypt)."""
-    digest = bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt(rounds=12))
+    """Hash a UTF-8 password for storage (bcrypt, cost 10 for responsive signup/login).
+
+    Existing rows may use higher cost; `checkpw` still verifies them.
+    """
+    digest = bcrypt.hashpw(plain.encode("utf-8"), bcrypt.gensalt(rounds=10))
     return digest.decode("ascii")
 
 

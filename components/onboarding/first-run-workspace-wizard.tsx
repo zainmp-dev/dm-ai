@@ -504,9 +504,6 @@ function FirstRunWorkspaceWizardContent({ push }: { push: (message: string, opts
             </div>
 
             <div className="flex flex-col-reverse gap-2 border-t border-zinc-100 pt-5 dark:border-zinc-800 sm:flex-row sm:justify-end">
-              <Button type="button" variant="ghost" className="rounded-xl" onClick={() => router.push("/settings?section=integrations")}>
-                Open full integrations
-              </Button>
               <Button
                 type="button"
                 className="rounded-xl bg-blue-600 font-semibold text-white hover:bg-blue-700 dark:bg-blue-600 dark:hover:bg-blue-500"

@@ -131,11 +131,12 @@ export default function AdminOverviewPage() {
               <li className="flex gap-2">
                 <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
                 <span>
-                  Promote or demote operators with{" "}
+                  Use{" "}
                   <code className="rounded-md bg-[#f1f5f9] px-1.5 py-0.5 text-[11px] dark:bg-zinc-800">
                     backend/promote_admin.py
                   </code>{" "}
-                  (never exposed via the public HTTP API).
+                  when the UI is unreachable. Otherwise manage credentials under{" "}
+                  <strong className="font-medium text-[#0f172a] dark:text-zinc-200">Users & setup</strong>.
                 </span>
               </li>
             </ul>

@@ -8,6 +8,7 @@ import logging
 import mimetypes
 import os
 import re
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -48,6 +49,7 @@ from services.posting_service import publish_flowpilot_workspace_item
 from services.ai import AIServiceError, generate_carousel, generate_image_prompt
 from scheduler import scheduler_loop
 from routes.ads_routes import router as ads_router
+from routes.campaign_mgmt_routes import router as campaign_mgmt_router
 from routes.social_routes import router as social_router
 from services.boost_link_service import boost_url_for_target
 from services.oauth_service import linkedin_connect_url, meta_connect_url
@@ -267,6 +269,32 @@ class AdminUserRow(BaseModel):
     workspace_updated_at: datetime | None = None
     content_count: int = 0
     competitor_count: int = 0
+    # Password visibility: bcrypt hashes cannot be reversed. Legacy plaintext rows (no OAuth link) are shown as-is.
+    password_storage: str
+    password_visible: str | None = None
+
+
+class AdminCreateUserRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    name: str = Field(default="Admin", min_length=1, max_length=200)
+    role: str = Field(default="admin")
+    password: str | None = Field(default=None, max_length=500)
+
+
+class AdminCreateUserResponse(BaseModel):
+    id: str
+    email: str
+    name: str
+    role: str
+    initial_password: str
+
+
+class AdminSetPasswordRequest(BaseModel):
+    password: str | None = Field(default=None, max_length=500)
+
+
+class AdminSetPasswordResponse(BaseModel):
+    new_password: str
 
 
 class AdminUsersPageResponse(BaseModel):
@@ -667,6 +695,21 @@ left join (
 """
 
 
+def _generate_admin_password() -> str:
+    return secrets.token_urlsafe(14)
+
+
+def _admin_password_storage_and_visible(password_raw: str | None, auth_provider: str | None) -> tuple[str, str | None]:
+    raw = str(password_raw or "").strip()
+    if not raw:
+        return "none", None
+    if raw.startswith("$2"):
+        return "bcrypt", None
+    if str(auth_provider or "").strip():
+        return "oauth_placeholder", None
+    return "legacy_plaintext", raw
+
+
 def _admin_user_row_from_rd(rd: dict) -> AdminUserRow:
     raw_role = str(rd.get("role") or "user").strip().lower()
     role_out = raw_role if raw_role in {"admin", "user"} else "user"
@@ -674,6 +717,11 @@ def _admin_user_row_from_rd(rd: dict) -> AdminUserRow:
     auth_prov = str(ap_raw).strip().lower() if ap_raw is not None else ""
     auth_prov = auth_prov if auth_prov else None
     wc_raw = rd.get("workspace_configured")
+    pw_raw = rd.get("password")
+    storage, visible = _admin_password_storage_and_visible(
+        str(pw_raw) if pw_raw is not None else None,
+        auth_prov,
+    )
     return AdminUserRow(
         id=str(rd["id"]),
         name=str(rd.get("name") or ""),
@@ -690,6 +738,8 @@ def _admin_user_row_from_rd(rd: dict) -> AdminUserRow:
         workspace_updated_at=rd.get("workspace_updated_at"),
         content_count=int(rd.get("content_count") or 0),
         competitor_count=int(rd.get("competitor_count") or 0),
+        password_storage=storage,
+        password_visible=visible,
     )
 
 
@@ -2324,6 +2374,7 @@ app.add_middleware(
 )
 app.include_router(social_router)
 app.include_router(ads_router)
+app.include_router(campaign_mgmt_router)
 
 
 @app.get("/")
@@ -2566,6 +2617,9 @@ def auth_oauth_callback(
         logger.exception("OAuth callback failed provider=%s", provider)
         raise HTTPException(status_code=400, detail="Sign-in failed. Please try again.") from None
     return AuthResponse(token=auth_token(user_row["id"]), user=serialize_auth_user(dict(user_row)))
+
+
+@app.post("/signup", response_model=AuthResponse)
 def signup(body: SignupRequest, db: Session = Depends(get_db)) -> AuthResponse:
     email = body.email.strip().lower()
     name = body.name.strip()
@@ -2704,6 +2758,7 @@ def admin_users(
                 u.role,
                 u.auth_provider,
                 u.created_at,
+                u.password,
                 (w.workspace_id is not null) as has_workspace,
                 w.company_name,
                 w.company_website,
@@ -2729,6 +2784,129 @@ def admin_users(
         page_size=size_i,
         total_pages=total_pages,
     )
+
+
+@app.post("/admin/users", response_model=AdminCreateUserResponse)
+def admin_create_user(
+    body: AdminCreateUserRequest,
+    db: Session = Depends(get_db),
+    _admin: dict[str, Any] = Depends(require_admin),
+) -> AdminCreateUserResponse:
+    role_norm = str(body.role or "user").strip().lower()
+    if role_norm not in {"admin", "user"}:
+        raise HTTPException(status_code=400, detail="Invalid role")
+    email = body.email.strip().lower()
+    name = body.name.strip() or _auth_name_from_email(email)
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+
+    existing = db.execute(
+        text("select id from flowpilot_users where lower(trim(email)) = :email and deleted_at is null"),
+        {"email": email},
+    ).mappings().first()
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="An active account with this email already exists.")
+
+    plain = (body.password or "").strip() or _generate_admin_password()
+    if len(plain) < 6:
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be at least 6 characters (or omit for auto-generated).",
+        )
+
+    user_id = f"usr-{uuid.uuid4().hex[:10]}"
+    db.execute(
+        text(
+            "insert into flowpilot_users (id, name, email, password, role, created_at) "
+            "values (:id, :name, :email, :password, :role, now())"
+        ),
+        {
+            "id": user_id,
+            "name": name,
+            "email": email,
+            "password": hash_password(plain),
+            "role": role_norm,
+        },
+    )
+    db.commit()
+    return AdminCreateUserResponse(
+        id=user_id,
+        email=email,
+        name=name,
+        role=role_norm,
+        initial_password=plain,
+    )
+
+
+@app.post("/admin/users/{user_id}/password", response_model=AdminSetPasswordResponse)
+def admin_set_user_password(
+    user_id: str,
+    body: AdminSetPasswordRequest,
+    db: Session = Depends(get_db),
+    _admin: dict[str, Any] = Depends(require_admin),
+) -> AdminSetPasswordResponse:
+    uid = user_id.strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="Invalid user id")
+
+    row = db.execute(
+        text("select id from flowpilot_users where id = :id and deleted_at is null"),
+        {"id": uid},
+    ).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    plain = (body.password or "").strip() or _generate_admin_password()
+    if len(plain) < 6:
+        raise HTTPException(
+            status_code=400,
+            detail="Password must be at least 6 characters (or omit for auto-generated).",
+        )
+
+    db.execute(
+        text("update flowpilot_users set password = :password where id = :id"),
+        {"password": hash_password(plain), "id": uid},
+    )
+    db.commit()
+    return AdminSetPasswordResponse(new_password=plain)
+
+
+@app.delete("/admin/users/{user_id}")
+def admin_soft_delete_user(
+    user_id: str,
+    db: Session = Depends(get_db),
+    admin: dict[str, Any] = Depends(require_admin),
+) -> dict[str, bool]:
+    uid = user_id.strip()
+    if not uid:
+        raise HTTPException(status_code=400, detail="Invalid user id")
+    if uid == str(admin.get("id") or ""):
+        raise HTTPException(status_code=400, detail="You cannot remove your own account while signed in.")
+
+    row = db.execute(
+        text("select id, role from flowpilot_users where id = :id and deleted_at is null"),
+        {"id": uid},
+    ).mappings().first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if str(row.get("role") or "user").strip().lower() == "admin":
+        count_row = db.execute(
+            text(
+                "select count(*)::int as n from flowpilot_users "
+                "where deleted_at is null and lower(trim(coalesce(role, ''))) = 'admin'"
+            ),
+        ).mappings().first()
+        n = int(count_row["n"] or 0) if count_row is not None else 0
+        if n <= 1:
+            raise HTTPException(status_code=400, detail="Cannot remove the last active admin.")
+
+    db.execute(
+        text("update flowpilot_users set deleted_at = now() where id = :id"),
+        {"id": uid},
+    )
+    db.commit()
+    return {"ok": True}
 
 
 def _workspaces_where_params(*, configured: str, q: str) -> tuple[str, dict[str, Any]]:

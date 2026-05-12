@@ -146,3 +146,81 @@ def create_ad(
     if not aid:
         raise RuntimeError("Meta did not return an ad id")
     return aid
+
+
+def update_object_status(
+    *,
+    access_token: str,
+    object_id: str,
+    status: str,
+    api_version: str,
+    timeout_seconds: int,
+) -> None:
+    """Set Graph API marketing object status (ACTIVE, PAUSED, ARCHIVED)."""
+    status_u = status.strip().upper()
+    if status_u not in {"ACTIVE", "PAUSED", "ARCHIVED", "DELETED"}:
+        raise ValueError("unsupported status")
+    request_json(
+        "POST",
+        f"https://graph.facebook.com/{api_version}/{object_id}",
+        timeout_seconds=timeout_seconds,
+        log_context=f"meta ads set status {object_id}",
+        data={"access_token": access_token, "status": status_u},
+    )
+
+
+def fetch_object_insights(
+    *,
+    access_token: str,
+    object_id: str,
+    api_version: str,
+    timeout_seconds: int,
+    fields: str = "impressions,clicks,spend,reach,actions",
+) -> dict[str, Any]:
+    res = request_json(
+        "GET",
+        f"https://graph.facebook.com/{api_version}/{object_id}/insights",
+        timeout_seconds=timeout_seconds,
+        log_context="meta ads insights",
+        params={
+            "access_token": access_token,
+            "fields": fields,
+            "date_preset": "last_7d",
+        },
+    )
+    data = res.get("data")
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        return data[0]
+    return {}
+
+
+def fetch_post_insights_simple(
+    *,
+    access_token: str,
+    post_id: str,
+    api_version: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    """Organic post insights (Page post id, underscore form)."""
+    res = request_json(
+        "GET",
+        f"https://graph.facebook.com/{api_version}/{post_id}/insights",
+        timeout_seconds=timeout_seconds,
+        log_context="meta post insights",
+        params={
+            "access_token": access_token,
+            "metric": "post_impressions,post_engaged_users",
+        },
+    )
+    out: dict[str, Any] = {}
+    data = res.get("data")
+    if not isinstance(data, list):
+        return out
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        vals = item.get("values")
+        if isinstance(vals, list) and vals and isinstance(vals[0], dict):
+            out[name] = vals[0].get("value")
+    return out

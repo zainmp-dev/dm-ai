@@ -7,6 +7,7 @@
     "dev:all": "npm run backend:free-port && concurrently -k -n api,web -c magenta,cyan \"npm run backend:dev\" \"npx --yes wait-on -t 120000 -i 200 http-get://127.0.0.1:8011/health && npm run dev\"",
     "dev:all:stable": "npm run backend:free-port && concurrently -k -n api,web -c magenta,cyan \"npm run backend:dev:stable\" \"npx --yes wait-on -t 120000 -i 200 http-get://127.0.0.1:8011/health && npm run dev\"",
     "backend:free-port": "node scripts/backend-free-port.mjs",
+    "backend:deps": "./.venv/bin/pip install -r backend/requirements.txt",
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",

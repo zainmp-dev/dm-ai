@@ -1,4 +1,17 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { getAuthApiTimeoutMs } from "@/lib/auth-api-timeout-ms";
+
+export const API_PREFIX = "/api/backend";
+
+const EXPLICIT_UPSTREAM_MS = (() => {
+  const raw = process.env.BACKEND_PROXY_UPSTREAM_TIMEOUT_MS?.trim();
+  if (!raw) return 0;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+})();
+
+/** Always at least client auth timeout + buffer so the proxy never aborts before axios. */
+const UPSTREAM_FETCH_MS = Math.max(EXPLICIT_UPSTREAM_MS, getAuthApiTimeoutMs() + 30_000);
 
 const SKIP_IN_HEADERS = new Set([
   "connection",
@@ -122,7 +135,10 @@ export async function proxyToFastapi(request: NextRequest, pathSegments: string[
   }
 
   try {
-    const res = await fetch(target, init);
+    const res = await fetch(target, {
+      ...init,
+      signal: AbortSignal.timeout(UPSTREAM_FETCH_MS),
+    });
     const outHeaders = new Headers();
     res.headers.forEach((value, key) => {
       if (key.toLowerCase() === "transfer-encoding") {
@@ -147,5 +163,3 @@ export async function proxyToFastapi(request: NextRequest, pathSegments: string[
     return NextResponse.json({ detail }, { status: 502 });
   }
 }
-
-export const API_PREFIX = "/api/backend";

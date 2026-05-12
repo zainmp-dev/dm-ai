@@ -9,6 +9,7 @@ from config import settings
 from database import SessionLocal, get_due_posts, get_notification_state, increment_retry, update_notification_state, update_status
 from emailer import email_configured, safe_send_email, weekly_update_email
 from publisher import publish_post
+from services.integration_jobs_service import process_due_jobs_once
 from services.posting_service import run_scheduled_posts
 from services.token_service import run_token_maintenance
 
@@ -44,6 +45,18 @@ def publish_due_posts_once() -> None:
                 logger.warning("Post %s failed permanently: %s", retried.id, result.message)
             else:
                 logger.warning("Post %s publish retry %s/%s: %s", retried.id, retried.retry_count, settings.max_publish_retries, result.message)
+    finally:
+        db.close()
+
+
+def process_integration_jobs_tick() -> None:
+    if SessionLocal is None:
+        return
+    db = SessionLocal()
+    try:
+        process_due_jobs_once(db)
+    except Exception:
+        logger.exception("Integration jobs tick failed")
     finally:
         db.close()
 
@@ -125,6 +138,7 @@ async def scheduler_loop(stop_event: asyncio.Event) -> None:
             await asyncio.to_thread(publish_due_social_posts_once)
             await asyncio.to_thread(refresh_expiring_social_tokens_once)
             await asyncio.to_thread(send_weekly_agent_update_once)
+            await asyncio.to_thread(process_integration_jobs_tick)
         except Exception:
             logger.exception("Publishing scheduler cycle failed")
 

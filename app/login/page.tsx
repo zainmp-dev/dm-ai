@@ -59,6 +59,7 @@ export default function LoginPage() {
   const trimmedEmail = email.trim();
 
   const handleLogin = () => {
+    if (loading) return;
     if (!EMAIL_REGEX.test(trimmedEmail)) {
       push("Please enter a valid email address.", { kind: "error" });
       return;

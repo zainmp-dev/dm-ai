@@ -1,4 +1,5 @@
 import axios, { type InternalAxiosRequestConfig } from "axios";
+import { getAuthApiTimeoutMs } from "@/lib/auth-api-timeout-ms";
 import { formatApiErrorMessage, flowSuccessMessages } from "@/lib/api-errors";
 import { notifyApiRequestEnd, notifyApiRequestStart, type FlowApiLoadingKind } from "@/lib/api-loading-store";
 import { clearAuthSession, getAuthToken } from "@/lib/auth";
@@ -29,7 +30,8 @@ const API_PREFIX = (process.env.NEXT_PUBLIC_API_PREFIX || "/api/backend").replac
 
 /** Default cap so hung proxies do not block the UI forever; AI routes override below. */
 const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
-const AUTH_REQUEST_TIMEOUT_MS = 10_000;
+/** Login/signup + OAuth (see `lib/auth-api-timeout-ms.ts`). */
+const AUTH_REQUEST_TIMEOUT_MS = getAuthApiTimeoutMs();
 const OPENROUTER_BALANCE_TIMEOUT_MS = 10_000;
 const AI_LONG_REQUEST_TIMEOUT_MS = 300_000;
 const WORKSPACE_SEARCH_TIMEOUT_MS = 120_000;
@@ -322,6 +324,8 @@ export interface AdminOverview {
   total_content_items: number;
 }
 
+export type AdminPasswordStorage = "none" | "bcrypt" | "oauth_placeholder" | "legacy_plaintext";
+
 export interface AdminUserRow {
   id: string;
   name: string;
@@ -338,6 +342,8 @@ export interface AdminUserRow {
   workspace_updated_at: string | null;
   content_count: number;
   competitor_count: number;
+  password_storage: AdminPasswordStorage;
+  password_visible: string | null;
 }
 
 export interface AdminUsersPageResponse {
@@ -428,6 +434,46 @@ export async function apiAdminUsers(params: {
       role: params.role ?? "all",
       auth: params.auth ?? "all",
     },
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export interface AdminCreateUserResponse {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  initial_password: string;
+}
+
+export async function apiAdminCreateUser(body: {
+  email: string;
+  name?: string;
+  role?: "admin" | "user";
+  password?: string | null;
+}): Promise<AdminCreateUserResponse> {
+  const { data } = await apiClient.post<AdminCreateUserResponse>("/admin/users", body, {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export async function apiAdminSetUserPassword(
+  userId: string,
+  body: { password?: string | null },
+): Promise<{ new_password: string }> {
+  const { data } = await apiClient.post<{ new_password: string }>(`/admin/users/${userId}/password`, body, {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export async function apiAdminDeleteUser(userId: string): Promise<{ ok: boolean }> {
+  const { data } = await apiClient.delete<{ ok: boolean }>(`/admin/users/${userId}`, {
     skipGlobalLoading: true,
     timeout: AUTH_REQUEST_TIMEOUT_MS,
   });
@@ -1089,5 +1135,103 @@ export async function apiRequestMetaAdsBoost(body: { postId: string; budget: num
     campaign_id: string;
     ad_id: string;
   }>("/ads/boost", { post_id: body.postId, budget: body.budget });
+  return data;
+}
+
+/** Campaign management (published posts, promotions, analytics, AI hints). */
+export type ManagedPromotionSummary = {
+  id: string;
+  platform: string;
+  status: string;
+  lifecycle?: string | null;
+  campaign_id?: string | null;
+  ad_id?: string | null;
+  budget?: number | null;
+};
+
+export type ManagedPostSummary = {
+  id: string;
+  content_preview: string;
+  status: string;
+  composite_status: string;
+  scheduled_at: string | null;
+  created_at: string | null;
+  promotions: ManagedPromotionSummary[];
+};
+
+export async function apiListManagedPosts(params?: { limit?: number }) {
+  const { data } = await apiClient.get<{ posts: ManagedPostSummary[] }>("/campaign-mgmt/posts", {
+    params: { limit: params?.limit ?? 50 },
+    skipGlobalLoading: true,
+  } as InternalAxiosRequestConfig);
+  return data.posts;
+}
+
+export async function apiCampaignOptimizeAnalyze(postId: string, body?: { platform?: string }) {
+  const { data } = await apiClient.post<Record<string, unknown>>(
+    `/campaign-mgmt/posts/${encodeURIComponent(postId)}/optimize/analyze`,
+    { platform: body?.platform ?? "meta" },
+    { skipGlobalLoading: true } as InternalAxiosRequestConfig,
+  );
+  return data;
+}
+
+export async function apiCampaignCreatePromotion(postId: string, body: { platform: "meta" | "linkedin"; budget: number; objective?: string }) {
+  const { data } = await apiClient.post<Record<string, unknown>>(
+    `/campaign-mgmt/posts/${encodeURIComponent(postId)}/promotions`,
+    body,
+    { skipGlobalLoading: true } as InternalAxiosRequestConfig,
+  );
+  return data;
+}
+
+export async function apiCampaignPromotionLifecycle(promotionId: string, action: "pause" | "resume" | "archive") {
+  const { data } = await apiClient.post<{ ok: boolean; lifecycle: string }>(
+    `/campaign-mgmt/promotions/${encodeURIComponent(promotionId)}/lifecycle`,
+    { action },
+    { skipGlobalLoading: true } as InternalAxiosRequestConfig,
+  );
+  return data;
+}
+
+export async function apiCampaignPromotionDuplicate(promotionId: string) {
+  const { data } = await apiClient.post<Record<string, unknown>>(
+    `/campaign-mgmt/promotions/${encodeURIComponent(promotionId)}/duplicate`,
+    {},
+    { skipGlobalLoading: true } as InternalAxiosRequestConfig,
+  );
+  return data;
+}
+
+export async function apiCampaignPromotionAnalyticsSync(promotionId: string) {
+  const { data } = await apiClient.post<{
+    ok: boolean;
+    snapshot: { reach?: number; impressions?: number; clicks?: number; spend?: number; ctr?: number | null; cpc?: number | null } | null;
+  }>(`/campaign-mgmt/promotions/${encodeURIComponent(promotionId)}/analytics/sync`, {}, { skipGlobalLoading: true } as InternalAxiosRequestConfig);
+  return data;
+}
+
+export async function apiCampaignPostAnalytics(postId: string) {
+  const { data } = await apiClient.get<{
+    series: { date: string; impressions: number; clicks: number; spend: number; ctr: number | null; cpc: number | null }[];
+  }>(`/campaign-mgmt/posts/${encodeURIComponent(postId)}/analytics`, { skipGlobalLoading: true } as InternalAxiosRequestConfig);
+  return data;
+}
+
+export async function apiCampaignUnpublishPost(postId: string, body?: { pause_promotions?: boolean }) {
+  const { data } = await apiClient.post<{ ok: boolean; promotions_archived: number }>(
+    `/campaign-mgmt/posts/${encodeURIComponent(postId)}/unpublish`,
+    { pause_promotions: body?.pause_promotions ?? true },
+    { skipGlobalLoading: true } as InternalAxiosRequestConfig,
+  );
+  return data;
+}
+
+export async function apiCampaignRepublishRecord(postId: string, note?: string) {
+  const { data } = await apiClient.post<{ ok: boolean; message?: string }>(
+    `/campaign-mgmt/posts/${encodeURIComponent(postId)}/republish`,
+    { note: note ?? "" },
+    { skipGlobalLoading: true } as InternalAxiosRequestConfig,
+  );
   return data;
 }

@@ -85,6 +85,7 @@ export default function SignupPage() {
   };
 
   const handleSignup = () => {
+    if (loading) return;
     if (!trimmedName) {
       push("Please enter your name.", { kind: "error" });
       return;

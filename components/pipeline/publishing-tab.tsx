@@ -2,8 +2,9 @@
 
 import { format } from "date-fns";
 import Link from "next/link";
+import { motion, AnimatePresence } from "framer-motion";
 import { startTransition, useDeferredValue, useEffect, useMemo, useState } from "react";
-import { ExternalLink, Search } from "lucide-react";
+import { ExternalLink, Search, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PublishingStatusBadge } from "@/components/status-badge";
@@ -14,10 +15,17 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { platformLabel } from "@/lib/platform";
 import {
   apiErrorMessage,
+  apiCampaignCreatePromotion,
+  apiCampaignOptimizeAnalyze,
+  apiCampaignPostAnalytics,
+  apiCampaignPromotionAnalyticsSync,
+  apiCampaignPromotionDuplicate,
+  apiCampaignPromotionLifecycle,
+  apiCampaignUnpublishPost,
   apiGetNativePostBoostLinks,
-  apiListNativeSocialPosts,
+  apiListManagedPosts,
   apiRequestMetaAdsBoost,
-  type NativeSocialPostSummary,
+  type ManagedPostSummary,
 } from "@/lib/api";
 import { useApiLoadingStore } from "@/lib/api-loading-store";
 import type { PublishingPlatform } from "@/lib/types";
@@ -42,10 +50,13 @@ export function PublishingTab() {
   const deferredSearch = useDeferredValue(search);
   const [activeLogId, setActiveLogId] = useState<string | null>(null);
   const [logVisible, setLogVisible] = useState(LOG_PAGE_SIZE);
-  const [nativePosts, setNativePosts] = useState<NativeSocialPostSummary[]>([]);
+  const [nativePosts, setNativePosts] = useState<ManagedPostSummary[]>([]);
   const [nativePostsLoaded, setNativePostsLoaded] = useState(false);
   const [nativePostsError, setNativePostsError] = useState<string | null>(null);
   const [adsBudgetByPost, setAdsBudgetByPost] = useState<Record<string, string>>({});
+  const [aiOpenPostId, setAiOpenPostId] = useState<string | null>(null);
+  const [aiPayload, setAiPayload] = useState<Record<string, unknown> | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
 
   useEffect(() => {
     if (shellPending || !workspace) return;
@@ -54,7 +65,7 @@ export function PublishingTab() {
       setNativePostsLoaded(false);
       setNativePostsError(null);
     });
-    void apiListNativeSocialPosts({ limit: 40 })
+    void apiListManagedPosts({ limit: 40 })
       .then((rows) => {
         if (!cancelled) {
           setNativePosts(rows);
@@ -234,7 +245,7 @@ export function PublishingTab() {
 
       <Card className="rounded-2xl border-zinc-200 shadow-sm">
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
-          <CardTitle className="text-base">Native posts (LinkedIn / Meta)</CardTitle>
+          <CardTitle className="text-base">Published posts &amp; boosts</CardTitle>
           <Button
             type="button"
             variant="outline"
@@ -242,7 +253,7 @@ export function PublishingTab() {
             className="rounded-xl"
             onClick={() => {
               setNativePostsLoaded(false);
-              void apiListNativeSocialPosts({ limit: 40 })
+              void apiListManagedPosts({ limit: 40 })
                 .then((rows) => {
                   setNativePosts(rows);
                   setNativePostsError(null);
@@ -259,8 +270,9 @@ export function PublishingTab() {
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-zinc-500">
-            Posts created via the social API appear here. Use Boost to open the live network URL in a new tab (Phase 1). Optional Meta Ads
-            creates a paused campaign using your ad account (requires ads permissions).
+            End-to-end management: composite lifecycle (published, boosted, paused), Meta Ads draft creation, AI optimization hints, promotion
+            pause/resume/duplicate, analytics sync, and unpublish with ad archival. LinkedIn sponsored API is stubbed (501) until ad account wiring
+            is added.
           </p>
           {!nativePostsLoaded && <Skeleton className="h-24 w-full rounded-xl" />}
           {nativePostsLoaded && nativePostsError && (
@@ -268,120 +280,275 @@ export function PublishingTab() {
           )}
           {nativePostsLoaded && !nativePostsError && nativePosts.length === 0 && (
             <p className="rounded-2xl border border-dashed border-zinc-200 py-8 text-center text-sm text-zinc-500">
-              No native posts yet. They are created outside the content library when your client posts to{" "}
+              No native posts yet. They appear when your workspace publishes via{" "}
               <code className="rounded bg-zinc-100 px-1">POST /posts</code>.
             </p>
           )}
           {nativePostsLoaded && nativePosts.length > 0 && (
             <div className="space-y-2">
-              {nativePosts.map((p) => {
-                const isPublished = p.status.toLowerCase() === "published";
-                const hasMetaSuccess = p.targets.some((t) => t.platform === "meta" && t.status === "success");
-                return (
-                  <div
-                    key={p.id}
-                    className="flex flex-wrap items-start justify-between gap-2 rounded-xl border border-zinc-100 bg-zinc-50/60 px-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <p className="line-clamp-2 text-sm text-zinc-900">{p.content || "(no text)"}</p>
-                      <p className="mt-1 text-[11px] text-zinc-500">
-                        {p.status}
-                        {p.targets.length > 0
-                          ? ` · ${p.targets.map((t) => `${t.platform}:${t.status}`).join(", ")}`
-                          : ""}
-                      </p>
-                      <p className="mt-0.5 font-mono text-[10px] text-zinc-400">{p.id}</p>
-                      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
-                        {p.targets.map((t) =>
-                          t.post_url ? (
-                            <a
-                              key={`${p.id}-${t.platform}-${t.post_url}`}
-                              href={t.post_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 underline-offset-2 hover:text-blue-700 hover:underline dark:text-sky-400 dark:hover:text-sky-300"
+              <AnimatePresence initial={false}>
+                {nativePosts.map((p) => {
+                  const isPublished = p.status.toLowerCase() === "published";
+                  const metaPromos = (p.promotions || []).filter((x) => x.platform === "meta" && x.status !== "failed");
+                  return (
+                    <motion.div
+                      key={p.id}
+                      layout
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -4 }}
+                      transition={{ duration: 0.2 }}
+                      className="rounded-xl border border-zinc-100 bg-zinc-50/60 px-3 py-2"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="line-clamp-2 text-sm text-zinc-900">{p.content_preview || "(no text)"}</p>
+                          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
+                            <span className="rounded-md bg-zinc-200/80 px-1.5 py-0.5 font-medium text-zinc-800">{p.composite_status}</span>
+                            <span>raw: {p.status}</span>
+                            {p.promotions?.length ? ` · ${p.promotions.length} promotion(s)` : ""}
+                          </div>
+                          <p className="mt-0.5 font-mono text-[10px] text-zinc-400">{p.id}</p>
+                          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              className="h-auto p-0 text-xs text-blue-600 hover:text-blue-700 dark:text-sky-400"
+                              disabled={!isPublished}
+                              onClick={() => {
+                                void apiGetNativePostBoostLinks(p.id)
+                                  .then((links) => {
+                                    if (links[0]?.url) window.open(links[0].url, "_blank", "noopener,noreferrer");
+                                    if (links.length > 1) push(`Opened first network link (${links.length} channels).`);
+                                    else if (links.length === 1) push("Opened live post in a new tab.");
+                                  })
+                                  .catch((err: unknown) => {
+                                    push(apiErrorMessage(err) || "Could not load live URLs.");
+                                  });
+                              }}
                             >
-                              View on {platformLabel(t.platform as PublishingPlatform)}
-                              <ExternalLink className="size-3 shrink-0 opacity-70" aria-hidden />
-                            </a>
-                          ) : null,
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        className="rounded-lg"
-                        disabled={!isPublished}
-                        title={!isPublished ? "Only published posts can be boosted" : undefined}
-                        onClick={() => {
-                          void apiGetNativePostBoostLinks(p.id)
-                            .then((links) => {
-                              if (links[0]?.url) {
-                                window.open(links[0].url, "_blank", "noopener,noreferrer");
-                              }
-                              if (links.length > 1) {
-                                push(`Opened first network link (${links.length} channels).`);
-                              } else if (links.length === 1) {
-                                push("Opened boost link in a new tab.");
-                              }
-                            })
-                            .catch((err: unknown) => {
-                              push(apiErrorMessage(err) || "Could not load boost link.");
-                            });
-                        }}
-                      >
-                        Boost
-                      </Button>
-                      {isPublished && hasMetaSuccess ? (
-                        <details className="max-w-xs rounded-lg border border-zinc-200 bg-white p-2 text-left text-xs">
-                          <summary className="cursor-pointer font-medium text-zinc-800">Meta Ads (optional)</summary>
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <Input
-                              type="number"
-                              min={1}
-                              step={1}
-                              className="h-8 w-24 rounded-md text-xs"
-                              placeholder="$/day"
-                              value={adsBudgetByPost[p.id] ?? "10"}
-                              onChange={(e) => setAdsBudgetByPost((m) => ({ ...m, [p.id]: e.target.value }))}
-                            />
+                              <span className="inline-flex items-center gap-1">
+                                Open live post
+                                <ExternalLink className="size-3 opacity-70" aria-hidden />
+                              </span>
+                            </Button>
+                          </div>
+                        </div>
+                        <div className="flex flex-col items-end gap-2">
+                          <div className="flex flex-wrap justify-end gap-1">
                             <Button
                               type="button"
                               size="sm"
                               variant="outline"
-                              className="h-8 rounded-md text-xs"
+                              className="rounded-lg text-xs"
+                              disabled={!isPublished}
                               onClick={() => {
-                                const raw = adsBudgetByPost[p.id] ?? "10";
-                                const budget = Number.parseFloat(raw);
-                                if (!Number.isFinite(budget) || budget <= 0) {
-                                  push("Enter a valid daily budget.");
-                                  return;
-                                }
-                                void apiRequestMetaAdsBoost({ postId: p.id, budget })
-                                  .then((r) => {
-                                    push(`Meta Ads draft created (campaign ${r.campaign_id}).`);
+                                setAiOpenPostId(p.id);
+                                setAiPayload(null);
+                                setAiLoading(true);
+                                void apiCampaignOptimizeAnalyze(p.id, { platform: "meta" })
+                                  .then((data) => {
+                                    setAiPayload(data as Record<string, unknown>);
+                                    setAiLoading(false);
                                   })
                                   .catch((err: unknown) => {
-                                    push(apiErrorMessage(err) || "Meta Ads boost failed.");
+                                    setAiLoading(false);
+                                    push(apiErrorMessage(err) || "Analyze failed.");
                                   });
                               }}
                             >
-                              Create campaign
+                              <Sparkles className="size-3.5" aria-hidden />
+                              AI optimize
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="destructive"
+                              className="rounded-lg text-xs"
+                              disabled={p.status.toLowerCase() === "unpublished"}
+                              onClick={() => {
+                                if (!window.confirm("Unpublish this post? Active Meta promotions will be archived first.")) return;
+                                void apiCampaignUnpublishPost(p.id, { pause_promotions: true })
+                                  .then((r) => {
+                                    push(`Unpublished · archived ${r.promotions_archived} promotion(s).`);
+                                    void apiListManagedPosts({ limit: 40 }).then(setNativePosts);
+                                  })
+                                  .catch((err: unknown) => {
+                                    push(apiErrorMessage(err) || "Unpublish failed.");
+                                  });
+                              }}
+                            >
+                              Unpublish
                             </Button>
                           </div>
-                        </details>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
+                          {isPublished ? (
+                            <details className="max-w-xs rounded-lg border border-zinc-200 bg-white p-2 text-left text-xs">
+                              <summary className="cursor-pointer font-medium text-zinc-800">Meta promotion</summary>
+                              <div className="mt-2 space-y-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Input
+                                    type="number"
+                                    min={1}
+                                    step={1}
+                                    className="h-8 w-24 rounded-md text-xs"
+                                    placeholder="$/day"
+                                    value={adsBudgetByPost[p.id] ?? "10"}
+                                    onChange={(e) => setAdsBudgetByPost((m) => ({ ...m, [p.id]: e.target.value }))}
+                                  />
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-8 rounded-md text-xs"
+                                    onClick={() => {
+                                      const raw = adsBudgetByPost[p.id] ?? "10";
+                                      const budget = Number.parseFloat(raw);
+                                      if (!Number.isFinite(budget) || budget <= 0) {
+                                        push("Enter a valid daily budget.");
+                                        return;
+                                      }
+                                      void apiCampaignCreatePromotion(p.id, { platform: "meta", budget })
+                                        .then(() => {
+                                          push("Meta promotion created (paused).");
+                                          void apiListManagedPosts({ limit: 40 }).then(setNativePosts);
+                                        })
+                                        .catch((err: unknown) => {
+                                          push(apiErrorMessage(err) || "Create promotion failed.");
+                                        });
+                                    }}
+                                  >
+                                    Create (API)
+                                  </Button>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="secondary"
+                                    className="h-8 rounded-md text-xs"
+                                    onClick={() => {
+                                      const raw = adsBudgetByPost[p.id] ?? "10";
+                                      const budget = Number.parseFloat(raw);
+                                      if (!Number.isFinite(budget) || budget <= 0) {
+                                        push("Enter a valid daily budget.");
+                                        return;
+                                      }
+                                      void apiRequestMetaAdsBoost({ postId: p.id, budget })
+                                        .then((r) => {
+                                          push(`Legacy /ads/boost · campaign ${r.campaign_id}.`);
+                                          void apiListManagedPosts({ limit: 40 }).then(setNativePosts);
+                                        })
+                                        .catch((err: unknown) => {
+                                          push(apiErrorMessage(err) || "Meta Ads boost failed.");
+                                        });
+                                    }}
+                                  >
+                                    Legacy boost
+                                  </Button>
+                                </div>
+                                {metaPromos.length > 0 ? (
+                                  <ul className="space-y-1 border-t border-zinc-100 pt-2">
+                                    {metaPromos.map((pr) => (
+                                      <li key={pr.id} className="rounded-md bg-zinc-50 px-2 py-1 font-mono text-[10px] text-zinc-600">
+                                        <div className="flex flex-wrap items-center gap-1">
+                                          <span>{pr.lifecycle ?? pr.status}</span>
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-6 px-1 text-[10px]"
+                                            onClick={() => {
+                                              void apiCampaignPromotionLifecycle(pr.id, "resume").then(() => {
+                                                push("Resumed delivery (Meta).");
+                                                void apiListManagedPosts({ limit: 40 }).then(setNativePosts);
+                                              });
+                                            }}
+                                          >
+                                            Resume
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-6 px-1 text-[10px]"
+                                            onClick={() => {
+                                              void apiCampaignPromotionLifecycle(pr.id, "pause").then(() => {
+                                                push("Paused.");
+                                                void apiListManagedPosts({ limit: 40 }).then(setNativePosts);
+                                              });
+                                            }}
+                                          >
+                                            Pause
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-6 px-1 text-[10px]"
+                                            onClick={() => {
+                                              void apiCampaignPromotionDuplicate(pr.id).then(() => {
+                                                push("Duplicated promotion.");
+                                                void apiListManagedPosts({ limit: 40 }).then(setNativePosts);
+                                              });
+                                            }}
+                                          >
+                                            Dup
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-6 px-1 text-[10px]"
+                                            onClick={() => {
+                                              void apiCampaignPromotionAnalyticsSync(pr.id).then((r) => {
+                                                const s = r.snapshot;
+                                                push(
+                                                  s
+                                                    ? `Sync: ${s.impressions ?? 0} imp · ${s.clicks ?? 0} clk · $${(s.spend ?? 0).toFixed(2)}`
+                                                    : "Analytics sync queued.",
+                                                );
+                                                void apiListManagedPosts({ limit: 40 }).then(setNativePosts);
+                                              });
+                                            }}
+                                          >
+                                            Metrics
+                                          </Button>
+                                        </div>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                ) : null}
+                              </div>
+                            </details>
+                          ) : null}
+                        </div>
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </AnimatePresence>
             </div>
           )}
         </CardContent>
       </Card>
+
+      <Dialog
+        open={aiOpenPostId != null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAiOpenPostId(null);
+            setAiPayload(null);
+          }
+        }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto rounded-2xl">
+          <DialogHeader>
+            <DialogTitle>AI optimization hints</DialogTitle>
+          </DialogHeader>
+          {aiLoading && <p className="text-sm text-zinc-500">Analyzing engagement patterns…</p>}
+          {!aiLoading && aiPayload && (
+            <pre className="whitespace-pre-wrap rounded-xl bg-zinc-50 p-3 text-xs text-zinc-800">{JSON.stringify(aiPayload, null, 2)}</pre>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <Card className="rounded-2xl border-zinc-200 shadow-sm">
         <CardHeader>

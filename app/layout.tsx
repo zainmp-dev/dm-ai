@@ -20,11 +20,15 @@ const structuredData = {
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
+  // Avoid Chrome “preloaded but not used within a few seconds” on auth/marketing routes
+  // where hydration/CSS timing differs; font still loads via next/font stylesheet.
+  preload: false,
 });
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+  preload: false,
 });
 
 const siteUrl =
@@ -78,7 +82,7 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${geistSans.className} h-full antialiased`}
     >
       <body
         suppressHydrationWarning
