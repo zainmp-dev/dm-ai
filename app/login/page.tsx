@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
 import { PublicThemeToggle } from "@/components/public-theme-toggle";
 import { apiErrorMessage, apiLogin, apiStartOAuth, flowSuccessMessages } from "@/lib/api";
-import { setAuthSession } from "@/lib/auth";
+import { setAuthSession, hasAdminConsoleAccess } from "@/lib/auth";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PASSWORD_REGEX = /^(?=.*[A-Za-z])(?=.*\d).{6,}$/;
@@ -77,7 +77,7 @@ export default function LoginPage() {
         push(flowSuccessMessages.login, { kind: "success" });
         // Admins skip the workspace shell entirely; regular users land on the dashboard
         // and the AppShell handles the workspace-setup redirect if needed.
-        if (res.user.role === "admin") {
+        if (hasAdminConsoleAccess(res.user)) {
           router.replace("/admin");
         } else {
           router.replace("/dashboard");

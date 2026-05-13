@@ -48,19 +48,45 @@ from publisher import publish_post
 from services.posting_service import publish_flowpilot_workspace_item
 from services.ai import AIServiceError, generate_carousel, generate_image_prompt
 from scheduler import scheduler_loop
+from routes.admin_control_routes import create_admin_control_router
 from routes.ads_routes import router as ads_router
 from routes.campaign_mgmt_routes import router as campaign_mgmt_router
 from routes.social_routes import router as social_router
+from services.admin_audit_service import record_admin_audit
 from services.boost_link_service import boost_url_for_target
 from services.oauth_service import linkedin_connect_url, meta_connect_url
 from utils.http_client import request_json
 from utils.rate_limit import check_rate_limit
+from utils.admin_rbac import (
+    KNOWN_ROLES,
+    PERM_ROLES_ASSIGN,
+    PERM_USER_CREDENTIALS,
+    PERM_USERS_WRITE,
+    PLATFORM_ROLES,
+    USER_ROLE,
+    is_legacy_elevated,
+    is_platform_operator,
+    normalize_stored_role,
+    platform_operator_sql_expr,
+    role_has_permission,
+)
 from utils.password_hashing import hash_password, verify_and_maybe_upgrade_password
 from utils.state_signing import encode_state, new_nonce, verify_state
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _client_ip(request: Request | None) -> str | None:
+    if request is None:
+        return None
+    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if forwarded:
+        return forwarded[:80]
+    if request.client and request.client.host:
+        return str(request.client.host)[:80]
+    return None
 
 
 def _http_for_agent_error(exc: AgentError) -> tuple[int, str]:
@@ -251,6 +277,10 @@ class AdminOverviewResponse(BaseModel):
     oauth_users: int
     password_only_users: int
     total_content_items: int
+    total_competitors: int = 0
+    integration_rows: int = 0
+    integrations_connected: int = 0
+    admin_audit_events: int = 0
 
 
 class AdminUserRow(BaseModel):
@@ -383,8 +413,7 @@ def auth_token(user_id: str) -> str:
 
 
 def serialize_auth_user(row: dict[str, Any]) -> AuthUserResponse:
-    raw_role = str(row.get("role") or "user").strip().lower()
-    role = raw_role if raw_role in {"admin", "user"} else "user"
+    role = normalize_stored_role(str(row.get("role") or "user"))
     return AuthUserResponse(name=str(row["name"]), email=str(row["email"]), role=role)
 
 
@@ -666,15 +695,14 @@ def get_current_user(authorization: str | None = Header(default=None), db: Sessi
         raise HTTPException(status_code=401, detail="Invalid auth token")
 
     user = dict(row)
-    raw_role = str(user.get("role") or "user").strip().lower()
-    user["role"] = raw_role if raw_role in {"admin", "user"} else "user"
+    user["role"] = normalize_stored_role(str(user.get("role") or "user"))
     _auth_user_cache_put(token, user)
     return user
 
 
 def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    """Dependency guard for admin-only endpoints. Add as `Depends(require_admin)`."""
-    if str(user.get("role") or "user").lower() != "admin":
+    """Dependency guard for platform operator endpoints (legacy name preserved for routers)."""
+    if not is_platform_operator(str(user.get("role"))):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 
@@ -711,8 +739,7 @@ def _admin_password_storage_and_visible(password_raw: str | None, auth_provider:
 
 
 def _admin_user_row_from_rd(rd: dict) -> AdminUserRow:
-    raw_role = str(rd.get("role") or "user").strip().lower()
-    role_out = raw_role if raw_role in {"admin", "user"} else "user"
+    role_out = normalize_stored_role(str(rd.get("role") or "user"))
     ap_raw = rd.get("auth_provider")
     auth_prov = str(ap_raw).strip().lower() if ap_raw is not None else ""
     auth_prov = auth_prov if auth_prov else None
@@ -751,12 +778,12 @@ def _admin_users_where_params(*, setup: str, role: str, auth: str, q: str) -> tu
     elif setup == "in_progress":
         clauses.append("(w.workspace_id is not null and not coalesce(w.workspace_configured, false))")
     elif setup == "no_workspace":
-        clauses.append("(w.workspace_id is null or lower(trim(coalesce(u.role, ''))) = 'admin')")
+        clauses.append(f"(w.workspace_id is null or {platform_operator_sql_expr('u.role')})")
 
     if role == "admin":
-        clauses.append("lower(trim(coalesce(u.role, ''))) = 'admin'")
+        clauses.append(platform_operator_sql_expr("u.role"))
     elif role == "user":
-        clauses.append("lower(trim(coalesce(u.role, ''))) = 'user'")
+        clauses.append(f"not ({platform_operator_sql_expr('u.role')})")
 
     if auth == "email":
         clauses.append("(u.auth_provider is null or trim(coalesce(u.auth_provider, '')) = '')")
@@ -2375,6 +2402,7 @@ app.add_middleware(
 app.include_router(social_router)
 app.include_router(ads_router)
 app.include_router(campaign_mgmt_router)
+app.include_router(create_admin_control_router(require_admin=require_admin))
 
 
 @app.get("/")
@@ -2683,14 +2711,25 @@ def admin_overview(db: Session = Depends(get_db), _admin: dict[str, Any] = Depen
             """
             select
                 (select count(*)::int from flowpilot_users where deleted_at is null) as total_users,
-                (select count(*)::int from flowpilot_users where deleted_at is null and lower(coalesce(role, '')) = 'admin') as admin_count,
+                (select count(*)::int from flowpilot_users where deleted_at is null and """
+                + platform_operator_sql_expr("role")
+                + """) as admin_count,
                 (select count(*)::int from flowpilot_workspace) as workspace_rows,
                 (select count(*)::int from flowpilot_workspace where workspace_configured) as configured_workspaces,
                 (select count(*)::int from flowpilot_users where deleted_at is null and auth_provider is not null and trim(auth_provider) <> '')
                     as oauth_users,
                 (select count(*)::int from flowpilot_users where deleted_at is null and (auth_provider is null or trim(coalesce(auth_provider, '')) = ''))
                     as password_only_users,
-                (select count(*)::int from flowpilot_content) as total_content_items
+                (select count(*)::int from flowpilot_content) as total_content_items,
+                (select count(*)::int from flowpilot_competitors) as total_competitors,
+                (select count(*)::int from flowpilot_integrations i
+                    inner join flowpilot_users u on u.id = i.workspace_id and u.deleted_at is null)
+                    as integration_rows,
+                (select count(*)::int from flowpilot_integrations i
+                    inner join flowpilot_users u on u.id = i.workspace_id and u.deleted_at is null
+                    where coalesce(i.connected, false))
+                    as integrations_connected,
+                (select count(*)::int from flowpilot_admin_audit) as admin_audit_events
             """
         )
     ).mappings().first()
@@ -2703,6 +2742,10 @@ def admin_overview(db: Session = Depends(get_db), _admin: dict[str, Any] = Depen
             oauth_users=0,
             password_only_users=0,
             total_content_items=0,
+            total_competitors=0,
+            integration_rows=0,
+            integrations_connected=0,
+            admin_audit_events=0,
         )
     return AdminOverviewResponse(
         total_users=int(row["total_users"] or 0),
@@ -2712,6 +2755,10 @@ def admin_overview(db: Session = Depends(get_db), _admin: dict[str, Any] = Depen
         oauth_users=int(row["oauth_users"] or 0),
         password_only_users=int(row["password_only_users"] or 0),
         total_content_items=int(row["total_content_items"] or 0),
+        total_competitors=int(row["total_competitors"] or 0),
+        integration_rows=int(row["integration_rows"] or 0),
+        integrations_connected=int(row["integrations_connected"] or 0),
+        admin_audit_events=int(row["admin_audit_events"] or 0),
     )
 
 
@@ -2788,13 +2835,20 @@ def admin_users(
 
 @app.post("/admin/users", response_model=AdminCreateUserResponse)
 def admin_create_user(
+    request: Request,
     body: AdminCreateUserRequest,
     db: Session = Depends(get_db),
-    _admin: dict[str, Any] = Depends(require_admin),
+    admin_actor: dict[str, Any] = Depends(require_admin),
 ) -> AdminCreateUserResponse:
-    role_norm = str(body.role or "user").strip().lower()
-    if role_norm not in {"admin", "user"}:
+    if not role_has_permission(str(admin_actor.get("role")), PERM_USERS_WRITE):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+    role_norm = normalize_stored_role(str(body.role or USER_ROLE))
+    if role_norm not in KNOWN_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
+    if role_norm in PLATFORM_ROLES:
+        if not role_has_permission(str(admin_actor.get("role")), PERM_ROLES_ASSIGN):
+            role_norm = USER_ROLE
     email = body.email.strip().lower()
     name = body.name.strip() or _auth_name_from_email(email)
     if not email:
@@ -2828,6 +2882,16 @@ def admin_create_user(
             "role": role_norm,
         },
     )
+    record_admin_audit(
+        db,
+        actor_id=str(admin_actor.get("id") or ""),
+        actor_email=str(admin_actor.get("email") or ""),
+        action="admin.user.create",
+        resource_type="user",
+        resource_id=user_id,
+        meta={"email": email, "role": role_norm},
+        ip=_client_ip(request),
+    )
     db.commit()
     return AdminCreateUserResponse(
         id=user_id,
@@ -2840,11 +2904,14 @@ def admin_create_user(
 
 @app.post("/admin/users/{user_id}/password", response_model=AdminSetPasswordResponse)
 def admin_set_user_password(
+    request: Request,
     user_id: str,
     body: AdminSetPasswordRequest,
     db: Session = Depends(get_db),
-    _admin: dict[str, Any] = Depends(require_admin),
+    admin_actor: dict[str, Any] = Depends(require_admin),
 ) -> AdminSetPasswordResponse:
+    if not role_has_permission(str(admin_actor.get("role")), PERM_USER_CREDENTIALS):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     uid = user_id.strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Invalid user id")
@@ -2867,20 +2934,33 @@ def admin_set_user_password(
         text("update flowpilot_users set password = :password where id = :id"),
         {"password": hash_password(plain), "id": uid},
     )
+    record_admin_audit(
+        db,
+        actor_id=str(admin_actor.get("id") or ""),
+        actor_email=str(admin_actor.get("email") or ""),
+        action="admin.user.password_rotate",
+        resource_type="user",
+        resource_id=uid,
+        meta={},
+        ip=_client_ip(request),
+    )
     db.commit()
     return AdminSetPasswordResponse(new_password=plain)
 
 
 @app.delete("/admin/users/{user_id}")
 def admin_soft_delete_user(
+    request: Request,
     user_id: str,
     db: Session = Depends(get_db),
-    admin: dict[str, Any] = Depends(require_admin),
+    admin_actor: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, bool]:
+    if not role_has_permission(str(admin_actor.get("role")), PERM_USERS_WRITE):
+        raise HTTPException(status_code=403, detail="Insufficient permissions")
     uid = user_id.strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Invalid user id")
-    if uid == str(admin.get("id") or ""):
+    if uid == str(admin_actor.get("id") or ""):
         raise HTTPException(status_code=400, detail="You cannot remove your own account while signed in.")
 
     row = db.execute(
@@ -2890,20 +2970,31 @@ def admin_soft_delete_user(
     if row is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if str(row.get("role") or "user").strip().lower() == "admin":
+    if is_legacy_elevated(str(row.get("role"))):
         count_row = db.execute(
             text(
                 "select count(*)::int as n from flowpilot_users "
-                "where deleted_at is null and lower(trim(coalesce(role, ''))) = 'admin'"
+                "where deleted_at is null "
+                "and lower(trim(coalesce(role, ''))) in ('admin','super_admin')"
             ),
         ).mappings().first()
         n = int(count_row["n"] or 0) if count_row is not None else 0
         if n <= 1:
-            raise HTTPException(status_code=400, detail="Cannot remove the last active admin.")
+            raise HTTPException(status_code=400, detail="Cannot remove the last privileged operator.")
 
     db.execute(
         text("update flowpilot_users set deleted_at = now() where id = :id"),
         {"id": uid},
+    )
+    record_admin_audit(
+        db,
+        actor_id=str(admin_actor.get("id") or ""),
+        actor_email=str(admin_actor.get("email") or ""),
+        action="admin.user.soft_delete",
+        resource_type="user",
+        resource_id=uid,
+        meta={"target_role": normalize_stored_role(str(row.get("role")))},
+        ip=_client_ip(request),
     )
     db.commit()
     return {"ok": True}

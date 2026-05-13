@@ -24,12 +24,15 @@ import {
 import { DEFAULT_AI_MODEL, normalizeStoredAiModel } from "@/lib/ai-models";
 import { getAuthUser } from "@/lib/auth";
 import { normalizePrimaryRegionCode } from "@/lib/primary-region";
+import {
+  ACTIVE_WORKSPACE_STORAGE_KEY,
+  WORKSPACE_SETUPS_STORAGE_KEY,
+  clearAllWorkspacePresetStorage,
+} from "@/lib/workspace-local-storage";
 import type { MediaType, PostingPreferences, PublishingPlatform, UserProfile, WorkspaceScenario, WorkspaceSnapshot } from "@/lib/types";
 import { signalAiWorkflowComplete } from "@/lib/ai-completion-signal";
 
 const AI_MODEL_STORAGE_KEY = "flowpilot.aiModel";
-const WORKSPACE_SETUPS_STORAGE_KEY = "flowpilot.workspaceSetups";
-const ACTIVE_WORKSPACE_STORAGE_KEY = "flowpilot.activeWorkspaceId";
 
 function userScopedStorageKey(key: string) {
   const email = getAuthUser()?.email?.trim().toLowerCase();
@@ -47,6 +50,10 @@ function isWorkspaceScenario(value: unknown): value is WorkspaceScenario {
 
 function readStoredWorkspaceSetups(): { setups: WorkspaceSetupConfig[]; activeWorkspaceId: string | null } {
   if (typeof window === "undefined") {
+    return { setups: [], activeWorkspaceId: null };
+  }
+  const emailGate = Boolean(getAuthUser()?.email?.trim());
+  if (!emailGate) {
     return { setups: [], activeWorkspaceId: null };
   }
 
@@ -99,6 +106,7 @@ function readStoredWorkspaceSetups(): { setups: WorkspaceSetupConfig[]; activeWo
 
 function writeStoredWorkspaceSetups(setups: WorkspaceSetupConfig[], activeWorkspaceId: string | null) {
   if (typeof window === "undefined") return;
+  if (!getAuthUser()?.email?.trim()) return;
   const setupsKey = userScopedStorageKey(WORKSPACE_SETUPS_STORAGE_KEY);
   const activeKey = userScopedStorageKey(ACTIVE_WORKSPACE_STORAGE_KEY);
   window.localStorage.setItem(setupsKey, JSON.stringify(setups));
@@ -351,14 +359,8 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     set({ workspace, workspaceSetups: [], activeWorkspaceId: null, loading: false, error: null });
   },
   resetAfterAccountDeletion: () => {
-    const email = getAuthUser()?.email?.trim().toLowerCase();
     if (typeof window !== "undefined") {
-      if (email) {
-        window.localStorage.removeItem(`${WORKSPACE_SETUPS_STORAGE_KEY}.${email}`);
-        window.localStorage.removeItem(`${ACTIVE_WORKSPACE_STORAGE_KEY}.${email}`);
-      }
-      window.localStorage.removeItem(WORKSPACE_SETUPS_STORAGE_KEY);
-      window.localStorage.removeItem(ACTIVE_WORKSPACE_STORAGE_KEY);
+      clearAllWorkspacePresetStorage();
     }
     set({
       workspace: null,

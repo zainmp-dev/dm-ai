@@ -5,6 +5,7 @@ import "./globals.css";
 import { GlobalApiActivity } from "@/components/global-api-activity";
 import { StructuredData } from "@/components/structured-data";
 import { ThemeProvider } from "@/components/theme-provider";
+import { ConfirmProvider } from "@/components/ui/confirm-dialog";
 import { ToastProvider } from "@/components/ui/toast";
 
 const structuredData = {
@@ -91,8 +92,10 @@ export default function RootLayout({
         <ThemeProvider>
           <StructuredData data={structuredData} />
           <ToastProvider>
-            <GlobalApiActivity />
-            {children}
+            <ConfirmProvider>
+              <GlobalApiActivity />
+              {children}
+            </ConfirmProvider>
           </ToastProvider>
         </ThemeProvider>
       </body>

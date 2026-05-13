@@ -33,7 +33,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sqlalchemy import text  # noqa: E402
 
 from database import SessionLocal  # noqa: E402
+from utils.admin_rbac import ASSIGNABLE_PLATFORM_ROLES, USER_ROLE, normalize_stored_role  # noqa: E402
 from utils.password_hashing import hash_password  # noqa: E402
+
+ROLE_CHOICES = tuple(sorted(ASSIGNABLE_PLATFORM_ROLES))
 
 
 def _require_session():
@@ -49,10 +52,13 @@ def _find_user(session, email_norm: str):
     ).mappings().first()
 
 
-def cmd_create(email: str, password: str, name: str) -> None:
+def cmd_create(email: str, password: str, name: str, role: str) -> None:
     email_norm = email.strip().lower()
     if not email_norm or not password:
         raise SystemExit("--email and --password are required for --create")
+    role_norm = normalize_stored_role(role)
+    if role_norm not in ASSIGNABLE_PLATFORM_ROLES:
+        raise SystemExit(f"Invalid operator role '{role_norm}'. Pick one of: {', '.join(sorted(ASSIGNABLE_PLATFORM_ROLES))}.")
     pw_hash = hash_password(password)
     session = _require_session()
     try:
@@ -61,42 +67,45 @@ def cmd_create(email: str, password: str, name: str) -> None:
             session.execute(
                 text(
                     "update flowpilot_users "
-                    "set name = :name, password = :password, role = 'admin' "
+                    "set name = :name, password = :password, role = :role "
                     "where id = :id"
                 ),
-                {"id": existing["id"], "name": name, "password": pw_hash},
+                {"id": existing["id"], "name": name, "password": pw_hash, "role": role_norm},
             )
             session.commit()
-            print(f"Updated existing user '{email_norm}' → role=admin (id={existing['id']}).")
+            print(f"Updated existing user '{email_norm}' → role={role_norm} (id={existing['id']}).")
             return
 
         user_id = f"usr-{uuid.uuid4().hex[:10]}"
         session.execute(
             text(
                 "insert into flowpilot_users (id, name, email, password, role, created_at) "
-                "values (:id, :name, :email, :password, 'admin', now())"
+                "values (:id, :name, :email, :password, :role, now())"
             ),
-            {"id": user_id, "name": name, "email": email_norm, "password": pw_hash},
+            {"id": user_id, "name": name, "email": email_norm, "password": pw_hash, "role": role_norm},
         )
         session.commit()
-        print(f"Created admin '{email_norm}' (id={user_id}).")
+        print(f"Created operator '{email_norm}' with role={role_norm} (id={user_id}).")
     finally:
         session.close()
 
 
-def cmd_promote(email: str) -> None:
+def cmd_promote(email: str, role: str) -> None:
     email_norm = email.strip().lower()
+    role_norm = normalize_stored_role(role)
+    if role_norm not in ASSIGNABLE_PLATFORM_ROLES:
+        raise SystemExit(f"Invalid operator role '{role_norm}'. Pick one of: {', '.join(sorted(ASSIGNABLE_PLATFORM_ROLES))}.")
     session = _require_session()
     try:
         existing = _find_user(session, email_norm)
         if existing is None:
             raise SystemExit(f"No user found with email '{email_norm}'.")
         session.execute(
-            text("update flowpilot_users set role = 'admin' where id = :id"),
-            {"id": existing["id"]},
+            text("update flowpilot_users set role = :role where id = :id"),
+            {"id": existing["id"], "role": role_norm},
         )
         session.commit()
-        print(f"Promoted '{email_norm}' → role=admin (id={existing['id']}).")
+        print(f"Promoted '{email_norm}' → role={role_norm} (id={existing['id']}).")
     finally:
         session.close()
 
@@ -109,11 +118,11 @@ def cmd_demote(email: str) -> None:
         if existing is None:
             raise SystemExit(f"No user found with email '{email_norm}'.")
         session.execute(
-            text("update flowpilot_users set role = 'user' where id = :id"),
-            {"id": existing["id"]},
+            text("update flowpilot_users set role = :role where id = :id"),
+            {"id": existing["id"], "role": USER_ROLE},
         )
         session.commit()
-        print(f"Demoted '{email_norm}' → role=user (id={existing['id']}).")
+        print(f"Demoted '{email_norm}' → role={USER_ROLE} (id={existing['id']}).")
     finally:
         session.close()
 
@@ -137,6 +146,12 @@ def main() -> None:
     parser.add_argument("--email", required=True, help="Target user email.")
     parser.add_argument("--password", default="", help="Password (only used with --create).")
     parser.add_argument("--name", default="Admin", help="Display name (only used with --create).")
+    parser.add_argument(
+        "--set-role",
+        default="admin",
+        choices=list(ROLE_CHOICES),
+        help=f"Operator role for --create / --promote. Choices: {', '.join(ROLE_CHOICES)}.",
+    )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--create", action="store_true", help="Create or upsert as admin.")
     group.add_argument("--promote", action="store_true", help="Promote existing user to admin.")
@@ -145,9 +160,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.create:
-        cmd_create(args.email, args.password, args.name)
+        cmd_create(args.email, args.password, args.name, args.set_role)
     elif args.promote:
-        cmd_promote(args.email)
+        cmd_promote(args.email, args.set_role)
     elif args.demote:
         cmd_demote(args.email)
     elif args.delete:

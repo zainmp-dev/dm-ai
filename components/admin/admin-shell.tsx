@@ -9,59 +9,20 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
-import type { LucideIcon } from "lucide-react";
-import {
-  Building2,
-  Layers,
-  LayoutDashboard,
-  LogOut,
-  Menu,
-  PanelLeftClose,
-  PanelLeft,
-  Plug,
-  Sparkles,
-  Users,
-  X,
-} from "lucide-react";
+import { LogOut, Menu, PanelLeftClose, PanelLeft, Search, Sparkles, X } from "lucide-react";
+import { AdminCommandPalette } from "@/components/admin/admin-command-palette";
+import { AdminPlatformSessionProvider } from "@/components/admin/admin-platform-context";
+import { AdminVoiceOverlay } from "@/components/admin/admin-voice-overlay";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/components/ui/toast";
-import { cn } from "@/lib/utils";
-import { apiAdminOverview, flowSuccessMessages, type AdminOverview } from "@/lib/api";
+import { adminSubtitleForPath, filterNavForPermissions } from "@/lib/admin/nav-config";
+import { apiAdminOverview, apiAdminPlatformSession, flowSuccessMessages, type AdminOverview, type AdminPlatformSession } from "@/lib/api";
 import { clearAuthSession, getAuthToken, getAuthUser, type AuthUser } from "@/lib/auth";
-
-const PAGE_META: Record<string, { title: string; subtitle: string }> = {
-  "/admin": {
-    title: "Overview",
-    subtitle: "Platform metrics and workspace adoption at a glance.",
-  },
-  "/admin/users": {
-    title: "Users & workspace setup",
-    subtitle: "Accounts, sign-in method, and onboarding completion.",
-  },
-  "/admin/workspaces": {
-    title: "Workspaces",
-    subtitle: "Tenant workspaces, configuration state, and library depth.",
-  },
-  "/admin/integrations": {
-    title: "Integrations",
-    subtitle: "OAuth channel connections across all workspaces.",
-  },
-  "/admin/content": {
-    title: "Content library",
-    subtitle: "Aggregate pipeline status counts across every workspace.",
-  },
-};
-
-const ADMIN_NAV: { href: string; label: string; icon: LucideIcon }[] = [
-  { href: "/admin", label: "Overview", icon: LayoutDashboard },
-  { href: "/admin/users", label: "Users & setup", icon: Users },
-  { href: "/admin/workspaces", label: "Workspaces", icon: Building2 },
-  { href: "/admin/integrations", label: "Integrations", icon: Plug },
-  { href: "/admin/content", label: "Content", icon: Layers },
-];
+import { cn } from "@/lib/utils";
 
 const AdminOverviewContext = createContext<AdminOverview | null>(null);
 
@@ -79,15 +40,17 @@ export function AdminShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
   const pathKey = normalizeAdminPath(pathname || "/admin");
-  const meta = PAGE_META[pathKey] ?? { title: "Admin", subtitle: "" };
 
   const { push: toastPush } = useToast();
   const [boot, setBoot] = useState<"loading" | "ok">("loading");
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [cmdOpen, setCmdOpen] = useState(false);
+  const skipNextSidebarPersist = useRef(true);
 
   const [localUser, setLocalUser] = useState<AuthUser | null>(null);
+  const [platformSession, setPlatformSession] = useState<AdminPlatformSession | null>(null);
 
   useEffect(() => {
     const token = getAuthToken();
@@ -97,15 +60,64 @@ export function AdminShell({ children }: { children: ReactNode }) {
       router.replace("/login");
       return;
     }
-    void apiAdminOverview()
-      .then((data) => {
+    void Promise.all([apiAdminOverview(), apiAdminPlatformSession()])
+      .then(([data, session]) => {
         setOverview(data);
+        setPlatformSession(session);
         setBoot("ok");
       })
       .catch(() => {
         router.replace("/dashboard");
       });
   }, [router]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setCmdOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem("admin-sidebar-collapsed") === "1") {
+        setSidebarCollapsed(true);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      if (skipNextSidebarPersist.current) {
+        skipNextSidebarPersist.current = false;
+        return;
+      }
+      window.localStorage.setItem("admin-sidebar-collapsed", sidebarCollapsed ? "1" : "0");
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }, [sidebarCollapsed]);
+
+  const filteredNav = useMemo(
+    () => filterNavForPermissions(platformSession?.permissions ?? []),
+    [platformSession?.permissions],
+  );
+
+  const meta = useMemo(() => {
+    const navHit = filteredNav.find(
+      (n) => pathKey === n.href || (n.href !== "/admin" && pathKey.startsWith(`${n.href}/`)),
+    );
+    return {
+      title: navHit?.label ?? "Admin",
+      subtitle: adminSubtitleForPath(pathKey),
+    };
+  }, [filteredNav, pathKey]);
 
   const initials = useMemo(() => {
     if (!localUser?.name) return "A";
@@ -182,14 +194,14 @@ export function AdminShell({ children }: { children: ReactNode }) {
               FlowPilot
             </p>
             <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-[#64748b] dark:text-zinc-500">
-              Admin
+              Control Center
             </p>
           </div>
         )}
       </Link>
 
       <nav className="flex flex-1 flex-col gap-1">
-        {ADMIN_NAV.map(({ href, label, icon: Icon }) => (
+        {filteredNav.map(({ href, label, icon: Icon }) => (
           <Link
             key={href}
             href={href}
@@ -205,7 +217,7 @@ export function AdminShell({ children }: { children: ReactNode }) {
       <div className={cn("mt-auto pt-8", mobile ? "block" : "hidden md:block")}>
         {!sidebarCollapsed && (
           <p className="px-1 text-[11px] leading-relaxed text-[#94a3b8] dark:text-zinc-600">
-            Operator console — not visible to workspace users.
+            Enterprise operator console — RBAC enforced server-side.
           </p>
         )}
       </div>
@@ -214,7 +226,8 @@ export function AdminShell({ children }: { children: ReactNode }) {
 
   return (
     <AdminOverviewContext.Provider value={overview}>
-      <div className="flex min-h-[100dvh] bg-[#f5f7fa] text-[#0f172a] dark:bg-[#0c0c0e] dark:text-zinc-100">
+      <AdminPlatformSessionProvider value={platformSession}>
+        <div className="flex min-h-[100dvh] bg-[#f5f7fa] text-[#0f172a] dark:bg-[#0c0c0e] dark:text-zinc-100">
         {/* Desktop sidebar */}
         <aside
           className={cn(
@@ -226,7 +239,8 @@ export function AdminShell({ children }: { children: ReactNode }) {
             type="button"
             onClick={() => setSidebarCollapsed((c) => !c)}
             className={cn(
-              "absolute -right-3 top-7 z-10 flex size-6 items-center justify-center rounded-full border border-[#e5e7eb] bg-white text-[#64748b] shadow-sm transition-colors hover:text-[#0f172a] dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100",
+              // Above sticky header (z-30); protrudes into main column so it stays clickable.
+              "absolute -right-3 top-7 z-[40] flex size-7 items-center justify-center rounded-full border border-[#e5e7eb] bg-white text-[#64748b] shadow-md ring-2 ring-white transition-colors hover:text-[#0f172a] dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:ring-[#161618] dark:hover:text-zinc-100",
               sidebarCollapsed && "top-6",
             )}
             aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -285,6 +299,19 @@ export function AdminShell({ children }: { children: ReactNode }) {
                 <p className="hidden truncate text-[12.5px] text-[#64748b] dark:text-zinc-500 sm:block">{meta.subtitle}</p>
               ) : null}
             </div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mr-1 hidden h-9 shrink-0 rounded-xl border-[#e5e7eb] bg-[#fafafa] text-[#475569] md:inline-flex dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+              onClick={() => setCmdOpen(true)}
+            >
+              <Search className="mr-1.5 size-3.5 opacity-80" />
+              <span className="text-[12px]">Search</span>
+              <kbd className="ml-2 hidden rounded-md border border-[#e5e7eb] bg-white px-1.5 py-0.5 font-mono text-[10px] font-medium text-[#64748b] lg:inline dark:border-zinc-700 dark:bg-zinc-950">
+                ⌘K
+              </kbd>
+            </Button>
             <div className="flex items-center gap-2 sm:gap-3">
               <div className="hidden items-center gap-2 rounded-full border border-[#e5e7eb] bg-[#fafafa] py-1 pl-1 pr-3 dark:border-zinc-700 dark:bg-zinc-900/80 sm:flex">
                 <span className="flex size-8 items-center justify-center rounded-full bg-[#0f172a] text-[10px] font-semibold text-white dark:bg-zinc-700">
@@ -309,7 +336,13 @@ export function AdminShell({ children }: { children: ReactNode }) {
 
           <main className="flex-1 overflow-auto px-4 py-6 md:px-8 md:py-8">{children}</main>
         </div>
+
+        <AdminCommandPalette open={cmdOpen} onOpenChange={setCmdOpen} items={filteredNav} />
+        {boot === "ok" ? (
+          <AdminVoiceOverlay filteredNav={filteredNav} onOpenCommandPalette={() => setCmdOpen(true)} />
+        ) : null}
       </div>
+      </AdminPlatformSessionProvider>
     </AdminOverviewContext.Provider>
   );
 }

@@ -1,9 +1,23 @@
 import { clearFirstLoginWizardKeys } from "@/lib/first-login-wizard";
+import { clearAllWorkspacePresetStorage } from "@/lib/workspace-local-storage";
 
 const TOKEN_KEY = "flowpilot_token";
 const USER_KEY = "flowpilot_user";
 
-export type AuthRole = "admin" | "user";
+/** Canonical tenant accounts remain `user`; privileged operators use enumerated roles stored server-side. */
+export const PLATFORM_STAFF_ROLES = [
+  "admin",
+  "super_admin",
+  "platform_admin",
+  "workspace_admin",
+  "moderator",
+  "support_agent",
+  "analyst",
+] as const;
+
+export type PlatformStaffRole = (typeof PLATFORM_STAFF_ROLES)[number];
+
+export type AuthRole = PlatformStaffRole | "user" | (string & {});
 
 export interface AuthUser {
   name: string;
@@ -11,8 +25,19 @@ export interface AuthUser {
   role?: AuthRole;
 }
 
+export function isPlatformStaffRole(role: string | null | undefined): boolean {
+  if (!role) return false;
+  return (PLATFORM_STAFF_ROLES as readonly string[]).includes(role);
+}
+
+/** Operators route into `/admin`; end-users stay in workspace dashboards. */
+export function hasAdminConsoleAccess(user: AuthUser | null | undefined): boolean {
+  return isPlatformStaffRole(user?.role);
+}
+
+/** Back-compat alias for older call sites. */
 export function isAdmin(user: AuthUser | null | undefined): boolean {
-  return user?.role === "admin";
+  return hasAdminConsoleAccess(user);
 }
 
 export function getAuthToken(): string | null {
@@ -37,6 +62,7 @@ export function setAuthSession(token: string, user: AuthUser) {
 export function clearAuthSession() {
   if (typeof window === "undefined") return;
   clearFirstLoginWizardKeys();
+  clearAllWorkspacePresetStorage();
   sessionStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
   const secureFlag = window.location.protocol === "https:" ? "; secure" : "";

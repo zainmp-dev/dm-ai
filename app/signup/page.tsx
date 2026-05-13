@@ -11,7 +11,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
 import { PublicThemeToggle } from "@/components/public-theme-toggle";
 import { apiErrorMessage, apiSignup, apiStartOAuth, flowSuccessMessages } from "@/lib/api";
-import { setAuthSession } from "@/lib/auth";
+import { setAuthSession, hasAdminConsoleAccess } from "@/lib/auth";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PASSWORD_REGEX = /^(?=.*[A-Za-z])(?=.*\d).{6,}$/;
@@ -108,7 +108,7 @@ export default function SignupPage() {
         push(flowSuccessMessages.signup, { kind: "success" });
         // Defensive: signup always creates role='user' today, but if that ever changes
         // we don't want a freshly-minted admin to be redirected into the setup wizard.
-        if (res.user.role === "admin") {
+        if (hasAdminConsoleAccess(res.user)) {
           router.replace("/admin");
         } else {
           router.replace("/workspace-setup");

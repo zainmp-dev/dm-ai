@@ -525,6 +525,21 @@ def _init_workspace_tables(connection: object) -> None:
         "alter table ads_campaigns enable row level security",
         "drop policy if exists ads_campaigns_owner_policy on ads_campaigns",
         "create policy ads_campaigns_owner_policy on ads_campaigns for all using (auth.uid()::text = user_id) with check (auth.uid()::text = user_id)",
+        """
+        create table if not exists flowpilot_admin_audit (
+            id bigserial primary key,
+            actor_id text not null,
+            actor_email text,
+            action text not null,
+            resource_type text not null default '',
+            resource_id text,
+            meta jsonb not null default '{}'::jsonb,
+            ip text,
+            created_at timestamptz not null default now()
+        )
+        """,
+        "create index if not exists idx_flowpilot_admin_audit_created on flowpilot_admin_audit(created_at desc)",
+        "create index if not exists idx_flowpilot_admin_audit_actor on flowpilot_admin_audit(actor_id)",
     ]
     for statement in statements:
         connection.execute(text(statement))

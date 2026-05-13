@@ -4,12 +4,9 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, startTransition, useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiCompleteOAuth, apiErrorMessage } from "@/lib/api";
-import { setAuthSession } from "@/lib/auth";
+import { setAuthSession, hasAdminConsoleAccess, type AuthUser } from "@/lib/auth";
 
-const oauthCallbackInflight = new Map<
-  string,
-  Promise<{ token: string; user: { name: string; email: string; role?: "admin" | "user" } }>
->();
+const oauthCallbackInflight = new Map<string, Promise<{ token: string; user: AuthUser }>>();
 
 function oauthCallbackPromise(code: string, state: string) {
   const key = `${code}\n${state}`;
@@ -80,7 +77,7 @@ function CallbackShell({
         setStatus("ok");
         setMessage("Signed in. Redirecting...");
         // Admins skip the workspace shell and land on /admin.
-        const target = res.user.role === "admin" ? "/admin" : "/dashboard";
+        const target = hasAdminConsoleAccess(res.user) ? "/admin" : "/dashboard";
         window.location.replace(target);
       })
       .catch((e: unknown) => {

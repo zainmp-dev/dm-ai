@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PublishingStatusBadge } from "@/components/status-badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useToast } from "@/components/ui/toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { platformLabel } from "@/lib/platform";
@@ -42,6 +43,7 @@ export function PublishingTab() {
   const refreshWorkspace = useWorkspaceStore((s) => s.refreshWorkspace);
   const publishInFlight = useApiLoadingStore((s) => s.inFlight.some((r) => r.kind === "publish"));
   const { push } = useToast();
+  const confirm = useConfirm();
   const [lastWarnings, setLastWarnings] = useState<string[]>([]);
   const [lastPublishedCount, setLastPublishedCount] = useState(0);
   const [platformFilter, setPlatformFilter] = useState<"ALL" | PublishingPlatform>("ALL");
@@ -367,15 +369,25 @@ export function PublishingTab() {
                               className="rounded-lg text-xs"
                               disabled={p.status.toLowerCase() === "unpublished"}
                               onClick={() => {
-                                if (!window.confirm("Unpublish this post? Active Meta promotions will be archived first.")) return;
-                                void apiCampaignUnpublishPost(p.id, { pause_promotions: true })
-                                  .then((r) => {
-                                    push(`Unpublished · archived ${r.promotions_archived} promotion(s).`);
-                                    void apiListManagedPosts({ limit: 40 }).then(setNativePosts);
-                                  })
-                                  .catch((err: unknown) => {
-                                    push(apiErrorMessage(err) || "Unpublish failed.");
+                                void (async () => {
+                                  const ok = await confirm({
+                                    title: "Unpublish this post?",
+                                    description:
+                                      "Active Meta promotions will be archived first. You can publish again later.",
+                                    confirmLabel: "Unpublish",
+                                    cancelLabel: "Cancel",
+                                    variant: "danger",
                                   });
+                                  if (!ok) return;
+                                  void apiCampaignUnpublishPost(p.id, { pause_promotions: true })
+                                    .then((r) => {
+                                      push(`Unpublished · archived ${r.promotions_archived} promotion(s).`);
+                                      void apiListManagedPosts({ limit: 40 }).then(setNativePosts);
+                                    })
+                                    .catch((err: unknown) => {
+                                      push(apiErrorMessage(err) || "Unpublish failed.");
+                                    });
+                                })();
                               }}
                             >
                               Unpublish
