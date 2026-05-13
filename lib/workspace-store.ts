@@ -173,16 +173,10 @@ interface WorkspaceStore {
   setSidebarCollapsed: (value: boolean) => void;
   loadWorkspaceSetups: () => void;
   /**
-   * Persist the chosen setup as the lone server workspace and refresh the global snapshot.
-   * @returns true if the server run (POST workspace, optional AI clear); false when already in sync / unknown id.
-   * @param variant `sync` (default): initial hydrate / reconcile only. `switch`: user chose another preset — clears strategy, competitors & drafts so Workflow matches this brand.
+   * POST the preset to the server workspace and refresh the snapshot (does not clear AI output).
+   * @returns true if POST /workspace ran; false when already in sync / unknown id.
    */
-  setActiveWorkspace: (
-    workspaceId: string,
-    opts?: {
-      variant?: "sync" | "switch";
-    },
-  ) => Promise<boolean>;
+  setActiveWorkspace: (workspaceId: string) => Promise<boolean>;
   removeWorkspaceSetup: (workspaceId: string) => Promise<void>;
   deleteCurrentWorkspace: () => Promise<void>;
   /** Clear workspace presets and snapshot after the account is deleted on the server (caller clears auth). */
@@ -278,8 +272,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     const { setups, activeWorkspaceId } = readStoredWorkspaceSetups();
     set({ workspaceSetups: setups, activeWorkspaceId });
   },
-  setActiveWorkspace: async (workspaceId, opts) => {
-    const variant = opts?.variant ?? "sync";
+  setActiveWorkspace: async (workspaceId) => {
     const setup = get().workspaceSetups.find((item) => item.id === workspaceId);
     if (!setup) {
       return false;
@@ -310,10 +303,6 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
         { skipGlobalLoading: true },
       );
       get().setSelectedAiModel(setup.aiModel);
-      if (variant === "switch") {
-        await apiPostClearAiOutputs();
-        set({ lastRunUsedFreeModel: false });
-      }
       await get().refreshWorkspace({ soft: true });
       return true;
     } catch (e) {
@@ -343,7 +332,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
       writeStoredWorkspaceSetups(nextSetups, nextActiveId);
       set({ workspace, workspaceSetups: nextSetups, activeWorkspaceId: nextActiveId, loading: false, error: null });
       if (nextActiveId) {
-        await get().setActiveWorkspace(nextActiveId, { variant: "switch" });
+        await get().setActiveWorkspace(nextActiveId);
       }
     } catch (e) {
       set({

@@ -369,10 +369,10 @@ function WorkspaceSetupForm({
 
   const activateWorkspacePreset = useCallback(
     (id: string) => {
-      void setActiveWorkspace(id, { variant: "switch" }).then((applied) => {
+      void setActiveWorkspace(id).then((applied) => {
         if (applied)
-          push("Workspace active. Strategy and drafts cleared for this brand — run Agents from Workflow.", {
-            durationMs: 8500,
+          push("Workspace active. Your server profile and default posting timezone now match this brand. Use “Clear AI library” on Workspace setup only if you want a blank slate.", {
+            durationMs: 8200,
           });
       });
     },

@@ -335,12 +335,11 @@ export function AppShell({ children }: { children: ReactNode }) {
                     <DropdownMenuItem
                       key={item.id}
                       onClick={() =>
-                        void setActiveWorkspace(item.id, { variant: "switch" }).then((applied) => {
+                        void setActiveWorkspace(item.id).then((applied) => {
                           if (applied) {
-                            pushToast(
-                              "Active workspace switched. Earlier strategy and drafts were cleared — run Agents for this brand.",
-                              { durationMs: 8200 },
-                            );
+                            pushToast("Workspace updated. Scheduling uses this brand’s primary region timezone; rerun Agents if strategy or drafts should match the new company.", {
+                              durationMs: 7200,
+                            });
                           }
                         })
                       }

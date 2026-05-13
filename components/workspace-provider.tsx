@@ -23,7 +23,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!workspace || !activeWorkspaceId || workspaceSetups.length === 0) {
       return;
     }
-    void setActiveWorkspace(activeWorkspaceId, { variant: "sync" });
+    void setActiveWorkspace(activeWorkspaceId);
   }, [activeWorkspaceId, setActiveWorkspace, workspace, workspaceSetups.length]);
 
   return children;
