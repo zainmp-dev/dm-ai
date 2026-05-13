@@ -18,7 +18,7 @@ function linkedInCallbackPromise(code: string, state: string): Promise<Response>
   let p = linkedInCallbackInflight.get(key);
   if (!p) {
     p = fetch(
-      `${API_PREFIX}/auth/linkedin/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`,
+      `${API_PREFIX}/linkedin/callback?code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`,
     ).finally(() => {
       linkedInCallbackInflight.delete(key);
     });

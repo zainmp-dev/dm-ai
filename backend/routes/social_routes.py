@@ -77,6 +77,9 @@ def get_connect_linkedin(request: Request, db: Session = Depends(get_db), worksp
     except Exception:
         logger.exception("Social router: LinkedIn connect URL failed")
         raise HTTPException(status_code=400, detail="Could not start LinkedIn connection.") from None
+
+
+@router.get("/connect/meta")
 def get_connect_meta(request: Request, db: Session = Depends(get_db), workspace_id: str | None = Query(default=None)) -> dict[str, Any]:
     if not check_rate_limit(f"connect-meta:{request.client.host if request.client else 'unknown'}", max_requests=20, window_seconds=60):
         raise HTTPException(status_code=429, detail="Too many requests")

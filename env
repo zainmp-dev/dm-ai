@@ -1,2 +1,4 @@
 NEXT_PUBLIC_API_PREFIX=/api/backend
-BACKEND_PROXY_URL=https://flowpilot.officekithr.net/api
+# Next server-side proxy must call FastAPI directly (host:port or internal URL).
+# Do NOT set this to https://your-site/api — that serves 404 for /linkedin/callback and breaks OAuth.
+BACKEND_PROXY_URL=http://127.0.0.1:8011

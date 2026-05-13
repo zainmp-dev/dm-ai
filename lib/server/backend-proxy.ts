@@ -26,11 +26,18 @@ const SKIP_IN_HEADERS = new Set([
 function getBackendBase(request: NextRequest): string {
   const explicit = (process.env.BACKEND_PROXY_URL || "").trim();
   if (explicit) return explicit.replace(/\/$/, "");
+
   const req = request.nextUrl;
   const isLocalHost = ["localhost", "127.0.0.1", "::1"].includes(req.hostname);
   if (isLocalHost) return "http://127.0.0.1:8011";
-  // Production fallback: same domain API gateway path.
-  return `${req.protocol}//${req.host}/api`;
+
+  const internal = (process.env.BACKEND_INTERNAL_URL || "").trim();
+  if (internal) return internal.replace(/\/$/, "");
+
+  // Do not default to `${origin}/api` or `${origin}/api/backend`: OAuth and other routes are
+  // implemented on FastAPI at /linkedin/callback, not as public same-origin paths. Hitting the
+  // site root + /api causes 404; same-origin + /api/backend would recurse through this proxy.
+  return "http://127.0.0.1:8011";
 }
 
 /**

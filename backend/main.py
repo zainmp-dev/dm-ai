@@ -4031,6 +4031,10 @@ def connect_meta(
             status_code=400,
             detail="Could not start Meta connection. Try again or contact support.",
         ) from None
+    return {"auth_url": auth_url, "integrations": workspace_snapshot(db, workspace_id, user)["integrations"]}
+
+
+@app.get("/profile")
 def get_profile(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     workspace_id = str(user["id"])
     return {"profile": workspace_snapshot(db, workspace_id, user)["profile"]}
