@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _load_local_env() -> None:
@@ -47,12 +48,81 @@ def _int_env(name: str, default: int) -> int:
 _DEFAULT_OPENROUTER_MODEL = "openai/gpt-5-mini"
 
 
+def _normalize_origin(origin: str) -> str:
+    return origin.strip().rstrip("/")
+
+
+def _public_site_origins_from_env() -> list[str]:
+    """Same host hints used elsewhere (OAuth, absolute URLs); merged into CORS so prod cannot forget CORS_ORIGINS."""
+    pub = _str_env_first("FLOWPILOT_PUBLIC_ORIGIN", "NEXT_PUBLIC_SITE_URL", "PUBLIC_APP_ORIGIN")
+    if not pub:
+        return []
+    o = _normalize_origin(pub)
+    if not o.startswith(("http://", "https://")):
+        return []
+    return [o]
+
+
+def _www_or_apex_variant(origin: str) -> list[str]:
+    """Allow both https://example.com and https://www.example.com when only one is configured."""
+    norm = _normalize_origin(origin)
+    out = [norm]
+    try:
+        u = urlparse(norm)
+        if u.scheme not in ("http", "https") or not u.hostname:
+            return out
+        h = u.hostname.lower()
+        if h in ("localhost", "127.0.0.1"):
+            return out
+        port = f":{u.port}" if u.port else ""
+        if h.startswith("www."):
+            bare = h.removeprefix("www.")
+            alt = f"{u.scheme}://{bare}{port}"
+        else:
+            alt = f"{u.scheme}://www.{h}{port}"
+        alt = _normalize_origin(alt)
+        if alt != norm:
+            out.append(alt)
+    except Exception:
+        pass
+    return out
+
+
 def _parse_cors_origins() -> list[str]:
     raw = _str_env("CORS_ORIGINS")
-    if not raw:
-        return ["http://127.0.0.1:3000", "http://localhost:3000"]
-    parts = [x.strip().rstrip("/") for x in raw.split(",") if x.strip()]
-    return parts if parts else ["http://127.0.0.1:3000", "http://localhost:3000"]
+    explicit = [_normalize_origin(x) for x in raw.split(",") if raw and x.strip()]
+
+    from_public_env: list[str] = []
+    for site in _public_site_origins_from_env():
+        from_public_env.extend(_www_or_apex_variant(site))
+
+    if explicit:
+        base = explicit
+        extras = from_public_env
+    elif from_public_env:
+        base = from_public_env
+        extras = []
+    else:
+        base = ["http://127.0.0.1:3000", "http://localhost:3000"]
+        extras = []
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add_one(o: str) -> None:
+        o = _normalize_origin(o)
+        if not o or o in seen:
+            return
+        seen.add(o)
+        ordered.append(o)
+
+    for p in base:
+        add_one(p)
+
+    for p in extras:
+        add_one(p)
+
+    return ordered
 
 
 _LEGACY_OPENROUTER_MODELS: frozenset[str] = frozenset(
@@ -166,7 +236,8 @@ class Settings:
     facebook_redirect_uri: str = field(default_factory=lambda: _str_env("FACEBOOK_REDIRECT_URI"))
     # Public API prefix used in returned app-relative URLs (default keeps current dev behavior).
     public_api_prefix: str = field(default_factory=lambda: _str_env_first("FLOWPILOT_API_PREFIX", "PUBLIC_API_PREFIX") or "/api/backend")
-    # Comma-separated browser origins for CORS (no trailing slashes). Production must set this to real app URLs.
+    # CORS origins: CORS_ORIGINS list plus FLOWPILOT_PUBLIC_ORIGIN / NEXT_PUBLIC_SITE_URL / PUBLIC_APP_ORIGIN
+    # (with optional www apex pair). Production typically sets PUBLIC_SITE once in .env and omits duplicate CORS list.
     cors_origins: tuple[str, ...] = field(
         default_factory=lambda: tuple(_parse_cors_origins()),
     )
