@@ -166,6 +166,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const error = useWorkspaceStore((s) => s.error);
   const refreshWorkspace = useWorkspaceStore((s) => s.refreshWorkspace);
+  const clearWorkspaceError = useWorkspaceStore((s) => s.clearWorkspaceError);
   const { push: pushToast } = useToast();
 
   const title = pathname.startsWith("/competitors/") ? "Competitor research" : PAGE_TITLES[pathname] ?? "Workspace";
@@ -365,10 +366,19 @@ export function AppShell({ children }: { children: ReactNode }) {
           )}
 
           {error && (
-            <p className="flex items-center gap-2 text-xs text-red-600">
-              {error}
-              <Button type="button" size="sm" variant="outline" className="h-6 rounded-md text-xs" onClick={() => void refreshWorkspace()}>
+            <p className="flex flex-wrap items-center gap-2 text-xs text-red-600">
+              <span className="min-w-0 flex-1">{error}</span>
+              <Button type="button" size="sm" variant="outline" className="h-6 shrink-0 rounded-md text-xs" onClick={() => void refreshWorkspace()}>
                 Retry
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-6 shrink-0 rounded-md text-xs text-[#64748b] hover:text-[#111827]"
+                onClick={() => clearWorkspaceError()}
+              >
+                Dismiss
               </Button>
             </p>
           )}

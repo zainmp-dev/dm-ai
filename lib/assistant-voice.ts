@@ -41,6 +41,35 @@ export function cancelAssistantSpeech() {
   window.speechSynthesis?.cancel();
 }
 
+/** True while the browser is playing assistant TTS (any utterance). */
+export function isAssistantSpeechActive(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return Boolean(window.speechSynthesis?.speaking);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Web Speech recognition language tag — aligns with accent preference when possible
+ * so Indian / US / UK English models are used consistently with spoken replies.
+ */
+export function getSpeechRecognitionLang(): string {
+  if (typeof window === "undefined") return "en-US";
+  const accent = getVoiceAccent();
+  if (accent === "in") return "en-IN";
+  if (accent === "us") return "en-US";
+  if (accent === "uk") return "en-GB";
+
+  const nav = typeof navigator !== "undefined" && navigator.language ? navigator.language : "en-US";
+  const L = nav.trim().replace(/_/g, "-");
+  if (/^en-in/i.test(L)) return "en-IN";
+  if (/^en-gb/i.test(L) || /^en-uk/i.test(L)) return "en-GB";
+  if (/^en-/i.test(L)) return L;
+  return "en-US";
+}
+
 export function prefetchAssistantVoices() {
   if (typeof window === "undefined") return;
   try {
@@ -132,7 +161,7 @@ function defaultUtteranceLang(accent: VoiceAccentPreference): string {
  * Clear, steady assistant narration: Indian English when the OS lists it, else high-quality US/UK.
  */
 
-export function speakAssistantLine(text: string) {
+export function speakAssistantLine(text: string, opts?: { rate?: number }) {
   if (typeof window === "undefined" || typeof window.SpeechSynthesisUtterance === "undefined") return;
   if (!isAssistantVoiceEnabled()) return;
 
@@ -147,7 +176,9 @@ export function speakAssistantLine(text: string) {
     const voice = pickAssistantVoice(voices, accent);
 
     const u = new SpeechSynthesisUtterance(text.trim());
-    u.rate = 0.96;
+    const trimmed = text.trim();
+    const long = trimmed.length > 380;
+    u.rate = opts?.rate ?? (long ? 0.93 : 0.96);
     u.pitch = 1;
     u.volume = 1;
 

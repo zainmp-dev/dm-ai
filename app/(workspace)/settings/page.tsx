@@ -38,6 +38,11 @@ import { labelForAiModel } from "@/lib/ai-models";
 import { platformLabel } from "@/lib/platform";
 import { primaryRegionLabel } from "@/lib/primary-region";
 import { setOAuthPostConnectReturn } from "@/lib/first-login-wizard";
+import {
+  socialConnectAlreadyLine,
+  socialConnectOpeningLine,
+  socialConnectProblemLine,
+} from "@/lib/social-connect-toast";
 import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
 import { useAgentsFlow } from "@/components/agents-flow-provider";
@@ -98,14 +103,6 @@ function SettingsContent() {
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
 
-  function formatConnectError(platform: "LinkedIn" | "Meta", error: unknown): string {
-    const raw = error instanceof Error ? error.message : "Could not reach the server.";
-    if (/\b429\b|rate[\s-]?limit/i.test(raw)) {
-      return `${platform} is rate-limited right now. Wait 2-5 minutes, then try again once.`;
-    }
-    return raw;
-  }
-
   useEffect(() => {
     const section = searchParams.get("section");
     if (isSectionId(section)) {
@@ -145,21 +142,29 @@ function SettingsContent() {
     const oauthToastMs = 10_000;
     if (showToast) {
       if (toast === "linkedin_connected") {
-        push("LinkedIn connected. You can publish to LinkedIn from the pipeline.", { durationMs: oauthToastMs });
+        push("You’re connected to LinkedIn. You can publish approved posts from your workflow.", { durationMs: oauthToastMs });
       } else if (toast === "linkedin_connected_pending") {
-        push("LinkedIn connected. Profile details are syncing due to temporary LinkedIn throttling.", {
+        push("LinkedIn is connected. Your profile details may take a little longer to appear — that’s normal.", {
           durationMs: oauthToastMs,
         });
       } else if (toast === "linkedin_failed") {
-        push(detail ? `LinkedIn connection failed: ${detail}` : "LinkedIn connection failed. Try Connect again.", {
-          durationMs: oauthToastMs,
-        });
+        push(
+          detail ? socialConnectProblemLine("LinkedIn", new Error(detail)) : "We couldn’t connect LinkedIn. Tap Connect and try again.",
+          {
+            durationMs: oauthToastMs,
+          },
+        );
       } else if (toast === "meta_connected") {
-        push("Meta connected. Facebook and Instagram publishing is ready.", { durationMs: oauthToastMs });
+        push("Facebook and Instagram are connected. You’re ready to publish from your workflow.", { durationMs: oauthToastMs });
       } else if (toast === "meta_failed") {
-        push(detail ? `Meta connection failed: ${detail}` : "Meta connection failed. Try Connect again.", {
-          durationMs: oauthToastMs,
-        });
+        push(
+          detail
+            ? socialConnectProblemLine("Meta", new Error(detail))
+            : "We couldn’t connect Facebook or Instagram. Tap Connect and try again.",
+          {
+            durationMs: oauthToastMs,
+          },
+        );
       }
     }
 
@@ -454,10 +459,14 @@ function SettingsContent() {
                     setLinkedinConnecting(true);
                     setOAuthPostConnectReturn("/settings?section=integrations");
                     void connectLinkedin("_self")
-                      .then((ok) =>
-                        push(ok ? "Redirecting to LinkedIn…" : "LinkedIn connect is unavailable right now.", { durationMs: 6000 }),
-                      )
-                      .catch((e: unknown) => push(formatConnectError("LinkedIn", e), { durationMs: 9000 }))
+                      .then((r) => {
+                        if (r === "redirect") {
+                          push(socialConnectOpeningLine("LinkedIn"), { durationMs: 7000 });
+                        } else {
+                          push(socialConnectAlreadyLine("LinkedIn"), { durationMs: 6000 });
+                        }
+                      })
+                      .catch((e: unknown) => push(socialConnectProblemLine("LinkedIn", e), { durationMs: 9000 }))
                       .finally(() => setLinkedinConnecting(false));
                   }}
                 >
@@ -540,10 +549,14 @@ function SettingsContent() {
                     setMetaConnecting(true);
                     setOAuthPostConnectReturn("/settings?section=integrations");
                     void connectMeta("_self")
-                      .then((ok) =>
-                        push(ok ? "Redirecting to Meta…" : "Meta connect is unavailable right now.", { durationMs: 6000 }),
-                      )
-                      .catch((e: unknown) => push(formatConnectError("Meta", e), { durationMs: 9000 }))
+                      .then((r) => {
+                        if (r === "redirect") {
+                          push(socialConnectOpeningLine("Meta"), { durationMs: 7000 });
+                        } else {
+                          push(socialConnectAlreadyLine("Meta"), { durationMs: 6000 });
+                        }
+                      })
+                      .catch((e: unknown) => push(socialConnectProblemLine("Meta", e), { durationMs: 9000 }))
                       .finally(() => setMetaConnecting(false));
                   }}
                 >
@@ -568,9 +581,10 @@ function SettingsContent() {
               <div className="rounded-2xl border border-zinc-200/90 bg-zinc-50/60 p-5 dark:border-zinc-800 dark:bg-zinc-900/35">
                 <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">Voice navigation</p>
                 <p className="mt-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">
-                  In the workspace, use the floating microphone (bottom-right). Say short phrases like “Open dashboard,” “Approval
-                  queue,” or “Publishing.” Your microphone sends audio to the browser&apos;s speech service for transcription—not to
-                  FlowPilot&apos;s servers. Chrome and Edge usually work best; allow mic access when prompted.
+                  In the workspace, use the floating microphone (bottom-right). Open the panel for “Read answers aloud” and the spoken
+                  accent used for both listening and playback. Use the toolbar—or say stop, skip, clear, repeat—for control. Short
+                  phrases work best: “Open dashboard,” “Approval queue,” “Publishing.” Audio goes to your browser’s speech service for
+                  transcription, not FlowPilot’s servers. Chrome and Edge usually work best; allow mic access when prompted.
                 </p>
               </div>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

@@ -165,6 +165,8 @@ const STRATEGY_GAPS_PAGE_SIZE = 5;
 /** XL grid is 3 columns; 12 cards = 4 rows per page for a dense first view. */
 const CONTENT_QUEUE_PAGE_SIZE = 12;
 const MAX_GAPS_PER_COMPETITOR_CARD = 10;
+/** First auto-run uses this horizon for speed/cost; user can expand via calendar length chips after setup. */
+const BOOTSTRAP_CALENDAR_DAYS = 7;
 
 type ResearchHoverPreviewRow = {
   id: string;
@@ -303,7 +305,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
   const [competitorWebsite, setCompetitorWebsite] = useState("");
   const [strategyLoading, setStrategyLoading] = useState(false);
   const [contentLoading, setContentLoading] = useState(false);
-  const [calendarDays, setCalendarDays] = useState(10);
+  const [calendarDays, setCalendarDays] = useState(7);
   const [platformTargetId, setPlatformTargetId] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<ContentItem | null>(null);
   const [previewPlatform, setPreviewPlatform] = useState<PublishingPlatform>("linkedin");
@@ -316,6 +318,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
   const [contentQueuePage, setContentQueuePage] = useState(0);
   const [competitorUploadOpen, setCompetitorUploadOpen] = useState(false);
   const [bootstrapLoading, setBootstrapLoading] = useState(false);
+  const [bootstrapStage, setBootstrapStage] = useState<"idle" | "strategy" | "content">("idle");
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [competitorAllDeleteOpen, setCompetitorAllDeleteOpen] = useState(false);
   const [researchPatchBusy, setResearchPatchBusy] = useState(false);
@@ -558,44 +561,26 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       workspace?.profile.company?.trim() ||
       workspace?.workspaceConfigured,
   );
-  const aiOutputMissing = Boolean(
-    workspaceReady && workspace && !workspace.strategy && workspace.competitors.length === 0 && workspace.content.length === 0,
-  );
+  const aiOutputMissing = Boolean(workspaceReady && workspace && !workspace.strategy && workspace.content.length === 0);
   const aiJobActive = strategyLoading || contentLoading || bootstrapLoading;
   const aiProgressPct = useSimulatedAiProgress(aiJobActive);
   const aiElapsedSec = useElapsedSecondsWhileActive(aiJobActive);
-  useEffect(() => {
-    if (!aiOutputMissing || bootstrapStartedRef.current) {
-      return;
-    }
-    bootstrapStartedRef.current = true;
-    const runBootstrap = async () => {
-      setBootstrapLoading(true);
-      try {
-        const notify = await requestAiCompletionNotifyPreference("content");
-        await generateContent(calendarDays, { completionNotify: notify });
-        const usedFree = useWorkspaceStore.getState().lastRunUsedFreeModel;
-        push(
-          usedFree
-            ? "Setup complete (used free AI model — add OpenRouter credits for faster runs)."
-            : "Setup complete. Your strategy and content plan are ready.",
-        );
-      } catch (e) {
-        push(apiErrorMessage(e));
-      } finally {
-        setBootstrapLoading(false);
-      }
-    };
-    void runBootstrap();
-  }, [aiOutputMissing, calendarDays, generateContent, push]);
 
   const aiPhaseLine = useMemo(() => {
     if (!aiJobActive) return "";
-    if (bootstrapLoading) return "Running full setup: strategy research, then content planning for your calendar.";
-    if (strategyLoading) return "Building strategy from competitors, website fit, positioning, and market gaps.";
-    if (contentLoading) return "Creating post titles, captions, and media ideas for each slot.";
+    if (bootstrapLoading) {
+      if (bootstrapStage === "strategy") {
+        return "Step 1 of 2 — Learning your market and building your strategy";
+      }
+      if (bootstrapStage === "content") {
+        return `Step 2 of 2 — Creating your first ${BOOTSTRAP_CALENDAR_DAYS}-day post plan`;
+      }
+      return "Starting setup…";
+    }
+    if (strategyLoading) return "Updating strategy and competitor insights…";
+    if (contentLoading) return "Writing your post ideas and schedule…";
     return "";
-  }, [aiJobActive, bootstrapLoading, strategyLoading, contentLoading]);
+  }, [aiJobActive, bootstrapLoading, bootstrapStage, strategyLoading, contentLoading]);
 
   const aiElapsedLabel = useMemo(() => {
     if (aiElapsedSec < 60) return `${aiElapsedSec}s`;
@@ -622,6 +607,60 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       focus,
     }));
   }, [competitorDrafts, competitorName, competitorWebsite]);
+
+  useEffect(() => {
+    if (!aiOutputMissing || bootstrapStartedRef.current) {
+      return;
+    }
+    const snap = useWorkspaceStore.getState().workspace;
+    if (!snap) return;
+    const company = effectiveWorkspaceCompanyName(snap);
+    if (!company.trim()) {
+      return;
+    }
+    bootstrapStartedRef.current = true;
+    const runBootstrap = async () => {
+      const website = snap.companyWebsite.trim();
+      setBootstrapLoading(true);
+      setBootstrapStage("strategy");
+      try {
+        await generateStrategy(company, website, {
+          competitors: buildStrategyCompetitorPayload(),
+          completionNotify: false,
+        });
+      } catch (e) {
+        const msg = apiErrorMessage(e);
+        push(
+          msg.length > 100
+            ? "Strategy step didn’t finish after trying multiple fast models. Check your connection and tap Run AI setup again."
+            : msg,
+        );
+        setBootstrapLoading(false);
+        setBootstrapStage("idle");
+        return;
+      }
+      setBootstrapStage("content");
+      try {
+        const notify = await requestAiCompletionNotifyPreference("content");
+        await generateContent(BOOTSTRAP_CALENDAR_DAYS, { completionNotify: notify });
+        const usedFree = useWorkspaceStore.getState().lastRunUsedFreeModel;
+        push(
+          usedFree
+            ? `All set — your starter ${BOOTSTRAP_CALENDAR_DAYS}-day plan is ready. It used a backup mode; runs can be quicker once more AI credits are available.`
+            : `All set — your starter ${BOOTSTRAP_CALENDAR_DAYS}-day plan is ready. Use the calendar buttons below if you want more weeks at once.`,
+        );
+      } catch (e) {
+        const msg = apiErrorMessage(e);
+        push(
+          `Strategy is saved, but the ${BOOTSTRAP_CALENDAR_DAYS}-day calendar didn’t finish: ${msg.length > 90 ? `${msg.slice(0, 90)}…` : msg}. Tap “Run AI setup now” below to retry the calendar step — alternate models run automatically.`,
+        );
+      } finally {
+        setBootstrapLoading(false);
+        setBootstrapStage("idle");
+      }
+    };
+    void runBootstrap();
+  }, [aiOutputMissing, generateStrategy, generateContent, buildStrategyCompetitorPayload, push]);
 
   if (shellPending) {
     return (
@@ -939,8 +978,9 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                   <p className="mt-1.5 text-sm text-zinc-700">
                     {aiJobActive ? (
                       <>
-                        <span className="font-medium text-blue-900">{aiPhaseLine}</span> We are preparing your company profile,
-                        strategy, and first content plan. This can take a few minutes. Elapsed <span className="tabular-nums">{aiElapsedLabel}</span>.
+                        <span className="font-medium text-blue-900">{aiPhaseLine}</span>{" "}
+                        You can leave this tab open — we&apos;ll save everything here. This often takes a few minutes. Time elapsed:{" "}
+                        <span className="tabular-nums">{aiElapsedLabel}</span>.
                       </>
                     ) : (
                       "Start setup to generate your company insights, strategy, and ready-to-use content ideas."
@@ -948,16 +988,14 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                   </p>
                   {aiJobActive && aiFeelsSlow ? (
                     <p className="text-xs font-medium text-amber-900 dark:text-amber-200/95">
-                      Still working. Full setup may take several minutes; Groq and Gemini are tried before OpenRouter.
+                      Still working — the first step is usually the slowest. Your first run uses a short {BOOTSTRAP_CALENDAR_DAYS}-day plan to
+                      get you started faster; pick more days under Calendar length when it finishes.
                     </p>
                   ) : null}
                   {!aiJobActive && lastRunUsedFreeModel ? (
                     <p className="text-xs text-amber-800 dark:text-amber-300">
-                      Last run used a free AI model (low credits). Add credits at{" "}
-                      <a href="https://openrouter.ai/settings/credits" target="_blank" rel="noopener noreferrer" className="underline">
-                        openrouter.ai
-                      </a>{" "}
-                      for faster generation.
+                      Last time, a backup AI mode was used so your work could finish. If things feel slow, ask your admin about adding AI
+                      credits, or try again later.
                     </p>
                   ) : null}
                 </div>
@@ -968,10 +1006,10 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                     aria-valuenow={aiProgressPct}
                     aria-valuemin={0}
                     aria-valuemax={100}
-                    aria-label={`Estimated progress ${aiProgressPct} percent, elapsed ${aiElapsedLabel}`}
+                    aria-label={`Rough progress about ${aiProgressPct} percent, elapsed ${aiElapsedLabel}`}
                   >
                     <div className="flex items-center justify-between text-xs font-semibold tabular-nums text-blue-950">
-                      <span>Estimated progress</span>
+                      <span>Rough progress (not exact)</span>
                       <span>
                         {aiProgressPct}% · {aiElapsedLabel}
                       </span>

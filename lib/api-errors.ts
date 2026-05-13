@@ -118,3 +118,22 @@ export function formatApiErrorMessage(error: unknown): string {
 
   return fallback;
 }
+
+/** True when trying another AI model slug may recover (budget, rate limits, transient gateway/network). */
+export function isAiProviderRetryableError(error: unknown): boolean {
+  if (axios.isAxiosError(error)) {
+    const status = error.response?.status;
+    if (status === 402 || status === 429 || status === 408 || status === 502 || status === 503) {
+      return true;
+    }
+    if (!error.response || error.code === "ERR_NETWORK") {
+      return true;
+    }
+    if ((status === undefined || status >= 500) && error.code === "ECONNABORTED") {
+      return true;
+    }
+    return false;
+  }
+  const msg = formatApiErrorMessage(error).toLowerCase();
+  return /rate\s*limit|too many requests|credit|quota|payment required|timed out|temporarily unavailable|502|503|429|ECONNRESET|ECONNREFUSED/i.test(msg);
+}

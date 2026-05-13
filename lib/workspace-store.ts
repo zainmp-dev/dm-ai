@@ -21,7 +21,7 @@ import {
   apiUpdatePreferences,
   apiUpdateProfile,
 } from "@/lib/api";
-import { DEFAULT_AI_MODEL, normalizeStoredAiModel } from "@/lib/ai-models";
+import { DEFAULT_AI_MODEL, normalizeStoredAiModel, buildGlobalAiModelTryOrder } from "@/lib/ai-models";
 import { getAuthUser } from "@/lib/auth";
 import { normalizePrimaryRegionCode } from "@/lib/primary-region";
 import {
@@ -31,6 +31,27 @@ import {
 } from "@/lib/workspace-local-storage";
 import type { MediaType, PostingPreferences, PublishingPlatform, UserProfile, WorkspaceScenario, WorkspaceSnapshot } from "@/lib/types";
 import { signalAiWorkflowComplete } from "@/lib/ai-completion-signal";
+import { isAiProviderRetryableError } from "@/lib/api-errors";
+
+async function invokeWithGlobalAiFallbacks<T>(params: {
+  preferredModel: string;
+  invoke: (modelId: string) => Promise<T>;
+}): Promise<T> {
+  const order = buildGlobalAiModelTryOrder(params.preferredModel);
+  let lastErr: unknown;
+  for (let i = 0; i < order.length; i += 1) {
+    const modelId = order[i]!;
+    try {
+      return await params.invoke(modelId);
+    } catch (e) {
+      lastErr = e;
+      if (!isAiProviderRetryableError(e) || i >= order.length - 1) {
+        throw e;
+      }
+    }
+  }
+  throw lastErr;
+}
 
 const AI_MODEL_STORAGE_KEY = "flowpilot.aiModel";
 
@@ -154,6 +175,9 @@ export interface CompetitorSetupInput {
 /** Dedupe overlapping GET /workspace (React Strict Mode double-mount + parallel mounts). */
 let workspaceRefreshInflight: Promise<void> | null = null;
 
+/** OAuth: `redirect` — opening provider; `already_connected` — no URL, integration already active. */
+export type SocialConnectOutcome = "redirect" | "already_connected";
+
 interface WorkspaceStore {
   workspace: WorkspaceSnapshot | null;
   workspaceSetups: WorkspaceSetupConfig[];
@@ -182,6 +206,8 @@ interface WorkspaceStore {
   /** Clear workspace presets and snapshot after the account is deleted on the server (caller clears auth). */
   resetAfterAccountDeletion: () => void;
   refreshWorkspace: (options?: { soft?: boolean }) => Promise<void>;
+  /** Clears transient UI errors without changing workspace data. */
+  clearWorkspaceError: () => void;
   generateStrategy: (
     companyName: string,
     website: string,
@@ -224,8 +250,8 @@ interface WorkspaceStore {
   schedule: (contentId: string, scheduledAt: string) => Promise<void>;
   publish: (contentIds: string[]) => Promise<{ published: number; warnings: string[] }>;
   runCron: () => Promise<{ published: number; warnings: string[] }>;
-  connectLinkedin: (target?: "_self" | "_blank") => Promise<boolean>;
-  connectMeta: (target?: "_self" | "_blank") => Promise<boolean>;
+  connectLinkedin: (target?: "_self" | "_blank") => Promise<SocialConnectOutcome>;
+  connectMeta: (target?: "_self" | "_blank") => Promise<SocialConnectOutcome>;
   saveProfile: (patch: Partial<UserProfile>) => Promise<void>;
   savePreferences: (patch: Partial<PostingPreferences>) => Promise<void>;
   setupWorkspace: (payload: {
@@ -430,16 +456,15 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     });
     await workspaceRefreshInflight;
   },
+  clearWorkspaceError: () => set({ error: null }),
   generateStrategy: async (companyName, website, options) => {
     const competitors = options?.competitors ?? [];
     try {
-      const data = await apiPostStrategy(
-        companyName,
-        website,
-        get().selectedAiModel,
-        competitors,
-        get().workspace?.workspaceScenario,
-      );
+      const data = await invokeWithGlobalAiFallbacks({
+        preferredModel: get().selectedAiModel,
+        invoke: (m) =>
+          apiPostStrategy(companyName, website, m, competitors, get().workspace?.workspaceScenario),
+      });
       const used = data.ai_model_used?.trim();
       if (used && used !== get().selectedAiModel) {
         get().setSelectedAiModel(used);
@@ -457,7 +482,10 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   },
   generateContent: async (calendarDays, options) => {
     try {
-      const data = await apiPostContent({ action: "generate", calendarDays, aiModel: get().selectedAiModel });
+      const data = await invokeWithGlobalAiFallbacks({
+        preferredModel: get().selectedAiModel,
+        invoke: (m) => apiPostContent({ action: "generate", calendarDays, aiModel: m }),
+      });
       const used = data.ai_model_used?.trim();
       if (used && used !== get().selectedAiModel) {
         get().setSelectedAiModel(used);
@@ -481,14 +509,23 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   },
   suggestMasterContent: async (suggestHint) => {
     try {
-      const data = await apiPostContent({
-        action: "suggest",
-        aiModel: get().selectedAiModel,
-        suggestHint: suggestHint?.trim() || undefined,
+      const data = await invokeWithGlobalAiFallbacks({
+        preferredModel: get().selectedAiModel,
+        invoke: (m) =>
+          apiPostContent({
+            action: "suggest",
+            aiModel: m,
+            suggestHint: suggestHint?.trim() || undefined,
+          }),
       });
       if (!data.suggestion) {
         throw new Error("No suggestion returned");
       }
+      const used = data.ai_model_used?.trim();
+      if (used && used !== get().selectedAiModel) {
+        get().setSelectedAiModel(used);
+      }
+      set({ lastRunUsedFreeModel: data.used_free_model === true });
       await get().refreshWorkspace({ soft: true });
       return data.suggestion;
     } catch (e) {
@@ -612,7 +649,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   },
   connectLinkedin: async (target = "_self") => {
     const res = await apiConnectLinkedin();
-    const authUrl = typeof res.auth_url === "string" ? res.auth_url : "";
+    const authUrl = typeof res.auth_url === "string" ? res.auth_url.trim() : "";
     if (authUrl && typeof window !== "undefined") {
       if (target === "_blank") {
         const popup = window.open(authUrl, "_blank", "noopener,noreferrer");
@@ -622,14 +659,19 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
       } else {
         window.location.assign(authUrl);
       }
-      return true;
+      return "redirect";
     }
     await get().refreshWorkspace({ soft: true });
-    return get().workspace?.integrations.linkedin.connected ?? false;
+    if (get().workspace?.integrations.linkedin.connected) {
+      return "already_connected";
+    }
+    throw new Error(
+      "We couldn’t open the LinkedIn sign-in screen from here. Wait a moment, check your connection, and try Connect again.",
+    );
   },
   connectMeta: async (target = "_self") => {
     const res = await apiConnectMeta();
-    const authUrl = typeof res.auth_url === "string" ? res.auth_url : "";
+    const authUrl = typeof res.auth_url === "string" ? res.auth_url.trim() : "";
     if (authUrl && typeof window !== "undefined") {
       if (target === "_blank") {
         const popup = window.open(authUrl, "_blank", "noopener,noreferrer");
@@ -639,10 +681,15 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
       } else {
         window.location.assign(authUrl);
       }
-      return true;
+      return "redirect";
     }
     await get().refreshWorkspace({ soft: true });
-    return get().workspace?.integrations.meta.connected ?? false;
+    if (get().workspace?.integrations.meta.connected) {
+      return "already_connected";
+    }
+    throw new Error(
+      "We couldn’t open the Facebook sign-in screen from here. Wait a moment, check your connection, and try Connect again.",
+    );
   },
   saveProfile: async (patch) => {
     await apiUpdateProfile(patch);

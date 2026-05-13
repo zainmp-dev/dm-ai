@@ -4,6 +4,31 @@
  */
 export const DEFAULT_AI_MODEL = "openai/gpt-5-mini";
 
+/**
+ * Ordered fast / cost-efficient OpenRouter slugs appended after the user's pick when automated runs
+ * hit rate limits, 402 budgets, or short outages — keeps setup and workflow progressing without blocking.
+ */
+export const GLOBAL_AI_FALLBACK_MODEL_CHAIN = [
+  "google/gemini-2.5-flash",
+  "deepseek/deepseek-v4-flash",
+  "openai/gpt-5-mini",
+  // OpenRouter selects a free-variant model; completes runs when paid credits are empty.
+  "openrouter/free",
+] as const;
+
+/** Deduped preference list for multi-model retries */
+export function buildGlobalAiModelTryOrder(preferred?: string | null): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of [...[normalizeStoredAiModel(preferred ?? DEFAULT_AI_MODEL)], ...GLOBAL_AI_FALLBACK_MODEL_CHAIN]) {
+    const id = m.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 const LEGACY_MODEL_IDS: ReadonlySet<string> = new Set([
   "mistralai/mixtral-8x7b",
   "openai/mixtral-8x7b",

@@ -94,10 +94,14 @@ def _http_for_agent_error(exc: AgentError) -> tuple[int, str]:
     msg = str(exc).strip()
     low = msg.lower()
     if '"code":402' in low or " 402" in low or "payment required" in low or "more credits" in low:
-        # Show a concise, user-actionable message; keep the raw provider text out of the UI.
+        # Provider budget exhausted (usually OpenRouter). Mention direct keys so operators know
+        # Groq/Gemini can still work without topping up.
         friendly = (
-            "OpenRouter is out of credits for the current AI model. Top up at "
-            "https://openrouter.ai/settings/credits or pick a cheaper model and try again."
+            "AI generation hit a provider credit limit (often OpenRouter). "
+            "The stack tries alternate models and OpenRouter's free model router automatically when your key allows it; "
+            "if this still appears, add credits at https://openrouter.ai/settings/credits "
+            "or set GROQ_API_KEY / GOOGLE_AI_API_KEY on the server for Groq/Google directly. "
+            "Set OPENROUTER_FREE_FALLBACKS=none to disable automatic free-tier fallbacks."
         )
         return 402, friendly
     logger.warning("AgentError (non-402): %s", msg[:1200])

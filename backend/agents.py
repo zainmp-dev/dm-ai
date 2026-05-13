@@ -380,39 +380,14 @@ def call_gemini_with_openrouter_fallback(
     """Strategy-agent multi-tier chain: Groq → Gemini → OpenRouter.
 
     Priority:
-    1. Groq (GROQ_API_KEY) — low-latency inference; skips ahead on quota/rate errors
+    1. Groq (GROQ_API_KEY) — low-latency inference; falls through on errors
     2. Gemini (GOOGLE_AI_API_KEY)
-    3. anthropic/claude-sonnet-4 — via OpenRouter
-    4. openai/gpt-4o-mini / openai/gpt-5-mini — reliable structured fallbacks
+    3. OpenRouter models below (manual pick first when set, then Claude, then cheap fallbacks)
 
-    If ``preferred_openrouter_model`` is set it is tried first in the OpenRouter
-    chain (before Claude Sonnet), giving callers a manual override path.
+    Each OpenRouter slug is invoked via ``retry_request`` with Groq+Gemini still enabled so a
+    transient Groq/Gemini failure during the first pass can succeed on later attempts, and so
+    an empty OpenRouter balance (402) does not skip Gemini if it was flaky once.
     """
-    groq_try = ai_service.groq_only_request(
-        prompt=prompt,
-        max_tokens=settings.openrouter_max_tokens,
-        temperature=0.7,
-    )
-    if groq_try is not None:
-        return groq_try.text, groq_try.model_used
-
-    gemini_key = (getattr(settings, "google_ai_api_key", "") or "").strip()
-    if gemini_key:
-        try:
-            result = ai_service.gemini_request(
-                prompt=prompt,
-                max_tokens=settings.openrouter_max_tokens,
-                temperature=0.7,
-            )
-            return result.text, result.model_used
-        except AIServiceError as exc:
-            logger.warning(
-                "agents.strategy gemini_failed status=%s err=%s — cascading to Claude Sonnet",
-                exc.status_code,
-                str(exc)[:300],
-            )
-
-    # ── 2–4. OpenRouter priority chain ────────────────────────────────────
     strategy_chain: list[str] = []
     if preferred_openrouter_model and preferred_openrouter_model.strip():
         strategy_chain.append(preferred_openrouter_model.strip())
@@ -420,8 +395,9 @@ def call_gemini_with_openrouter_fallback(
         "anthropic/claude-sonnet-4",
         "openai/gpt-4o-mini",
         "openai/gpt-5-mini",
+        # Last resort: OpenRouter free-model router (works with a valid API key even at $0 paid balance).
+        "openrouter/free",
     ])
-    # Deduplicate while preserving order
     seen: set[str] = set()
     deduped_chain: list[str] = []
     for m in strategy_chain:
@@ -437,10 +413,10 @@ def call_gemini_with_openrouter_fallback(
                 preferred_model=model,
                 max_tokens=settings.openrouter_max_tokens,
                 temperature=0.7,
-                prefer_groq_first=False,
-                prefer_gemini=False,
+                prefer_groq_first=True,
+                prefer_gemini=True,
             )
-            logger.info("agents.strategy openrouter_success model=%s", model)
+            logger.info("agents.strategy provider_success model_used=%s", result.model_used)
             return result.text, result.model_used
         except AIServiceError as exc:
             last_exc = exc

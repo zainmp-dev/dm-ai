@@ -1,7 +1,7 @@
 "use client";
 
-import { ChevronDown, ChevronUp, Mic, Volume2 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronUp, Mic, SkipForward, Square, Trash2, Volume2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -13,8 +13,14 @@ import {
   isAdminVoiceSpeakEnabled,
   setAdminVoiceSpeakEnabled,
 } from "@/lib/admin-voice-commands";
-import { speakAssistantLine, cancelAssistantSpeech } from "@/lib/assistant-voice";
+import {
+  cancelAssistantSpeech,
+  getSpeechRecognitionLang,
+  isAssistantSpeechActive,
+  speakAssistantLine,
+} from "@/lib/assistant-voice";
 import { cn } from "@/lib/utils";
+import { parseVoiceControlIntent } from "@/lib/voice-control-intents";
 
 interface SpeechRecognitionResultLike {
   readonly isFinal: boolean;
@@ -57,10 +63,12 @@ function speechRecognitionCtor(): (new () => SpeechRecognitionLike) | null {
   return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
 }
 
-function adminSpeak(text: string) {
-  if (!isAdminVoiceSpeakEnabled()) return;
-  speakAssistantLine(text);
+const voiceApisSubscribe = () => () => {};
+function voiceApisSnapshot(): boolean {
+  return !!speechRecognitionCtor();
 }
+
+const VOICE_DEBOUNCE_MS = 1600;
 
 export function AdminVoiceOverlay({
   filteredNav,
@@ -71,24 +79,42 @@ export function AdminVoiceOverlay({
 }) {
   const router = useRouter();
   const { push: toast } = useToast();
-  const [browserOk, setBrowserOk] = useState(false);
+  const browserOk = useSyncExternalStore(voiceApisSubscribe, voiceApisSnapshot, () => false);
   const [panelOpen, setPanelOpen] = useState(false);
   const [listening, setListening] = useState(false);
   const [caption, setCaption] = useState("");
-  const [confirmSpeechOn, setConfirmSpeechOn] = useState(true);
+  const [confirmSpeechOn, setConfirmSpeechOn] = useState(() =>
+    typeof window !== "undefined" ? isAdminVoiceSpeakEnabled() : true,
+  );
+  const [speechPlaying, setSpeechPlaying] = useState(false);
+  const lastSpokenRef = useRef("");
+
   const recRef = useRef<SpeechRecognitionLike | null>(null);
   const userWantsMicOnRef = useRef(false);
+  const lastFinalHandledRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
 
   const allowedHref = useCallback((href: string) => filteredNav.some((n) => n.href === href), [filteredNav]);
 
   useEffect(() => {
-    setBrowserOk(!!speechRecognitionCtor());
-    setConfirmSpeechOn(isAdminVoiceSpeakEnabled());
-  }, []);
+    const active = listening || Boolean(caption);
+    if (!active) {
+      let raf = 0;
+      raf = requestAnimationFrame(() => setSpeechPlaying(false));
+      return () => cancelAnimationFrame(raf);
+    }
+    const id = window.setInterval(() => {
+      setSpeechPlaying(isAssistantSpeechActive());
+    }, 300);
+    return () => window.clearInterval(id);
+  }, [listening, caption]);
 
-  useEffect(() => {
-    if (panelOpen) setConfirmSpeechOn(isAdminVoiceSpeakEnabled());
-  }, [panelOpen]);
+  const togglePanelOpen = useCallback(() => {
+    setPanelOpen((open) => {
+      const next = !open;
+      if (next) setConfirmSpeechOn(isAdminVoiceSpeakEnabled());
+      return next;
+    });
+  }, []);
 
   const disposeRecognition = useCallback(() => {
     const rec = recRef.current;
@@ -112,7 +138,26 @@ export function AdminVoiceOverlay({
     setListening(false);
   }, [disposeRecognition]);
 
-  useEffect(() => () => stopVoiceSession(), [stopVoiceSession]);
+  const stopEverything = useCallback(() => {
+    cancelAssistantSpeech();
+    stopVoiceSession();
+    setCaption("");
+  }, [stopVoiceSession]);
+
+  const skipSpeechOnly = useCallback(() => {
+    cancelAssistantSpeech();
+  }, []);
+
+  useEffect(() => () => stopEverything(), [stopEverything]);
+
+  const adminSpeak = useCallback(
+    (text: string) => {
+      lastSpokenRef.current = text;
+      if (!isAdminVoiceSpeakEnabled()) return;
+      speakAssistantLine(text);
+    },
+    [],
+  );
 
   const openVoiceSession = useCallback(() => {
     const Ctor = speechRecognitionCtor();
@@ -136,7 +181,7 @@ export function AdminVoiceOverlay({
       recRef.current = rec;
       rec.continuous = true;
       rec.interimResults = true;
-      rec.lang = typeof navigator !== "undefined" && navigator.language ? navigator.language : "en-US";
+      rec.lang = getSpeechRecognitionLang();
 
       rec.onresult = (event: SpeechRecognitionEventLike) => {
         let finalText = "";
@@ -150,7 +195,45 @@ export function AdminVoiceOverlay({
         if (display) setCaption(display);
 
         if (finalText.trim()) {
-          const result = interpretAdminVoiceCommand(finalText);
+          const trimmed = finalText.trim().replace(/\s+/g, " ");
+          const now = Date.now();
+          if (
+            trimmed === lastFinalHandledRef.current.text &&
+            now - lastFinalHandledRef.current.at < VOICE_DEBOUNCE_MS
+          ) {
+            return;
+          }
+
+          const control = parseVoiceControlIntent(trimmed);
+          if (control === "stop_all") {
+            lastFinalHandledRef.current = { text: trimmed, at: now };
+            stopEverything();
+            return;
+          }
+          if (control === "stop_speech_only") {
+            lastFinalHandledRef.current = { text: trimmed, at: now };
+            skipSpeechOnly();
+            return;
+          }
+          if (control === "clear_ui") {
+            lastFinalHandledRef.current = { text: trimmed, at: now };
+            setCaption("");
+            return;
+          }
+          if (control === "repeat_last") {
+            lastFinalHandledRef.current = { text: trimmed, at: now };
+            const line = lastSpokenRef.current;
+            if (!line) {
+              toast("Nothing to repeat yet.", { durationMs: 3200 });
+              return;
+            }
+            adminSpeak(line);
+            return;
+          }
+
+          lastFinalHandledRef.current = { text: trimmed, at: now };
+
+          const result = interpretAdminVoiceCommand(trimmed);
           setCaption("");
           if (result.kind === "open-command-palette") {
             onOpenCommandPalette();
@@ -211,19 +294,22 @@ export function AdminVoiceOverlay({
     };
 
     spawn();
-  }, [allowedHref, disposeRecognition, filteredNav, onOpenCommandPalette, router, toast]);
+  }, [adminSpeak, allowedHref, disposeRecognition, filteredNav, onOpenCommandPalette, router, skipSpeechOnly, stopEverything, toast]);
 
   const onMicClick = useCallback(() => {
     if (listening) stopVoiceSession();
     else openVoiceSession();
   }, [listening, openVoiceSession, stopVoiceSession]);
 
-  if (!browserOk) return null;
-
   const toggleSpeak = (on: boolean) => {
     setConfirmSpeechOn(on);
     setAdminVoiceSpeakEnabled(on);
+    if (!on) cancelAssistantSpeech();
   };
+
+  if (!browserOk) return null;
+
+  const showBusyControls = listening || speechPlaying || Boolean(caption);
 
   return (
     <div
@@ -231,6 +317,8 @@ export function AdminVoiceOverlay({
         "pointer-events-none fixed bottom-5 right-5 z-[45] flex flex-col items-end gap-2",
         "max-[480px]:bottom-4 max-[480px]:right-4",
       )}
+      role="region"
+      aria-label="Admin voice controls"
     >
       {panelOpen && (
         <div
@@ -238,12 +326,20 @@ export function AdminVoiceOverlay({
             "pointer-events-auto w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-[#e5e7eb] bg-white p-4 shadow-lg dark:border-zinc-700 dark:bg-[#161618]",
           )}
         >
-          <p className="text-xs font-semibold uppercase tracking-wide text-[#64748b] dark:text-zinc-400">
-            Voice — admin console
-          </p>
+          <div className="flex items-start justify-between gap-2">
+            <p className="text-xs font-semibold uppercase tracking-wide text-[#64748b] dark:text-zinc-400">
+              Voice — admin console
+            </p>
+            <span className="rounded-md bg-[#eef2ff] px-2 py-0.5 font-mono text-[10px] text-[#3730a3] dark:bg-indigo-950/70 dark:text-indigo-200">
+              {getSpeechRecognitionLang().toUpperCase()}
+            </span>
+          </div>
           <p className="mt-2 text-sm leading-relaxed text-[#475569] dark:text-zinc-300">
-            Tap the microphone to dictate. Recognition runs locally in Chromium-based browsers (Chrome / Edge). Unrecognized phrases stay
-            in the caption briefly; routing matches sections you are allowed to open.
+            Same engine as workspace voice: recognition follows your accent preference in localStorage. Say{" "}
+            <span className="font-medium text-zinc-700 dark:text-zinc-200">stop</span>,{" "}
+            <span className="font-medium text-zinc-700 dark:text-zinc-200">skip</span>,{" "}
+            <span className="font-medium text-zinc-700 dark:text-zinc-200">clear</span>, or{" "}
+            <span className="font-medium text-zinc-700 dark:text-zinc-200">repeat</span>. Only routes your role allows are opened.
           </p>
 
           <div className="mt-4 rounded-xl border border-[#e5e7eb] p-3 dark:border-zinc-700">
@@ -276,7 +372,7 @@ export function AdminVoiceOverlay({
 
           <p className="mt-3 text-[11px] font-semibold uppercase tracking-wide text-[#64748b] dark:text-zinc-500">Try saying</p>
           <ul className="mt-1.5 flex flex-wrap gap-1.5">
-            {ADMIN_VOICE_EXAMPLES.map((ex) => (
+            {[...ADMIN_VOICE_EXAMPLES, "Stop", "Repeat"].map((ex) => (
               <li
                 key={ex}
                 className="rounded-full bg-[#f5f7fa] px-2.5 py-1 text-[11px] text-[#475569] dark:bg-zinc-800 dark:text-zinc-300"
@@ -288,32 +384,84 @@ export function AdminVoiceOverlay({
         </div>
       )}
 
-      <div className="pointer-events-auto flex items-center gap-1.5">
-        <Button
-          type="button"
-          variant="outline"
-          className={cn(
-            "size-11 shrink-0 rounded-full border-[#e5e7eb] bg-white p-0 shadow-md dark:border-zinc-700 dark:bg-zinc-900",
-            "hover:bg-[#f5f7fa] dark:hover:bg-zinc-800",
-          )}
-          onClick={() => setPanelOpen((o) => !o)}
-          aria-expanded={panelOpen}
-          aria-label={panelOpen ? "Hide voice setup" : "Show voice setup"}
-        >
-          {panelOpen ? <ChevronDown className="size-5 text-[#64748b]" /> : <ChevronUp className="size-5 text-[#64748b]" />}
-        </Button>
-        <Button
-          type="button"
-          className={cn(
-            "size-14 shrink-0 rounded-full p-0 shadow-lg transition-transform",
-            listening ? "animate-pulse bg-red-600 text-white hover:bg-red-600" : "bg-[#1a56db] text-white hover:bg-[#1648c0]",
-          )}
-          onClick={onMicClick}
-          aria-pressed={listening}
-          aria-label={listening ? "Stop admin voice listening" : "Start admin voice — navigate by speech"}
-        >
-          <Mic className="size-6" strokeWidth={1.75} aria-hidden />
-        </Button>
+      <div className="pointer-events-auto flex flex-col items-end gap-1.5">
+        {showBusyControls && (
+          <div
+            className="flex flex-wrap items-center justify-end gap-1 rounded-2xl border border-[#e5e7eb] bg-white/95 p-1 shadow-md backdrop-blur-sm dark:border-zinc-700 dark:bg-zinc-900/95"
+            role="toolbar"
+            aria-label="Admin voice toolbar"
+          >
+            {(listening || speechPlaying) && (
+              <>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="size-9 shrink-0 rounded-xl p-0 text-zinc-600 hover:bg-red-50 hover:text-red-700 dark:text-zinc-300 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+                  onClick={stopEverything}
+                  aria-label="Stop microphone and speech"
+                  title="Stop all"
+                >
+                  <Square className="size-4 fill-current" aria-hidden />
+                </Button>
+                {speechPlaying && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="size-9 shrink-0 rounded-xl p-0 text-zinc-600 hover:bg-amber-50 hover:text-amber-800 dark:text-zinc-300 dark:hover:bg-amber-950/40 dark:hover:text-amber-200"
+                    onClick={skipSpeechOnly}
+                    aria-label="Skip spoken confirmation"
+                    title="Skip audio"
+                  >
+                    <SkipForward className="size-4" strokeWidth={1.75} aria-hidden />
+                  </Button>
+                )}
+              </>
+            )}
+            {Boolean(caption) && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="size-9 shrink-0 rounded-xl p-0 text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                onClick={() => setCaption("")}
+                aria-label="Clear caption text"
+                title="Clear text"
+              >
+                <Trash2 className="size-4" strokeWidth={1.75} aria-hidden />
+              </Button>
+            )}
+          </div>
+        )}
+
+        <div className="flex items-center gap-1.5">
+          <Button
+            type="button"
+            variant="outline"
+            className={cn(
+              "size-11 shrink-0 rounded-full border-[#e5e7eb] bg-white p-0 shadow-md dark:border-zinc-700 dark:bg-zinc-900",
+              "hover:bg-[#f5f7fa] dark:hover:bg-zinc-800",
+            )}
+            onClick={togglePanelOpen}
+            aria-expanded={panelOpen}
+            aria-label={panelOpen ? "Hide voice setup" : "Show voice setup"}
+          >
+            {panelOpen ? <ChevronDown className="size-5 text-[#64748b]" /> : <ChevronUp className="size-5 text-[#64748b]" />}
+          </Button>
+          <Button
+            type="button"
+            className={cn(
+              "size-14 shrink-0 rounded-full p-0 shadow-lg transition-transform",
+              listening ? "animate-pulse bg-red-600 text-white hover:bg-red-600" : "bg-[#1a56db] text-white hover:bg-[#1648c0]",
+            )}
+            onClick={onMicClick}
+            aria-pressed={listening}
+            aria-label={listening ? "Stop admin voice listening" : "Start admin voice — navigate by speech"}
+          >
+            <Mic className="size-6" strokeWidth={1.75} aria-hidden />
+          </Button>
+        </div>
       </div>
     </div>
   );

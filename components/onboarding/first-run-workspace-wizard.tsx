@@ -25,6 +25,7 @@ import {
 import { apiErrorMessage } from "@/lib/api";
 import { normalizePrimaryRegionCode, type PrimaryRegionCode } from "@/lib/primary-region";
 import type { WorkspaceScenario } from "@/lib/types";
+import { socialConnectAlreadyLine, socialConnectProblemLine } from "@/lib/social-connect-toast";
 import { validateWorkspaceWebsiteUrl } from "@/lib/workspace-website-url";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
@@ -154,25 +155,31 @@ function FirstRunWorkspaceWizardContent({ push }: { push: (message: string, opts
     const oauthToastMs = 10_000;
     if (showToast) {
       if (toast === "linkedin_connected") {
-        push("LinkedIn connected. You can publish to LinkedIn from the pipeline.", { durationMs: oauthToastMs });
+        push("You’re connected to LinkedIn. You can publish approved posts from your workflow later.", { durationMs: oauthToastMs });
       } else if (toast === "linkedin_connected_pending") {
-        push("LinkedIn connected. Profile details are syncing due to temporary LinkedIn throttling.", {
+        push("LinkedIn is connected. Your profile details may take a little longer to appear — that’s normal.", {
           durationMs: oauthToastMs,
         });
       } else if (toast === "linkedin_failed") {
-        const short = detail && detail.length <= 100 ? detail.replace(/\s+/g, " ").trim() : "";
-        push(short ? `LinkedIn: ${short}` : "LinkedIn didn’t connect. Try again.", {
-          kind: "error",
-          durationMs: oauthToastMs,
-        });
+        push(
+          detail ? socialConnectProblemLine("LinkedIn", new Error(detail)) : "We couldn’t connect LinkedIn. Tap Connect and try again.",
+          {
+            kind: "error",
+            durationMs: oauthToastMs,
+          },
+        );
       } else if (toast === "meta_connected") {
-        push("Meta connected. Facebook and Instagram publishing is ready.", { durationMs: oauthToastMs });
+        push("Facebook and Instagram are connected. You’re ready to publish from your workflow.", { durationMs: oauthToastMs });
       } else if (toast === "meta_failed") {
-        const short = detail && detail.length <= 100 ? detail.replace(/\s+/g, " ").trim() : "";
-        push(short ? `Meta: ${short}` : "Meta didn’t connect. Try again.", {
-          kind: "error",
-          durationMs: oauthToastMs,
-        });
+        push(
+          detail
+            ? socialConnectProblemLine("Meta", new Error(detail))
+            : "We couldn’t connect Facebook or Instagram. Tap Connect and try again.",
+          {
+            kind: "error",
+            durationMs: oauthToastMs,
+          },
+        );
       }
     }
 
@@ -267,7 +274,7 @@ function FirstRunWorkspaceWizardContent({ push }: { push: (message: string, opts
     }
     setSaving(true);
     speakAssistantLine(
-      "I am creating your AI marketing agent. Please stay on this screen until the loading spinner disappears.",
+      "Saving your workspace to the server. This only takes a moment — AI strategy and calendar run automatically when you enter workflow.",
     );
     void setupWorkspace({
       companyName: companyName.trim(),
@@ -283,7 +290,7 @@ function FirstRunWorkspaceWizardContent({ push }: { push: (message: string, opts
         push("Saved. Continue to social connections, or skip and add them later in Settings.");
         setFirstWizardSession(true, "social");
         setStep("social");
-        speakAssistantLine("Agent is ready. Next, you can connect social accounts.");
+        speakAssistantLine("Workspace saved. Next, connect social accounts or skip.");
       })
       .catch((e: unknown) => {
         push(apiErrorMessage(e), { kind: "error", durationMs: 7000 });
@@ -304,12 +311,12 @@ function FirstRunWorkspaceWizardContent({ push }: { push: (message: string, opts
     setLinkedinBusy(true);
     setOAuthPostConnectReturn("/workspace-setup");
     try {
-      await connectLinkedin("_self");
+      const r = await connectLinkedin("_self");
+      if (r === "already_connected") {
+        push(socialConnectAlreadyLine("LinkedIn"), { kind: "success" });
+      }
     } catch (e: unknown) {
-      const raw = apiErrorMessage(e);
-      push(/\b429\b|rate[\s-]?limit/i.test(raw) ? "LinkedIn is busy. Try again shortly." : raw, {
-        kind: "error",
-      });
+      push(socialConnectProblemLine("LinkedIn", e), { kind: "error", durationMs: 9000 });
     } finally {
       setLinkedinBusy(false);
     }
@@ -319,12 +326,12 @@ function FirstRunWorkspaceWizardContent({ push }: { push: (message: string, opts
     setMetaBusy(true);
     setOAuthPostConnectReturn("/workspace-setup");
     try {
-      await connectMeta("_self");
+      const r = await connectMeta("_self");
+      if (r === "already_connected") {
+        push(socialConnectAlreadyLine("Meta"), { kind: "success" });
+      }
     } catch (e: unknown) {
-      const raw = apiErrorMessage(e);
-      push(/\b429\b|rate[\s-]?limit/i.test(raw) ? "Meta is busy. Try again shortly." : raw, {
-        kind: "error",
-      });
+      push(socialConnectProblemLine("Meta", e), { kind: "error", durationMs: 9000 });
     } finally {
       setMetaBusy(false);
     }

@@ -83,7 +83,7 @@ const ROUTE_RULES: RouteRule[] = [
   {
     href: "/strategy",
     label: "Strategy",
-    test: (s) => s.includes("strategy"),
+    test: (s) => s.includes("strategy") || /\bstrateg/.test(s),
   },
   {
     href: "/campaigns",

@@ -26,12 +26,24 @@ _FREE_MODEL_TIMEOUT_SECONDS = 360
 
 
 def _free_model_fallbacks() -> tuple[str, ...]:
-    """Free `:free` models queue on OpenRouter; off by default. Set OPENROUTER_FREE_FALLBACKS to opt in."""
+    """Free-tier OpenRouter models used after HTTP 402 / budget exhaustion.
+
+    - Set ``OPENROUTER_FREE_FALLBACKS`` to a comma-separated list to override.
+    - Set to ``none`` to disable all free-tier fallbacks (paid keys only).
+    - When unset / empty and an OpenRouter API key is configured, defaults to
+      ``openrouter/free`` (OpenRouter's free-model router) so agent runs can finish
+      without a topped-up wallet when direct Groq/Gemini keys are not set.
+    """
     raw = (getattr(settings, "openrouter_free_fallbacks", "") or "").strip()
-    if not raw:
+    if raw.lower() in ("none", "false", "0"):
         return ()
     parts = [p.strip() for p in raw.split(",") if p.strip()]
-    return tuple(parts)
+    if parts:
+        return tuple(parts)
+    or_key = (getattr(settings, "openrouter_api_key", "") or "").strip()
+    if or_key:
+        return ("openrouter/free",)
+    return ()
 
 
 def _parse_affordable_max_tokens(error_message: str) -> int | None:
@@ -511,6 +523,72 @@ class AIService:
                     continue
                 model = fallback_model(routed_task, self.models, model)
                 continue
+
+        # OpenRouter wallet empty / 402 — retry direct Groq+Gemini when configured. Inner call sites may pass
+        # prefer_groq_first=False / prefer_gemini=False; a second pass here avoids blocking on credits alone.
+        if last_error is not None and getattr(last_error, "status_code", None) == 402:
+            groq_key = (getattr(settings, "groq_api_key", "") or "").strip()
+            gemini_key = (getattr(settings, "google_ai_api_key", "") or "").strip()
+            if groq_key:
+                gr_started = time.time()
+                try:
+                    with self._gate:
+                        groq_after = self._call_groq(
+                            task_type=routed_task,
+                            prompt=prompt,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            response_format=response_format,
+                        )
+                    gtxt = groq_after.get("text", "").strip()
+                    if gtxt:
+                        gr_lat = int((time.time() - gr_started) * 1000)
+                        label = "groq/" + (getattr(settings, "groq_model", "") or "llama-3.3-70b-versatile").strip()
+                        logger.info(
+                            "AI recovered via Groq after OpenRouter budget error model=%s task=%s latency_ms=%s",
+                            label,
+                            routed_task,
+                            gr_lat,
+                        )
+                        return AIResult(
+                            text=gtxt,
+                            model_used=label,
+                            latency_ms=gr_lat,
+                            usage=groq_after.get("usage", {}),
+                            retries=retries,
+                        )
+                except AIServiceError as exc:
+                    logger.warning("Groq fallback after OpenRouter 402 failed: %s", str(exc)[:300])
+            if gemini_key:
+                gm_started = time.time()
+                try:
+                    with self._gate:
+                        gemini_after = self._call_gemini(
+                            prompt=prompt,
+                            task_type=routed_task,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            response_format=response_format,
+                        )
+                    mtx = gemini_after.get("text", "").strip()
+                    if mtx:
+                        gm_lat = int((time.time() - gm_started) * 1000)
+                        gname = f"google/{(getattr(settings, 'gemini_model', '') or 'gemini-2.0-flash').strip()}"
+                        logger.info(
+                            "AI recovered via Gemini after OpenRouter budget error model=%s task=%s latency_ms=%s",
+                            gname,
+                            routed_task,
+                            gm_lat,
+                        )
+                        return AIResult(
+                            text=mtx,
+                            model_used=gname,
+                            latency_ms=gm_lat,
+                            usage=gemini_after.get("usage", {}),
+                            retries=retries,
+                        )
+                except AIServiceError as exc:
+                    logger.warning("Gemini fallback after OpenRouter 402 failed: %s", str(exc)[:300])
 
         raise AIServiceError(f"All retry/fallback attempts exhausted. Last error: {last_error}")
 

@@ -228,7 +228,9 @@ export function WorkflowEndToEndFlow({ data }: { data: WorkflowGuideData }) {
         <div className="mb-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
           <p>
-            Social not connected. Connect LinkedIn and Meta in Settings to complete the flow.
+            Publish to both channels: connect <span className="font-medium">LinkedIn</span> and{" "}
+            <span className="font-medium">Meta</span> in Settings. AI workspace setup and drafting still run without both;
+            this only affects scheduling and publishing to every platform.
           </p>
         </div>
       ) : null}
