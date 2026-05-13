@@ -5,7 +5,7 @@ import logging
 import re
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 import requests
 from sqlalchemy import text
@@ -21,7 +21,40 @@ logger = logging.getLogger(__name__)
 
 def _looks_like_video_media(url: str) -> bool:
     lowered = url.lower().split("?", 1)[0]
-    return lowered.endswith((".mp4", ".mov", ".m4v", ".webm"))
+    if lowered.endswith((".mp4", ".mov", ".m4v", ".webm")):
+        return True
+    if "/video/upload/" in lowered:
+        return True
+    return False
+
+
+def _content_type_heads_video_or_image(url: str, *, timeout_seconds: int) -> str | None:
+    """Return 'video', 'image', or None when HEAD Content-Type cannot be inferred."""
+    try:
+        response = requests.head(url, timeout=timeout_seconds, allow_redirects=True)
+        response.raise_for_status()
+        ct = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if ct.startswith("video/"):
+            return "video"
+        if ct.startswith("image/"):
+            return "image"
+    except (requests.Timeout, requests.RequestException, ValueError):
+        return None
+    return None
+
+
+def _publish_media_kind(media_url: str | None, *, timeout_seconds: int) -> Literal["video", "image"] | None:
+    if not media_url:
+        return None
+    u = media_url.strip()
+    if not u:
+        return None
+    head = _content_type_heads_video_or_image(u, timeout_seconds=min(8, timeout_seconds))
+    if head == "video":
+        return "video"
+    if head == "image":
+        return "image"
+    return "video" if _looks_like_video_media(u) else "image"
 
 
 def _clean_post_text_hashtags(content_text: str, *, max_hashtags: int = 8) -> str:
@@ -51,7 +84,7 @@ def _clean_post_text_hashtags(content_text: str, *, max_hashtags: int = 8) -> st
     return f"{body}{spacer}{' '.join(tags)}".strip()
 
 
-def _retry_json(method: str, url: str, *, timeout_seconds: int, log_context: str, attempts: int = 3, **kwargs: Any) -> dict[str, Any]:
+def _retry_json(method: str, url: str, *, timeout_seconds: int, log_context: str, attempts: int = 2, **kwargs: Any) -> dict[str, Any]:
     delay = 1.0
     for i in range(attempts):
         try:
@@ -77,13 +110,13 @@ def _request_bytes(method: str, url: str, *, timeout_seconds: int, log_context: 
     return response.content, response.headers.get("Content-Type")
 
 
-def _register_linkedin_image_asset(
-    *, access_token: str, author_urn: str, timeout_seconds: int
+def _register_linkedin_asset(
+    *, access_token: str, author_urn: str, recipe: str, timeout_seconds: int
 ) -> tuple[str, str]:
     payload = {
         "registerUploadRequest": {
             "owner": author_urn,
-            "recipes": ["urn:li:digitalmediaRecipe:feedshare-image"],
+            "recipes": [recipe],
             "serviceRelationships": [{"relationshipType": "OWNER", "identifier": "urn:li:userGeneratedContent"}],
         }
     }
@@ -91,7 +124,7 @@ def _register_linkedin_image_asset(
         "POST",
         "https://api.linkedin.com/v2/assets?action=registerUpload",
         timeout_seconds=timeout_seconds,
-        log_context="linkedin register image upload",
+        log_context="linkedin register upload",
         headers={
             "Authorization": f"Bearer {access_token}",
             "LinkedIn-Version": "202405",
@@ -102,7 +135,7 @@ def _register_linkedin_image_asset(
     )
     value = data.get("value") if isinstance(data, dict) else None
     if not isinstance(value, dict):
-        raise RuntimeError("linkedin image upload registration failed")
+        raise RuntimeError("linkedin asset registration failed")
     asset = str(value.get("asset") or "").strip()
     upload_mechanism = value.get("uploadMechanism") if isinstance(value, dict) else None
     upload_req = (
@@ -112,17 +145,37 @@ def _register_linkedin_image_asset(
     )
     upload_url = str(upload_req.get("uploadUrl") or "").strip() if isinstance(upload_req, dict) else ""
     if not asset or not upload_url:
-        raise RuntimeError("linkedin image upload URL missing")
+        raise RuntimeError("linkedin asset upload registration failed — missing upload URL")
     return asset, upload_url
 
 
-def _upload_linkedin_image_from_url(*, media_url: str, upload_url: str, timeout_seconds: int) -> None:
-    raw, media_type = _request_bytes("GET", media_url, timeout_seconds=timeout_seconds, log_context="download publish image")
+LINKEDIN_RECIPE_IMAGE = "urn:li:digitalmediaRecipe:feedshare-image"
+LINKEDIN_RECIPE_VIDEO = "urn:li:digitalmediaRecipe:feedshare-video"
+
+
+def _upload_linkedin_binary_from_url(
+    *,
+    media_url: str,
+    upload_url: str,
+    timeout_seconds: int,
+    allowed_prefixes: tuple[str, ...],
+) -> None:
+    raw, media_type = _request_bytes("GET", media_url, timeout_seconds=timeout_seconds, log_context="download publish media")
     if not raw:
-        raise RuntimeError("linkedin image is empty")
+        raise RuntimeError("linkedin media is empty")
     ct = (media_type or "").split(";", 1)[0].strip().lower()
-    if ct and not ct.startswith("image/"):
-        raise RuntimeError(f"linkedin image publish requires image URL, got '{ct}'")
+    if ct:
+        ok = False
+        for p in allowed_prefixes:
+            if p.endswith("*") and ct.startswith(p[:-1]):
+                ok = True
+                break
+            if ct.startswith(p):
+                ok = True
+                break
+        if not ok:
+            parts = ", ".join(allowed_prefixes)
+            raise RuntimeError(f"linkedin expects {parts} media, got '{ct}'")
     try:
         response = requests.put(
             upload_url,
@@ -132,13 +185,53 @@ def _upload_linkedin_image_from_url(*, media_url: str, upload_url: str, timeout_
         )
         response.raise_for_status()
     except requests.Timeout as exc:
-        raise RuntimeError("linkedin image upload timed out") from exc
+        raise RuntimeError("linkedin media upload timed out") from exc
     except requests.RequestException as exc:
         detail = exc.response.text[:500] if exc.response is not None else str(exc)
-        raise RuntimeError(f"linkedin image upload failed: {detail}") from exc
+        raise RuntimeError(f"linkedin media upload failed: {detail}") from exc
 
 
-def _publish_to_linkedin(*, content: str, media_url: str | None, access_token: str, author_urn: str, timeout_seconds: int) -> dict[str, Any]:
+def _linkedin_wait_asset_ready_simple(
+    *, access_token: str, asset_urn: str, timeout_seconds: int, max_wait_seconds: int = 120
+) -> None:
+    """Poll asset status until publishable or timeout (video processing can lag)."""
+    asset_id = asset_urn.rsplit(":", 1)[-1].strip()
+    if not asset_id:
+        raise RuntimeError("linkedin asset urn invalid")
+    deadline = time.time() + max_wait_seconds
+    last_state = "UNKNOWN"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "LinkedIn-Version": "202405",
+        "X-Restli-Protocol-Version": "2.0.0",
+    }
+    while time.time() < deadline:
+        data = _retry_json(
+            "GET",
+            f"https://api.linkedin.com/v2/assets/{asset_id}",
+            timeout_seconds=timeout_seconds,
+            attempts=2,
+            log_context="linkedin asset status",
+            headers=headers,
+        )
+        status_obj = data.get("status")
+        status_str = str(status_obj).upper() if status_obj is not None else ""
+        if "ALLOWED" in status_str or "AVAILABLE" in status_str or "READY" in status_str:
+            return
+        if "BLOCKED" in status_str or "FAILED" in status_str:
+            raise RuntimeError(f"LinkedIn rejected the media ({status_str})")
+        last_state = status_str or last_state
+        time.sleep(1.5)
+
+
+def _publish_to_linkedin(
+    *,
+    content: str,
+    media_url: str | None,
+    access_token: str,
+    author_urn: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
     cleaned_content = _clean_post_text_hashtags(content)[:3000]
     payload = {
         "author": author_urn,
@@ -152,13 +245,36 @@ def _publish_to_linkedin(*, content: str, media_url: str | None, access_token: s
         "visibility": {"com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"},
     }
     if media_url:
-        asset_urn, upload_url = _register_linkedin_image_asset(
+        media_kind = _publish_media_kind(media_url, timeout_seconds=timeout_seconds)
+        if media_kind == "video":
+            recipe = LINKEDIN_RECIPE_VIDEO
+            prefixes = ("video/",)
+            category = "VIDEO"
+            max_wait_asset = min(180, timeout_seconds + 120)
+        else:
+            recipe = LINKEDIN_RECIPE_IMAGE
+            prefixes = ("image/",)
+            category = "IMAGE"
+            max_wait_asset = 25
+        asset_urn, upload_url = _register_linkedin_asset(
             access_token=access_token,
             author_urn=author_urn,
+            recipe=recipe,
             timeout_seconds=timeout_seconds,
         )
-        _upload_linkedin_image_from_url(media_url=media_url, upload_url=upload_url, timeout_seconds=timeout_seconds)
-        payload["specificContent"]["com.linkedin.ugc.ShareContent"]["shareMediaCategory"] = "IMAGE"
+        _upload_linkedin_binary_from_url(
+            media_url=media_url,
+            upload_url=upload_url,
+            timeout_seconds=timeout_seconds,
+            allowed_prefixes=prefixes,
+        )
+        _linkedin_wait_asset_ready_simple(
+            access_token=access_token,
+            asset_urn=asset_urn,
+            timeout_seconds=timeout_seconds,
+            max_wait_seconds=max_wait_asset,
+        )
+        payload["specificContent"]["com.linkedin.ugc.ShareContent"]["shareMediaCategory"] = category
         payload["specificContent"]["com.linkedin.ugc.ShareContent"]["media"] = [{"status": "READY", "media": asset_urn}]
     return _retry_json(
         "POST",
@@ -240,6 +356,19 @@ def _publish_to_meta_page(
 ) -> dict[str, Any]:
     text_with_hashtags = _clean_post_text_hashtags(content)
     if media_url:
+        mk = _publish_media_kind(media_url, timeout_seconds=timeout_seconds)
+        if mk == "video":
+            return _retry_json(
+                "POST",
+                f"https://graph.facebook.com/v22.0/{page_id}/videos",
+                timeout_seconds=timeout_seconds,
+                log_context="meta page video publish",
+                data={
+                    "file_url": media_url,
+                    "description": text_with_hashtags,
+                    "access_token": page_token,
+                },
+            )
         return _retry_json(
             "POST",
             f"https://graph.facebook.com/v22.0/{page_id}/photos",
@@ -382,6 +511,13 @@ def publish_post(db: Session, *, post_id: str, user_id: str, workspace_id: str) 
                 _validate_meta_page_token(page_token=page_token, timeout_seconds=s.request_timeout_seconds)
                 ig_id = str(account.get("meta_ig_id") or "").strip()
                 if ig_id and post.get("media_url"):
+                    murl = str(post["media_url"])
+                    media_kind_fb = _publish_media_kind(murl, timeout_seconds=s.request_timeout_seconds)
+                    if media_kind_fb == "video":
+                        raise RuntimeError(
+                            "Instagram feed publishing needs a static image. Use Facebook or LinkedIn for video "
+                            "(or swap to an image thumbnail for Instagram)."
+                        )
                     response = _publish_to_instagram(
                         content=str(post["content"]),
                         image_url=str(post["media_url"]),
@@ -495,10 +631,10 @@ def publish_flowpilot_workspace_item(
         if ch == "instagram":
             if not resolved_media:
                 return PublishResult(False, media_warning or "Instagram requires image media with a public HTTPS URL")
-            if _looks_like_video_media(resolved_media):
+            if _publish_media_kind(resolved_media, timeout_seconds=s.request_timeout_seconds) == "video":
                 return PublishResult(
                     False,
-                    "Instagram video publishing is not enabled yet. Please use an image URL for now.",
+                    "Instagram feed posts here need an image URL. Publish video to Facebook or LinkedIn instead.",
                 )
             if not ig_id:
                 return PublishResult(

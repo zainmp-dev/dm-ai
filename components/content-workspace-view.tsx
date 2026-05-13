@@ -44,13 +44,19 @@ function formatElapsedSec(sec: number): string {
   return `${m}m ${s.toString().padStart(2, "0")}s`;
 }
 
-const APPROVAL_PLATFORM_OPTIONS = [
-  { id: "linkedin", disabled: false },
-  { id: "instagram", disabled: false },
-  { id: "facebook", disabled: false },
-  { id: "twitter", disabled: false },
-] as const;
-const ACTIVE_APPROVAL_PLATFORMS = APPROVAL_PLATFORM_OPTIONS.filter((platform) => !platform.disabled).map((platform) => platform.id);
+type ApprovalPlatformOption = {
+  id: PublishingPlatform;
+  /** Shown but not selectable yet (no OAuth / API path). */
+  comingSoon?: boolean;
+};
+
+const APPROVAL_PLATFORM_OPTIONS: ApprovalPlatformOption[] = [
+  { id: "linkedin" },
+  { id: "instagram" },
+  { id: "facebook" },
+  { id: "twitter", comingSoon: true },
+];
+const ACTIVE_APPROVAL_PLATFORMS = APPROVAL_PLATFORM_OPTIONS.filter((p) => !p.comingSoon).map((p) => p.id);
 
 const TIME_OPTIONS = [
   { label: "Now + 30 min", value: "30m" },
@@ -257,9 +263,9 @@ export function ContentWorkspaceView() {
     return <p className="text-sm text-zinc-500">Workspace unavailable.</p>;
   }
 
-  const connectedPostNowPlatforms = APPROVAL_PLATFORM_OPTIONS
-    .filter((o) => !o.disabled && isPlatformConnected(workspace.integrations, o.id))
-    .map((o) => o.id as PublishingPlatform);
+  const connectedPostNowPlatforms = APPROVAL_PLATFORM_OPTIONS.filter(
+    (o) => !o.comingSoon && isPlatformConnected(workspace.integrations, o.id),
+  ).map((o) => o.id);
 
   const openPostNow = (target: "manual-create" | "edit", itemId?: string) => {
     const preferred = workspace.preferences.defaultPlatform;
@@ -758,7 +764,20 @@ export function ContentWorkspaceView() {
               />
               <span className="font-medium">All connected platforms</span>
             </label>
-            {APPROVAL_PLATFORM_OPTIONS.filter((o) => !o.disabled).map((option) => {
+            {APPROVAL_PLATFORM_OPTIONS.map((option) => {
+              if (option.comingSoon) {
+                return (
+                  <label
+                    key={option.id}
+                    title="Coming soon — publishing to X is not available yet"
+                    className="flex cursor-not-allowed items-center gap-3 rounded-xl border border-zinc-100 bg-zinc-50 px-3 py-2.5 text-sm opacity-65 dark:border-zinc-800 dark:bg-zinc-900/40"
+                  >
+                    <input type="checkbox" className="text-zinc-900" checked={false} disabled readOnly />
+                    <span className="font-medium">{platformLabel(option.id)}</span>
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">Coming soon</span>
+                  </label>
+                );
+              }
               const connected = isPlatformConnected(workspace.integrations, option.id);
               return (
                 <label
@@ -1492,13 +1511,21 @@ export function ContentWorkspaceView() {
               />
               All available
             </label>
-            {APPROVAL_PLATFORM_OPTIONS.map((option) => {
-              const connected = isPlatformConnected(workspace.integrations, option.id);
-              return (
+            {APPROVAL_PLATFORM_OPTIONS.map((option) =>
+              option.comingSoon ? (
                 <label
                   key={option.id}
-                  className="flex flex-col gap-1 rounded-xl border border-zinc-200 px-3 py-2 text-sm text-zinc-700"
+                  title="Coming soon — X publishing is not available yet"
+                  className="flex flex-col gap-1 rounded-xl border border-dashed border-zinc-200 px-3 py-2 text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400"
                 >
+                  <span className="flex items-center gap-2">
+                    <input type="checkbox" disabled checked={false} readOnly />
+                    {platformLabel(option.id)}
+                  </span>
+                  <span className="pl-6 text-xs">Coming soon</span>
+                </label>
+              ) : (
+                <label key={option.id} className="flex flex-col gap-1 rounded-xl border border-zinc-200 px-3 py-2 text-sm text-zinc-700">
                   <span className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -1511,14 +1538,14 @@ export function ContentWorkspaceView() {
                     />
                     {platformLabel(option.id)}
                   </span>
-                  {!connected ? (
-                    <span className="pl-6 text-xs font-normal text-amber-800">
+                  {!isPlatformConnected(workspace.integrations, option.id) ? (
+                    <span className="pl-6 text-xs font-normal text-amber-800 dark:text-amber-200/90">
                       Not connected — add credentials in Settings, then try again.
                     </span>
                   ) : null}
                 </label>
-              );
-            })}
+              ),
+            )}
           </div>
           <DialogFooter className="gap-2 sm:justify-end">
             <Button

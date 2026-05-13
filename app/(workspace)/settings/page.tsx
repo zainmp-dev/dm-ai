@@ -528,9 +528,18 @@ function SettingsContent() {
                         ) : null}
                       </div>
                     ) : (
-                      <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-400">
-                        Business Page plus Instagram Business, linked in Meta Business Suite.
-                      </p>
+                      <div className="mt-2 space-y-2 text-sm text-zinc-600 dark:text-zinc-400">
+                        <p>
+                          Connects Facebook <strong className="font-medium text-zinc-800 dark:text-zinc-200">Page</strong> posts and Instagram{" "}
+                          <strong className="font-medium text-zinc-800 dark:text-zinc-200">Business/Creator</strong> (linked to that Page).
+                          Personal profiles alone cannot publish through the Meta API—we cannot auto-create a business set-up for you; create a Page in Meta
+                          Business Suite and link IG there first.
+                        </p>
+                        <p className="text-xs leading-relaxed text-zinc-500 dark:text-zinc-500">
+                          OAuth completes in seconds if your Meta app (<code className="rounded bg-zinc-100 px-1 font-mono dark:bg-zinc-800">META_APP_ID</code> /
+                          secret) matches the dashboard redirect URL. If connect fails with &quot;no Pages&quot;, assign yourself Admin on a Page, then reconnect.
+                        </p>
+                      </div>
                     )}
                   </div>
                 </div>

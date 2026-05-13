@@ -29,13 +29,13 @@ import {
 import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
 
-const PLATFORM_OPTIONS: { id: PublishingPlatform; label: string; disabled?: boolean }[] = [
+const PLATFORM_OPTIONS: { id: PublishingPlatform; label: string; comingSoon?: boolean }[] = [
   { id: "linkedin", label: "LinkedIn" },
   { id: "instagram", label: "Instagram" },
   { id: "facebook", label: "Facebook" },
-  { id: "twitter", label: "Twitter / X" },
+  { id: "twitter", label: "Twitter / X", comingSoon: true },
 ];
-const ACTIVE_PLATFORM_OPTIONS = PLATFORM_OPTIONS.filter((opt) => !opt.disabled);
+const ACTIVE_PLATFORM_OPTIONS = PLATFORM_OPTIONS.filter((opt) => !opt.comingSoon);
 
 const STATUS_FILTERS = ["ALL", "PENDING", "APPROVED", "REJECTED", "PUBLISHED"] as const;
 const STATUS_FILTER_LABELS: Record<(typeof STATUS_FILTERS)[number], string> = {
@@ -187,7 +187,7 @@ export function ApprovalTab() {
     }
     const needsMedia = postNow && selectedPlatforms.includes("instagram");
     if (needsMedia && !draftMediaPreview.trim()) {
-      return "Instagram requires media. Add an image or video before Post Now.";
+      return "Instagram Feed needs image media here. Add a public image URL before Post Now.";
     }
     return null;
   };
@@ -231,7 +231,7 @@ export function ApprovalTab() {
 
   const togglePlatform = (platform: PublishingPlatform) => {
     const option = PLATFORM_OPTIONS.find((opt) => opt.id === platform);
-    if (option?.disabled) return;
+    if (option?.comingSoon) return;
     setAllPlatformsChecked(false);
     setSelectedPlatforms((current) => (current.includes(platform) ? current.filter((id) => id !== platform) : [...current, platform]));
   };
@@ -615,21 +615,35 @@ export function ApprovalTab() {
                     </span>
                   </label>
                   <div className="grid gap-2 sm:grid-cols-2">
-                    {PLATFORM_OPTIONS.map((opt) => (
-                      <label
-                        key={opt.id}
-                        className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-zinc-200 bg-white px-3 py-2.5 text-sm text-zinc-800 shadow-sm hover:border-zinc-300"
-                      >
-                        <input
-                          type="checkbox"
-                          className="size-4 rounded border-zinc-300 text-zinc-900"
-                          checked={selectedPlatforms.includes(opt.id)}
-                          disabled={isReadonlyItem}
-                          onChange={() => togglePlatform(opt.id)}
-                        />
-                        {opt.label}
-                      </label>
-                    ))}
+                    {PLATFORM_OPTIONS.map((opt) =>
+                      opt.comingSoon ? (
+                        <label
+                          key={opt.id}
+                          title="Coming soon — X publishing is not wired yet"
+                          className="flex cursor-not-allowed items-center gap-2.5 rounded-lg border border-dashed border-zinc-200 bg-zinc-50/90 px-3 py-2.5 text-sm text-zinc-500 opacity-85 dark:border-zinc-700 dark:bg-zinc-900/30 dark:text-zinc-400"
+                        >
+                          <input type="checkbox" className="size-4 rounded border-zinc-300 text-zinc-900" checked={false} disabled readOnly />
+                          <span>
+                            {opt.label}
+                            <span className="ml-2 text-xs font-normal">Coming soon</span>
+                          </span>
+                        </label>
+                      ) : (
+                        <label
+                          key={opt.id}
+                          className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-zinc-200 bg-white px-3 py-2.5 text-sm text-zinc-800 shadow-sm hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-100 dark:hover:border-zinc-600"
+                        >
+                          <input
+                            type="checkbox"
+                            className="size-4 rounded border-zinc-300 text-zinc-900"
+                            checked={selectedPlatforms.includes(opt.id)}
+                            disabled={isReadonlyItem}
+                            onChange={() => togglePlatform(opt.id)}
+                          />
+                          {opt.label}
+                        </label>
+                      ),
+                    )}
                   </div>
                 </div>
               </div>

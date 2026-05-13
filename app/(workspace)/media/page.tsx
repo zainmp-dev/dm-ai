@@ -1,9 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Check, ImageIcon, Link2, Trash2, Video } from "lucide-react";
+import { Check, ImageIcon, Link2, Maximize2, Trash2, Video } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -51,6 +52,12 @@ export default function MediaPage() {
   const [linkBusy, setLinkBusy] = useState(false);
   /** When preview fails, remember which asset+URL pair failed so remount clears after URL fix. */
   const [brokenPreview, setBrokenPreview] = useState<Record<string, string>>({});
+  const [lightboxAsset, setLightboxAsset] = useState<{
+    id: string;
+    mediaUrl: string;
+    name: string;
+    mediaType: MediaType;
+  } | null>(null);
   const mediaLibrary = workspace?.mediaLibrary ?? [];
 
   const usageByMedia = useMemo(() => {
@@ -167,13 +174,43 @@ export default function MediaPage() {
 
   return (
     <div className="w-full min-w-0 space-y-6">
+      <Dialog open={Boolean(lightboxAsset)} onOpenChange={(open) => !open && setLightboxAsset(null)}>
+        <DialogContent className="max-h-[92dvh] max-w-5xl gap-4 overflow-hidden border-zinc-200 p-5 dark:border-zinc-800 dark:bg-zinc-950">
+          {lightboxAsset ? (
+            <>
+              <DialogTitle className="truncate pr-8 text-base font-semibold text-zinc-900 dark:text-zinc-50">
+                {lightboxAsset.name}
+              </DialogTitle>
+              <div className="flex max-h-[min(76dvh,720px)] w-full items-center justify-center overflow-auto rounded-xl bg-zinc-950 p-3">
+                {isVideoAsset(lightboxAsset.mediaUrl) ? (
+                  // eslint-disable-next-line jsx-a11y/media-has-caption
+                  <video
+                    src={lightboxAsset.mediaUrl}
+                    controls
+                    playsInline
+                    className="max-h-[min(72dvh,680px)] w-full max-w-full rounded-lg bg-black object-contain"
+                  />
+                ) : (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={lightboxAsset.mediaUrl}
+                    alt=""
+                    className="max-h-[min(72dvh,680px)] w-full max-w-full object-contain"
+                  />
+                )}
+              </div>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
       <Card className="rounded-2xl border-zinc-200 shadow-sm dark:border-zinc-800">
         <CardHeader>
           <CardTitle className="text-base">Media setup</CardTitle>
           <CardDescription>
             {workspace.cloudinaryUploadsReady
               ? "Upload from your computer. Files go to your Cloudinary folder and appear below for use in content."
-              : "Upload from your computer. Files are stored on this app&apos;s server and listed below for use in content."}
+              : "Upload from your computer. Files are stored on this app's server and listed below for use in content."}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-2">
@@ -248,8 +285,8 @@ export default function MediaPage() {
             <Button
               type="button"
               size="sm"
-              variant="destructive"
-              className="rounded-lg"
+              variant="outline"
+              className="rounded-lg text-red-700 hover:bg-red-50 dark:border-zinc-600 dark:text-red-400 dark:hover:bg-red-950/40"
               onClick={() => void deleteSelected()}
               disabled={selectedIds.length === 0}
             >
@@ -281,7 +318,28 @@ export default function MediaPage() {
                       selectedIds.includes(asset.id) && "ring-2 ring-blue-500 dark:ring-blue-400",
                     )}
                   >
-                    <div className="relative aspect-video w-full bg-zinc-100 dark:bg-zinc-800">
+                    <button
+                      type="button"
+                      disabled={previewBroken || !asset.mediaUrl}
+                      className={cn(
+                        "relative aspect-video w-full overflow-hidden bg-zinc-100 text-left outline-none ring-inset transition dark:bg-zinc-800",
+                        !previewBroken &&
+                          asset.mediaUrl &&
+                          "cursor-zoom-in hover:brightness-[0.97] dark:hover:brightness-110 focus-visible:ring-2 focus-visible:ring-blue-500 dark:focus-visible:ring-blue-400",
+                        previewBroken && "cursor-not-allowed opacity-95",
+                      )}
+                      onClick={() => {
+                        if (previewBroken || !asset.mediaUrl) return;
+                        setLightboxAsset({
+                          id: asset.id,
+                          mediaUrl: asset.mediaUrl,
+                          name: asset.name,
+                          mediaType: asset.mediaType,
+                        });
+                      }}
+                      aria-label={previewBroken ? "Preview unavailable" : `Zoom preview · ${asset.name}`}
+                      title={previewBroken ? undefined : "Click for larger preview"}
+                    >
                       {previewBroken ? (
                         <div className="flex h-full flex-col items-center justify-center gap-1 px-4 text-center">
                           <ImageIcon className="size-8 text-zinc-400" />
@@ -308,11 +366,19 @@ export default function MediaPage() {
                           onError={() => setBrokenPreview((p) => ({ ...p, [asset.id]: asset.mediaUrl }))}
                         />
                       )}
-                      <div className="absolute left-2 top-2 flex items-center gap-1 rounded-lg bg-white/90 px-2 py-0.5 text-[10px] font-medium text-zinc-800 shadow dark:bg-zinc-900/90 dark:text-zinc-100">
+                      <div className="pointer-events-none absolute left-2 top-2 flex items-center gap-1 rounded-lg bg-white/90 px-2 py-0.5 text-[10px] font-medium text-zinc-800 shadow dark:bg-zinc-900/90 dark:text-zinc-100">
                         {isVideoAsset(asset.mediaUrl) ? <Video className="size-3" /> : <ImageIcon className="size-3" />}
                         {asset.mediaType}
                       </div>
-                    </div>
+                      {!previewBroken && asset.mediaUrl ? (
+                        <span
+                          className="pointer-events-none absolute bottom-2 right-2 flex items-center rounded-md bg-black/50 p-1.5 text-white opacity-0 shadow backdrop-blur-sm transition group-hover:opacity-100"
+                          aria-hidden
+                        >
+                          <Maximize2 className="size-3.5" />
+                        </span>
+                      ) : null}
+                    </button>
                     <div className="space-y-2 p-3">
                       <div className="flex items-center justify-between gap-2">
                         <label className="flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
@@ -359,16 +425,19 @@ export default function MediaPage() {
                           <Link2 className="size-3.5" />
                         </Button>
                       </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="destructive"
-                        className="w-full gap-1.5 rounded-lg"
-                        onClick={() => void deleteAsset(asset.id)}
-                      >
-                        <Trash2 className="size-3.5" />
-                        Remove from library
-                      </Button>
+                      <div className="flex justify-end pt-1">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 rounded-lg px-3 text-xs text-zinc-600 hover:bg-red-50 hover:text-red-800 dark:text-zinc-400 dark:hover:bg-red-950/40 dark:hover:text-red-300"
+                          onClick={() => void deleteAsset(asset.id)}
+                          title="Remove from library"
+                        >
+                          <Trash2 className="mr-1.5 size-3.5" />
+                          Remove
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 );
