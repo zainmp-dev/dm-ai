@@ -785,6 +785,78 @@ def run_review_agent(posts: list[dict[str, str | None]]) -> list[dict[str, str |
     return _normalize_posts(result)
 
 
+def _run_workspace_strategy_step(
+    *,
+    company_name: str,
+    website: str,
+    scenario: str,
+    competitors: list[dict[str, str]],
+    ai_model: str | None,
+    primary_region: str,
+) -> tuple[dict[str, Any], str]:
+    agent_started = time.time()
+    logger.info("agents.flow agent=strategy step=start")
+    try:
+        strategy_result, strategy_model = run_workspace_strategy_agent(
+            company_name=company_name,
+            website=website,
+            scenario=scenario,
+            competitors=competitors,
+            ai_model=ai_model,
+            primary_region=primary_region,
+        )
+    except AgentError as exc:
+        logger.warning("agents.flow agent=strategy step=fail err=%s", str(exc)[:200])
+        raise AgentError(f"Workspace strategy generation failed: {exc}") from exc
+    logger.info(
+        "agents.flow agent=strategy step=ok elapsed_ms=%s model=%s competitors=%s",
+        int((time.time() - agent_started) * 1000),
+        strategy_model,
+        _count_named_competitors(strategy_result),
+    )
+    return strategy_result, strategy_model
+
+
+def generate_workspace_strategy_only(
+    *,
+    company_name: str,
+    website: str,
+    scenario: str,
+    competitors: list[dict[str, str]],
+    ai_model: str | None = None,
+    primary_region: str = "uae-india",
+) -> dict[str, Any]:
+    """Agent 1 only — strategy + competitor discovery. No content calendar LLM pass."""
+    flow_started = time.time()
+    logger.info(
+        "agents.strategy_only start company=%s scenario=%s region=%s requested_model=%s",
+        (company_name or "")[:60],
+        scenario,
+        primary_region,
+        ai_model or "(auto)",
+    )
+    strategy_result, strategy_model = _run_workspace_strategy_step(
+        company_name=company_name,
+        website=website,
+        scenario=scenario,
+        competitors=competitors,
+        ai_model=ai_model,
+        primary_region=primary_region,
+    )
+    result = {**strategy_result, "content": []}
+    normalized = _normalize_workspace_research(result, company_name, website, scenario, competitors)
+    normalized["_ai_model_used"] = strategy_model
+    normalized["_ai_model_requested"] = ai_model
+    normalized["_ai_models_by_step"] = {"strategy": strategy_model or "", "content": ""}
+    logger.info(
+        "agents.strategy_only done elapsed_ms=%s model=%s competitors=%s",
+        int((time.time() - flow_started) * 1000),
+        strategy_model,
+        len(normalized.get("competitors", [])),
+    )
+    return normalized
+
+
 def generate_workspace_research(
     *,
     company_name: str,
@@ -805,29 +877,14 @@ def generate_workspace_research(
         ai_model or "(auto)",
     )
 
-    strategy_model: str | None = None
-    try:
-        agent_started = time.time()
-        logger.info("agents.flow agent=strategy step=start")
-        strategy_result, strategy_model = run_workspace_strategy_agent(
-            company_name=company_name,
-            website=website,
-            scenario=scenario,
-            competitors=competitors,
-            ai_model=ai_model,
-            primary_region=primary_region,
-        )
-        logger.info(
-            "agents.flow agent=strategy step=ok elapsed_ms=%s model=%s competitors=%s",
-            int((time.time() - agent_started) * 1000),
-            strategy_model,
-            _count_named_competitors(strategy_result),
-        )
-    except AgentError as exc:
-        logger.warning("agents.flow agent=strategy step=fail err=%s", str(exc)[:200])
-        # Do not silently return synthetic strategy data; callers should surface a clear
-        # failure so users can retry with a working model/key and get real Agent outputs.
-        raise AgentError(f"Workspace strategy generation failed: {exc}") from exc
+    strategy_result, strategy_model = _run_workspace_strategy_step(
+        company_name=company_name,
+        website=website,
+        scenario=scenario,
+        competitors=competitors,
+        ai_model=ai_model,
+        primary_region=primary_region,
+    )
 
     content_model: str | None = None
     content_extras: dict[str, Any] = {}

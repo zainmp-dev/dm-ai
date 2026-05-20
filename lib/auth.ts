@@ -25,9 +25,18 @@ export interface AuthUser {
   role?: AuthRole;
 }
 
+function normalizeAuthRoleKey(raw: string | null | undefined): string {
+  return String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/-/g, "_");
+}
+
 export function isPlatformStaffRole(role: string | null | undefined): boolean {
-  if (!role) return false;
-  return (PLATFORM_STAFF_ROLES as readonly string[]).includes(role);
+  if (role == null || String(role).trim() === "") return false;
+  const n = normalizeAuthRoleKey(role);
+  return (PLATFORM_STAFF_ROLES as readonly string[]).includes(n);
 }
 
 /** Operators route into `/admin`; end-users stay in workspace dashboards. */
@@ -74,8 +83,25 @@ export function getAuthUser(): AuthUser | null {
   const raw = localStorage.getItem(USER_KEY);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as AuthUser;
+    const parsed = JSON.parse(raw) as AuthUser;
+    const r = parsed.role;
+    if (r != null && String(r).trim() !== "") {
+      const key = normalizeAuthRoleKey(r);
+      return { ...parsed, role: key as AuthUser["role"] };
+    }
+    return parsed;
   } catch {
     return null;
   }
+}
+
+export function patchAuthUser(updates: Partial<Pick<AuthUser, "name" | "email" | "role">>): void {
+  if (typeof window === "undefined") return;
+  const cur = getAuthUser();
+  if (!cur) return;
+  const next: AuthUser = { ...cur, ...updates };
+  if (updates.role != null && String(updates.role).trim() !== "") {
+    next.role = normalizeAuthRoleKey(String(updates.role)) as AuthUser["role"];
+  }
+  localStorage.setItem(USER_KEY, JSON.stringify(next));
 }

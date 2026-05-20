@@ -7,6 +7,7 @@ import {
   apiConnectMeta,
   apiDeleteWorkspace,
   apiErrorMessage,
+  apiGetAuthSession,
   apiGetWorkspace,
   type MasterContentSuggestion,
   apiPatchWorkspaceResearch,
@@ -22,7 +23,7 @@ import {
   apiUpdateProfile,
 } from "@/lib/api";
 import { DEFAULT_AI_MODEL, normalizeStoredAiModel, buildGlobalAiModelTryOrder } from "@/lib/ai-models";
-import { getAuthUser } from "@/lib/auth";
+import { getAuthToken, getAuthUser, patchAuthUser } from "@/lib/auth";
 import { normalizePrimaryRegionCode } from "@/lib/primary-region";
 import {
   ACTIVE_WORKSPACE_STORAGE_KEY,
@@ -30,6 +31,7 @@ import {
   clearAllWorkspacePresetStorage,
 } from "@/lib/workspace-local-storage";
 import type { MediaType, PostingPreferences, PublishingPlatform, UserProfile, WorkspaceScenario, WorkspaceSnapshot } from "@/lib/types";
+import { useAiPipelineJobStore } from "@/lib/ai-pipeline-job-store";
 import { signalAiWorkflowComplete } from "@/lib/ai-completion-signal";
 import { isAiProviderRetryableError } from "@/lib/api-errors";
 
@@ -189,12 +191,15 @@ interface WorkspaceStore {
   selectedAiModel: string;
   /** Set to true after the last AI run used a free OpenRouter fallback (paid credits exhausted). Reset on next paid run. */
   lastRunUsedFreeModel: boolean;
-  /** True while the first-login assistant wizard is mounted (hides main app chrome on /workspace-setup). */
+  /** True while the first-login assistant wizard is mounted (hides main app chrome on Settings → Workspace). */
   firstRunOnboardingFocused: boolean;
   setFirstRunOnboardingFocused: (value: boolean) => void;
   sidebarCollapsed: boolean;
   setSelectedAiModel: (model: string) => void;
   setSidebarCollapsed: (value: boolean) => void;
+  /** Bumped after `syncAuthSessionFromServer` updates local role/name from GET /auth/session (re-renders staff UI). */
+  authSessionRevision: number;
+  syncAuthSessionFromServer: () => Promise<void>;
   loadWorkspaceSetups: () => void;
   /**
    * POST the preset to the server workspace and refresh the snapshot (does not clear AI output).
@@ -279,6 +284,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   firstRunOnboardingFocused: false,
   setFirstRunOnboardingFocused: (firstRunOnboardingFocused) => set({ firstRunOnboardingFocused }),
   sidebarCollapsed: false,
+  authSessionRevision: 0,
   setSelectedAiModel: (model) => {
     const m = normalizeStoredAiModel(model);
     if (typeof window !== "undefined") {
@@ -294,6 +300,21 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     set({ selectedAiModel: m, workspaceSetups });
   },
   setSidebarCollapsed: (value) => set({ sidebarCollapsed: value }),
+  syncAuthSessionFromServer: async () => {
+    if (typeof window === "undefined") return;
+    if (!getAuthToken()) return;
+    try {
+      const sess = await apiGetAuthSession();
+      patchAuthUser({
+        name: sess.name,
+        email: sess.email,
+        role: sess.role,
+      });
+      set((s) => ({ authSessionRevision: s.authSessionRevision + 1 }));
+    } catch {
+      /* invalid token or offline */
+    }
+  },
   loadWorkspaceSetups: () => {
     const { setups, activeWorkspaceId } = readStoredWorkspaceSetups();
     set({ workspaceSetups: setups, activeWorkspaceId });
@@ -377,6 +398,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
     if (typeof window !== "undefined") {
       clearAllWorkspacePresetStorage();
     }
+    useAiPipelineJobStore.getState().resetAll();
     set({
       workspace: null,
       workspaceSetups: [],
@@ -390,6 +412,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   clearAiOutputs: async () => {
     try {
       const snapshot = await apiPostClearAiOutputs();
+      useAiPipelineJobStore.getState().resetBootstrapClaim();
       set({ workspace: snapshot, error: null });
     } catch (e) {
       const message = apiErrorMessage(e);
@@ -459,6 +482,8 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   clearWorkspaceError: () => set({ error: null }),
   generateStrategy: async (companyName, website, options) => {
     const competitors = options?.competitors ?? [];
+    const job = useAiPipelineJobStore.getState();
+    job.beginStrategy();
     try {
       const data = await invokeWithGlobalAiFallbacks({
         preferredModel: get().selectedAiModel,
@@ -478,9 +503,13 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
       const message = apiErrorMessage(e);
       set({ error: message });
       throw new Error(message);
+    } finally {
+      useAiPipelineJobStore.getState().endStrategy();
     }
   },
   generateContent: async (calendarDays, options) => {
+    const job = useAiPipelineJobStore.getState();
+    job.beginContent();
     try {
       const data = await invokeWithGlobalAiFallbacks({
         preferredModel: get().selectedAiModel,
@@ -505,6 +534,8 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
         error: message,
       });
       throw new Error(message);
+    } finally {
+      useAiPipelineJobStore.getState().endContent();
     }
   },
   suggestMasterContent: async (suggestHint) => {

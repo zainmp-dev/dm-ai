@@ -12,7 +12,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { LogOut, Menu, PanelLeftClose, PanelLeft, Search, Sparkles, X } from "lucide-react";
+import { LayoutDashboard, LogOut, Menu, PanelLeftClose, PanelLeft, Search, Sparkles, X } from "lucide-react";
 import { AdminCommandPalette } from "@/components/admin/admin-command-palette";
 import { AdminPlatformSessionProvider } from "@/components/admin/admin-platform-context";
 import { AdminVoiceOverlay } from "@/components/admin/admin-voice-overlay";
@@ -23,6 +23,7 @@ import { adminSubtitleForPath, filterNavForPermissions } from "@/lib/admin/nav-c
 import { apiAdminOverview, apiAdminPlatformSession, flowSuccessMessages, type AdminOverview, type AdminPlatformSession } from "@/lib/api";
 import { clearAuthSession, getAuthToken, getAuthUser, type AuthUser } from "@/lib/auth";
 import { cn } from "@/lib/utils";
+import { useWorkspaceStore } from "@/lib/workspace-store";
 
 const AdminOverviewContext = createContext<AdminOverview | null>(null);
 
@@ -60,15 +61,18 @@ export function AdminShell({ children }: { children: ReactNode }) {
       router.replace("/login");
       return;
     }
-    void Promise.all([apiAdminOverview(), apiAdminPlatformSession()])
-      .then(([data, session]) => {
+    void (async () => {
+      await useWorkspaceStore.getState().syncAuthSessionFromServer().catch(() => {});
+      setLocalUser(getAuthUser());
+      try {
+        const [data, session] = await Promise.all([apiAdminOverview(), apiAdminPlatformSession()]);
         setOverview(data);
         setPlatformSession(session);
         setBoot("ok");
-      })
-      .catch(() => {
+      } catch {
         router.replace("/dashboard");
-      });
+      }
+    })();
   }, [router]);
 
   useEffect(() => {
@@ -212,6 +216,14 @@ export function AdminShell({ children }: { children: ReactNode }) {
             {!sidebarCollapsed && <span>{label}</span>}
           </Link>
         ))}
+        <Link
+          href="/dashboard"
+          className={navLinkClass("/dashboard", mobile)}
+          onClick={() => mobile && setMobileNavOpen(false)}
+        >
+          <LayoutDashboard className="size-[18px] shrink-0 opacity-90" strokeWidth={1.75} />
+          {!sidebarCollapsed && <span>Workspace app</span>}
+        </Link>
       </nav>
 
       <div className={cn("mt-auto pt-8", mobile ? "block" : "hidden md:block")}>

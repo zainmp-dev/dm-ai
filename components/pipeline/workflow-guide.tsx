@@ -14,7 +14,7 @@ const STEPS = [
     id: "workspace" as const,
     title: "Workspace",
     detail: "Company profile, scenario, and media library.",
-    href: "/workspace-setup",
+    href: "/settings?section=workspace",
     linkLabel: "Open",
   },
   {

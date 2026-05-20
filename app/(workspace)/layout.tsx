@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Suspense } from "react";
 import { AgentsFlowProvider } from "@/components/agents-flow-provider";
 import { AiCompletionNotifyBridge } from "@/components/ai-completion-notify-bridge";
 import { AppShell } from "@/components/app-shell";
@@ -9,7 +10,9 @@ export default function WorkspaceLayout({ children }: { children: ReactNode }) {
     <WorkspaceProvider>
       <AgentsFlowProvider>
         <AiCompletionNotifyBridge />
-        <AppShell>{children}</AppShell>
+        <Suspense fallback={null}>
+          <AppShell>{children}</AppShell>
+        </Suspense>
       </AgentsFlowProvider>
     </WorkspaceProvider>
   );

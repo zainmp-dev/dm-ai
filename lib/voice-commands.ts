@@ -66,8 +66,8 @@ const ROUTE_RULES: RouteRule[] = [
       s.includes("new campaign") || s.includes("create campaign") || s.includes("start campaign"),
   },
   {
-    href: "/workspace-setup",
-    label: "Workspace setup",
+    href: "/settings?section=workspace",
+    label: "Workspace",
     test: (s) => s.includes("workspace setup") || s.includes("setup workspace") || s.includes("set up workspace"),
   },
   {
@@ -97,8 +97,8 @@ const ROUTE_RULES: RouteRule[] = [
   },
   {
     href: "/analytics",
-    label: "Analytics",
-    test: (s) => s.includes("analytics") || s.includes("reports"),
+    label: "Performance insights",
+    test: (s) => s.includes("analytics") || s.includes("reports") || s.includes("performance insights"),
   },
   {
     href: "/settings",

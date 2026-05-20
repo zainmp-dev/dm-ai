@@ -1,9 +1,10 @@
 "use client";
 
 import { format, parseISO } from "date-fns";
+import { motion } from "framer-motion";
 import { CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, FileStack, Timer } from "lucide-react";
 import Link from "next/link";
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +37,86 @@ function inferActivityStatus(text: string): { label: string; color: string } {
     return { label: "Success", color: "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200" };
   }
   return { label: "Activity", color: "bg-[#f0f4ff] text-[#1a56db] ring-1 ring-blue-100" };
+}
+
+function LineChartEmptyGlyph() {
+  return (
+    <motion.svg
+      className="h-16 w-40 shrink-0 text-[#1a56db]"
+      viewBox="0 0 140 48"
+      fill="none"
+      aria-hidden
+      initial={{ opacity: 0, scale: 0.94 }}
+      animate={{ opacity: [0.32, 0.52, 0.32], scale: [0.94, 1, 0.94] }}
+      transition={{ duration: 2.8, repeat: Infinity, ease: "easeInOut" }}
+    >
+      <path
+        d="M4 38 C28 12, 52 44, 76 22 S124 8, 136 18"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeDasharray="6 5"
+        fill="none"
+      />
+    </motion.svg>
+  );
+}
+
+function BarChartEmptyGlyph() {
+  const heights = [32, 52, 38, 58, 44, 36];
+  return (
+    <div className="flex h-16 shrink-0 items-end justify-center gap-1.5 px-2">
+      {heights.map((h, i) => (
+        <motion.div
+          key={i}
+          className="w-2.5 origin-bottom rounded-md bg-[#1a56db]/35"
+          style={{ height: h }}
+          initial={{ opacity: 0.25, scaleY: 0.45 }}
+          animate={{ opacity: [0.28, 0.52, 0.28], scaleY: [0.5, 1, 0.5] }}
+          transition={{
+            duration: 2.2,
+            repeat: Infinity,
+            ease: "easeInOut",
+            delay: i * 0.1,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function DashboardChartEmptyState({ message, glyph }: { message: string; glyph: ReactNode }) {
+  return (
+    <motion.div
+      className="flex h-full flex-col items-center justify-center gap-5 px-2"
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
+    >
+      {glyph}
+      <motion.p
+        className="max-w-[280px] text-center text-[12.5px] leading-relaxed text-[#9ca3af]"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.1, duration: 0.38, ease: [0.22, 1, 0.36, 1] }}
+      >
+        {message}
+      </motion.p>
+    </motion.div>
+  );
+}
+
+function FeedEmptyState({ message }: { message: string }) {
+  return (
+    <motion.p
+      className="px-5 py-8 text-center text-sm text-[#9ca3af]"
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+    >
+      {message}
+    </motion.p>
+  );
 }
 
 export default function DashboardPage() {
@@ -142,7 +223,7 @@ export default function DashboardPage() {
             </p>
           </div>
           <Button asChild size="sm" className="shrink-0 rounded-lg bg-amber-600 hover:bg-amber-700">
-            <Link href="/workspace-setup">Open setup</Link>
+            <Link href="/settings?section=workspace">Open setup</Link>
           </Button>
         </div>
       )}
@@ -180,44 +261,71 @@ export default function DashboardPage() {
         })}
       </div>
 
-      {/* Charts */}
+      {/* Charts — GET /workspace engagement_series + leads_growth (DB: publishing log + leads) */}
       <div className="grid gap-4 xl:grid-cols-2">
         <div className="rounded-xl border border-[#e5e7eb] bg-white px-5 pt-4 pb-5">
           <p className="text-[13.5px] font-semibold text-[#111827]">Content performance</p>
+          <p className="mt-0.5 text-[11.5px] text-[#9ca3af]">
+            Successful publishes per week (from your publishing log, not sample data)
+          </p>
           <div className="mt-3 h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={workspace.engagementSeries} margin={{ top: 6, right: 4, left: -10, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 6" vertical={false} stroke="#e5e7eb" />
-                <XAxis dataKey="name" tickLine={false} axisLine={false} stroke="#9ca3af" fontSize={11} tickMargin={8} />
-                <YAxis tickLine={false} axisLine={false} stroke="#9ca3af" fontSize={11} width={34} />
-                <Tooltip contentStyle={tooltipStyle} cursor={{ stroke: "rgba(26,86,219,0.1)", strokeWidth: 1 }} />
-                <Line
-                  type="natural"
-                  dataKey="engagement"
-                  stroke="#1a56db"
-                  strokeWidth={2}
-                  dot={{ r: 3, fill: "#fff", strokeWidth: 2, stroke: "#1a56db" }}
-                  activeDot={{ r: 4.5, strokeWidth: 0, fill: "#1a56db" }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            {workspace.engagementSeries.length === 0 ? (
+              <DashboardChartEmptyState
+                glyph={<LineChartEmptyGlyph />}
+                message="No successful publishes logged yet. This chart only shows real events after posts go live."
+              />
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={workspace.engagementSeries} margin={{ top: 6, right: 4, left: -10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 6" vertical={false} stroke="#e5e7eb" />
+                  <XAxis dataKey="name" tickLine={false} axisLine={false} stroke="#9ca3af" fontSize={11} tickMargin={8} />
+                  <YAxis tickLine={false} axisLine={false} stroke="#9ca3af" fontSize={11} width={34} />
+                  <Tooltip contentStyle={tooltipStyle} cursor={{ stroke: "rgba(26,86,219,0.1)", strokeWidth: 1 }} />
+                  <Line
+                    type="natural"
+                    name="Publishes"
+                    dataKey="engagement"
+                    stroke="#1a56db"
+                    strokeWidth={2}
+                    dot={{ r: 3, fill: "#fff", strokeWidth: 2, stroke: "#1a56db" }}
+                    activeDot={{ r: 4.5, strokeWidth: 0, fill: "#1a56db" }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
         <div className="rounded-xl border border-[#e5e7eb] bg-white px-5 pt-4 pb-5">
           <p className="text-[13.5px] font-semibold text-[#111827]">Lead growth</p>
+          <p className="mt-0.5 text-[11.5px] text-[#9ca3af]">
+            New leads per week from records in your workspace (captured-at timestamps)
+          </p>
           <div className="mt-3 h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={workspace.leadsGrowth} margin={{ top: 6, right: 4, left: -10, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 6" vertical={false} stroke="#e5e7eb" />
-                <XAxis dataKey="name" tickLine={false} axisLine={false} stroke="#9ca3af" fontSize={11} tickMargin={8} />
-                <YAxis tickLine={false} axisLine={false} stroke="#9ca3af" fontSize={11} width={34} />
-                <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "rgba(26,86,219,0.05)" }} />
-                <Bar dataKey="leads" fill="#1a56db" fillOpacity={0.85} radius={[5, 5, 0, 0]} maxBarSize={40} />
-              </BarChart>
-            </ResponsiveContainer>
+            {workspace.leadsGrowth.length === 0 ? (
+              <DashboardChartEmptyState
+                glyph={<BarChartEmptyGlyph />}
+                message="No leads in this workspace yet. Import or capture leads to see real weekly totals here."
+              />
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={workspace.leadsGrowth} margin={{ top: 6, right: 4, left: -10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 6" vertical={false} stroke="#e5e7eb" />
+                  <XAxis dataKey="name" tickLine={false} axisLine={false} stroke="#9ca3af" fontSize={11} tickMargin={8} />
+                  <YAxis tickLine={false} axisLine={false} stroke="#9ca3af" fontSize={11} width={34} />
+                  <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "rgba(26,86,219,0.05)" }} />
+                  <Bar dataKey="leads" fill="#1a56db" fillOpacity={0.85} radius={[5, 5, 0, 0]} maxBarSize={40} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </div>
         </div>
       </div>
+      <p className="text-center text-[12px] text-[#9ca3af]">
+        AI narrative review:{" "}
+        <Link href="/analytics" className="font-medium text-[#1a56db] underline-offset-2 hover:underline">
+          Performance insights
+        </Link>
+      </p>
 
       {/* Activity feed */}
       <div className="rounded-xl border border-[#e5e7eb] bg-white">
@@ -239,11 +347,9 @@ export default function DashboardPage() {
         </div>
 
         {/* Empty states */}
-        {activityRows.length === 0 && (
-          <p className="px-5 py-8 text-center text-sm text-[#9ca3af]">No recent activity.</p>
-        )}
+        {activityRows.length === 0 && <FeedEmptyState message="No recent activity." />}
         {activityRows.length > 0 && filteredActivities.length === 0 && (
-          <p className="px-5 py-8 text-center text-sm text-[#9ca3af]">No matches for that search.</p>
+          <FeedEmptyState message="No matches for that search." />
         )}
 
         {/* Table-style rows */}

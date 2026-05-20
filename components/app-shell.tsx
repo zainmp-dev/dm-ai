@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, type ReactNode } from "react";
 import {
   Bell,
@@ -10,12 +10,12 @@ import {
   ChevronsUpDown,
   Images,
   LayoutDashboard,
-  LineChart,
   Megaphone,
   Menu,
   Plug,
   Plus,
   Settings,
+  Shield,
   Sparkles,
   Users,
   Workflow,
@@ -36,7 +36,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { NotificationEntry } from "@/components/notification-entry";
 import { flowSuccessMessages } from "@/lib/api";
-import { clearAuthSession } from "@/lib/auth";
+import { clearAuthSession, getAuthUser, hasAdminConsoleAccess } from "@/lib/auth";
 import { AI_MODEL_GROUPS, labelForAiModel } from "@/lib/ai-models";
 import { HeaderThemeControl } from "@/components/header-theme-control";
 import { OpenrouterBalanceHint } from "@/components/openrouter-balance-hint";
@@ -46,6 +46,7 @@ import { useToast } from "@/components/ui/toast";
 
 const PAGE_TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
+  "/analytics": "Performance insights",
   "/command-center": "Workflow",
   "/strategy": "Strategy",
   "/content": "Workflow",
@@ -58,7 +59,6 @@ const PAGE_TITLES: Record<string, string> = {
   "/profile": "Profile",
   "/media": "Media Setup",
   "/settings": "Settings",
-  "/workspace-setup": "Workspace Setup",
 };
 
 type SidebarNavItem = {
@@ -81,7 +81,6 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
   { href: "/pipeline", label: "Workflow", icon: Workflow },
   { href: "/campaigns", label: "Campaigns", icon: Megaphone, dividerAfter: true },
   { href: "/notifications", label: "Notifications", icon: Bell, notificationBadge: true },
-  { href: "/analytics", label: "Analytics", icon: LineChart },
   { href: "/media", label: "Media Setup", icon: Images },
   {
     href: "/strategy#strategy-market-gaps",
@@ -155,7 +154,10 @@ function NavItem({
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const settingsSectionQ = searchParams.get("section");
   const collapsed = useWorkspaceStore((s) => s.sidebarCollapsed);
+  const authSessionRevision = useWorkspaceStore((s) => s.authSessionRevision);
   const setSidebarCollapsed = useWorkspaceStore((s) => s.setSidebarCollapsed);
   const workspace = useWorkspaceStore((s) => s.workspace);
   const workspaceSetups = useWorkspaceStore((s) => s.workspaceSetups);
@@ -187,10 +189,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       .toUpperCase() ?? "U";
   const setupRequired = visibleWorkspace ? !visibleWorkspace.workspaceConfigured : true;
   const firstRunOnboardingFocused = useWorkspaceStore((s) => s.firstRunOnboardingFocused);
+  const settingsWorkspaceSection = pathname === "/settings" && settingsSectionQ === "workspace";
   const workspaceSetupMinimal =
-    pathname === "/workspace-setup" && (setupRequired || firstRunOnboardingFocused);
+    settingsWorkspaceSection && (setupRequired || firstRunOnboardingFocused);
   const showSetupOnly = workspaceSetupMinimal;
-  const headerTitle = showSetupOnly && pathname === "/workspace-setup" ? "Set up workspace" : title;
+  const headerTitle = showSetupOnly ? "Set up workspace" : title;
   const setupRedirectExempt =
     pathname === "/settings" || pathname === "/pipeline" || pathname === "/publishing" || pathname === "/campaigns";
 
@@ -205,10 +208,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   );
 
   useEffect(() => {
-    if (setupRequired && pathname !== "/workspace-setup" && !setupRedirectExempt) {
-      router.replace("/workspace-setup");
+    const staffExempt = hasAdminConsoleAccess(getAuthUser());
+    const onWorkspaceSettings = pathname === "/settings" && settingsSectionQ === "workspace";
+    if (setupRequired && !onWorkspaceSettings && !setupRedirectExempt && !staffExempt) {
+      router.replace("/settings?section=workspace");
     }
-  }, [pathname, router, setupRequired, setupRedirectExempt]);
+  }, [pathname, router, settingsSectionQ, setupRequired, setupRedirectExempt, authSessionRevision]);
 
   return (
     <div className="flex h-[100dvh] min-h-0 overflow-hidden bg-[#f5f7fa] dark:bg-[#0a0a0b]">
@@ -355,7 +360,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   ))}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem asChild>
-                    <Link href="/workspace-setup" className="flex items-center gap-2">
+                    <Link href="/settings?section=workspace" className="flex items-center gap-2">
                       <Plus className="size-3.5 shrink-0" strokeWidth={2} />
                       New workspace
                     </Link>
@@ -536,6 +541,14 @@ export function AppShell({ children }: { children: ReactNode }) {
               <DropdownMenuContent align="end" side="bottom" className="w-56 rounded-xl">
                 <DropdownMenuLabel>Account</DropdownMenuLabel>
                 <DropdownMenuSeparator />
+                {hasAdminConsoleAccess(getAuthUser()) ? (
+                  <DropdownMenuItem asChild>
+                    <Link href="/admin" className="flex items-center gap-2">
+                      <Shield className="size-3.5 text-[#1a56db]" strokeWidth={1.75} aria-hidden />
+                      Admin console
+                    </Link>
+                  </DropdownMenuItem>
+                ) : null}
                 <DropdownMenuItem asChild>
                   <Link href="/settings" className="flex items-center gap-2">
                     <Plug className="size-3.5 text-[#1a56db]" strokeWidth={1.75} aria-hidden />
@@ -543,7 +556,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link href="/workspace-setup">
+                  <Link href="/settings?section=workspace">
                     {visibleWorkspace?.workspaceConfigured ? "Change workspace setup" : "Set up workspace"}
                   </Link>
                 </DropdownMenuItem>

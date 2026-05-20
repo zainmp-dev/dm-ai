@@ -32,9 +32,17 @@ from utils.admin_rbac import (
     PERM_OPS,
     PERM_SECURITY,
 )
+from utils.ai_usage_limits import public_rate_limits
 from utils.rate_limit import check_rate_limit
 
 logger = logging.getLogger(__name__)
+
+
+def _secret_tail(raw: str | None) -> str | None:
+    t = (raw or "").strip()
+    if not t:
+        return None
+    return ("…" + t[-4:]) if len(t) > 4 else "…****"
 
 _SAFE_EXTRA_TABLES = frozenset(
     {
@@ -393,9 +401,18 @@ def create_admin_control_router(*, require_admin: Callable[..., dict[str, Any]])
             notes.append("integration_jobs unreadable — schema may differ.")
         return OpsOverviewResponse(integration_jobs_pending=pending, integration_jobs_failed=failed, notes=notes)
 
+    class AiProviderKeyRow(BaseModel):
+        configured: bool
+        key_suffix: str | None = None
+
     class AiOpsSummaryResponse(BaseModel):
         openrouter_configured: bool
         notes: list[str] = Field(default_factory=list)
+        providers: dict[str, AiProviderKeyRow] = Field(default_factory=dict)
+        model_routing: dict[str, str] = Field(default_factory=dict)
+        rate_limits: dict[str, dict[str, int | str]] = Field(default_factory=dict)
+        agents: list[dict[str, str]] = Field(default_factory=list)
+        operator_hints: list[str] = Field(default_factory=list)
 
     @router.get("/admin/ai/summary", response_model=AiOpsSummaryResponse)
     def ai_summary(
@@ -405,13 +422,98 @@ def create_admin_control_router(*, require_admin: Callable[..., dict[str, Any]])
         _admin_throttle(request, str(admin.get("id") or ""))
         if not role_has_permission(str(admin.get("role")), PERM_AI_OPS):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
-        from config import settings as _settings
+        from config import settings as cfg
 
-        ok = bool((_settings.openrouter_api_key or "").strip())
+        ok = bool((cfg.openrouter_api_key or "").strip())
         notes: list[str] = []
         if not ok:
-            notes.append("OPENROUTER_API_KEY is not configured — AI routes cannot bill models.")
-        return AiOpsSummaryResponse(openrouter_configured=ok, notes=notes)
+            notes.append("OPENROUTER_API_KEY is not configured — paid model routing and completions will fail.")
+
+        providers = {
+            "openrouter": AiProviderKeyRow(configured=ok, key_suffix=_secret_tail(cfg.openrouter_api_key)),
+            "groq": AiProviderKeyRow(
+                configured=bool((cfg.groq_api_key or "").strip()),
+                key_suffix=_secret_tail(cfg.groq_api_key),
+            ),
+            "google_ai_gemini": AiProviderKeyRow(
+                configured=bool((cfg.google_ai_api_key or "").strip()),
+                key_suffix=_secret_tail(cfg.google_ai_api_key),
+            ),
+            "pexels_stock_media": AiProviderKeyRow(
+                configured=bool((cfg.pexels_api_key or "").strip()),
+                key_suffix=_secret_tail(cfg.pexels_api_key),
+            ),
+        }
+
+        model_routing = {
+            "openrouter_default": cfg.openrouter_model,
+            "fast_model": cfg.openrouter_fast_model,
+            "smart_model": cfg.openrouter_smart_model,
+            "vision_model": cfg.openrouter_vision_model,
+            "image_model": cfg.openrouter_image_model,
+            "gemini_model": cfg.gemini_model,
+            "groq_model": cfg.groq_model,
+        }
+
+        agents = [
+            {
+                "id": "agent_1",
+                "label": "Agent 1 — Strategy & competitor research (strategy-only on POST /strategy)",
+                "summary": (
+                    "HTTP POST /strategy. Consumes workspace company name, website, scenario, primary region, optional competitor seeds. "
+                    "Produces strategy rows, competitor cards, and locked JSON consumed by Agent 2. Highest token cost per run."
+                ),
+            },
+            {
+                "id": "agent_2",
+                "label": "Agent 2 — Content calendar & drafts",
+                "summary": (
+                    "HTTP POST /content with action=generate. Uses Agent 1 outputs already stored on the workspace. "
+                    "If no strategy exists yet, the server runs the full Agent 1→2 pipeline once and replaces content."
+                ),
+            },
+            {
+                "id": "aux_content_suggest",
+                "label": "Single-post suggest",
+                "summary": (
+                    "HTTP POST /content with action=suggest. Lightweight draft suggestion; shares the same per-user rate bucket as generate."
+                ),
+            },
+            {
+                "id": "workspace_search",
+                "label": "Workspace Q&A",
+                "summary": "HTTP POST /workspace/search. Answers using compact workspace context plus your question.",
+            },
+            {
+                "id": "creative_tools",
+                "label": "Carousel & image prompts",
+                "summary": (
+                    "HTTP POST /ai/carousel and /ai/image-prompt. Generates structured carousel ideas or a production-style image prompt "
+                    "(pixels come from your chosen image provider; this stack only drafts the prompt unless wired elsewhere)."
+                ),
+            },
+            {
+                "id": "analytics_agent",
+                "label": "Analytics narrative",
+                "summary": "HTTP POST /analytics/analyze. Turns metrics + caption into an insights narrative.",
+            },
+        ]
+
+        operator_hints = [
+            "Secrets and model IDs load from the API process environment at startup. Update your host env or backend/.env, then restart the server — there is no hot-reload of API keys from this UI.",
+            "Per-user abuse caps use sliding windows: AI_RATE_LIMIT_STRATEGY_MAX + AI_RATE_LIMIT_STRATEGY_WINDOW_SECONDS (and parallel CONTENT_, CREATIVE_, SEARCH_, ANALYTICS_ variables). Set any *_MAX to 0 to turn off that bucket.",
+            "Changing OPENROUTER_MODEL, FAST_MODEL, SMART_MODEL, VISION_MODEL, IMAGE_MODEL, GEMINI_MODEL, or GROQ_MODEL adjusts routing without code changes.",
+        ]
+
+        return AiOpsSummaryResponse(
+            openrouter_configured=ok,
+            notes=notes,
+            providers=providers,
+            model_routing=model_routing,
+            rate_limits=public_rate_limits(cfg),
+            agents=agents,
+            operator_hints=operator_hints,
+        )
 
     class AnalyticsGrowthPoint(BaseModel):
         label: str

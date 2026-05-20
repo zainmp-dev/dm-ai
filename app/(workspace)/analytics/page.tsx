@@ -1,7 +1,7 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
-import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { apiAnalyzeContent } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,6 +19,7 @@ type AnalyticsResult = {
   improvements: string[];
 };
 
+/** Trend charts use live GET /workspace series (publishing log + leads); this page is the AI review tool only. */
 export default function AnalyticsPage() {
   const workspace = useWorkspaceStore((s) => s.workspace);
   const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
@@ -41,60 +42,19 @@ export default function AnalyticsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card className="rounded-2xl border-zinc-200 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-base">Engagement trend</CardTitle>
-          </CardHeader>
-          <CardContent className="h-80">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={workspace.engagementSeries}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
-                <XAxis dataKey="name" stroke="#71717a" fontSize={12} />
-                <YAxis stroke="#71717a" fontSize={12} />
-                <Tooltip />
-                <Line type="monotone" dataKey="engagement" stroke="#18181b" strokeWidth={2} dot={{ r: 3 }} />
-                <Line type="monotone" dataKey="reach" stroke="#a1a1aa" strokeWidth={2} dot={{ r: 3 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-        <Card className="rounded-2xl border-zinc-200 shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-base">Reach trend</CardTitle>
-          </CardHeader>
-          <CardContent className="h-80">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={workspace.engagementSeries}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
-                <XAxis dataKey="name" stroke="#71717a" fontSize={12} />
-                <YAxis stroke="#71717a" fontSize={12} />
-                <Tooltip />
-                <Bar dataKey="reach" fill="#d4d4d8" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-      <Card className="rounded-2xl border-zinc-200 shadow-sm">
-        <CardHeader>
-          <CardTitle className="text-base">Lead pipeline</CardTitle>
-        </CardHeader>
-        <CardContent className="h-72">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={workspace.leadsGrowth}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" />
-              <XAxis dataKey="name" stroke="#71717a" fontSize={12} />
-              <YAxis stroke="#71717a" fontSize={12} />
-              <Tooltip />
-              <Bar dataKey="leads" fill="#18181b" radius={[8, 8, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
+      <p className="text-sm text-zinc-600">
+        <span className="text-zinc-500">Content performance and lead growth charts use live workspace data on the </span>
+        <Link href="/dashboard" className="font-medium text-zinc-900 underline-offset-2 hover:underline">
+          Dashboard
+        </Link>
+        <span className="text-zinc-500">.</span>
+      </p>
       <Card className="rounded-2xl border-zinc-200 shadow-sm">
         <CardHeader>
           <CardTitle className="text-base">Analytics agent</CardTitle>
+          <p className="text-xs font-normal text-zinc-500">
+            Paste metrics and copy for an AI summary — optional supplement to your dashboard trends.
+          </p>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="space-y-2">

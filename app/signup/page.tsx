@@ -11,7 +11,8 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
 import { PublicThemeToggle } from "@/components/public-theme-toggle";
 import { apiErrorMessage, apiSignup, apiStartOAuth, flowSuccessMessages } from "@/lib/api";
-import { setAuthSession, hasAdminConsoleAccess } from "@/lib/auth";
+import { setAuthSession, hasAdminConsoleAccess, getAuthUser } from "@/lib/auth";
+import { useWorkspaceStore } from "@/lib/workspace-store";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PASSWORD_REGEX = /^(?=.*[A-Za-z])(?=.*\d).{6,}$/;
@@ -103,15 +104,14 @@ export default function SignupPage() {
 
     setLoading(true);
     void apiSignup({ name: trimmedName, email: trimmedEmail, password })
-      .then((res) => {
+      .then(async (res) => {
         setAuthSession(res.token, res.user);
+        await useWorkspaceStore.getState().syncAuthSessionFromServer().catch(() => {});
         push(flowSuccessMessages.signup, { kind: "success" });
-        // Defensive: signup always creates role='user' today, but if that ever changes
-        // we don't want a freshly-minted admin to be redirected into the setup wizard.
-        if (hasAdminConsoleAccess(res.user)) {
+        if (hasAdminConsoleAccess(getAuthUser())) {
           router.replace("/admin");
         } else {
-          router.replace("/workspace-setup");
+          router.replace("/settings?section=workspace");
         }
       })
       .catch((error: unknown) => {

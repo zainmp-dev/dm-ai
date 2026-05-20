@@ -12,6 +12,7 @@ import { useToast } from "@/components/ui/toast";
 import { requestAiCompletionNotifyPreference } from "@/components/ai-completion-notify-bridge";
 import { stashCompetitorView } from "@/lib/competitor-view-cache";
 import { primaryRegionLabel } from "@/lib/primary-region";
+import { useAiPipelineJobStore } from "@/lib/ai-pipeline-job-store";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 
 const COMPETITORS_PAGE_SIZE = 4;
@@ -73,10 +74,10 @@ function PaginationRow({
 export default function StrategyPage() {
   const workspace = useWorkspaceStore((s) => s.workspace);
   const generateStrategy = useWorkspaceStore((s) => s.generateStrategy);
+  const loading = useAiPipelineJobStore((s) => s.strategyRunning);
   const { push } = useToast();
   const [companyName, setCompanyName] = useState("");
   const [website, setWebsite] = useState("");
-  const [loading, setLoading] = useState(false);
 
   // Global filter at page top
   const [globalSearch, setGlobalSearch] = useState("");
@@ -97,7 +98,6 @@ export default function StrategyPage() {
   }, [workspace?.companyName, workspace?.companyWebsite]);
 
   const runAnalysis = async () => {
-    setLoading(true);
     try {
       const notify = await requestAiCompletionNotifyPreference("strategy");
       await generateStrategy(companyName || workspace?.companyName || "", website || workspace?.companyWebsite || "", {
@@ -106,8 +106,6 @@ export default function StrategyPage() {
       push("Agent 1 finished: strategy and competitors updated.");
     } catch {
       push("Strategy run failed. Check AI keys and try again.");
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -116,15 +114,12 @@ export default function StrategyPage() {
       push("Add a company name in workspace setup or the fields below first.");
       return;
     }
-    setLoading(true);
     try {
       const notify = await requestAiCompletionNotifyPreference("strategy");
       await generateStrategy(workspace.companyName, workspace.companyWebsite, { completionNotify: notify });
       push("Agent 1 (strategy) regenerated with latest workspace settings.");
     } catch {
       push("Strategy run failed. Check AI keys and try again.");
-    } finally {
-      setLoading(false);
     }
   };
 

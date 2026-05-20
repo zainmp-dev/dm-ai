@@ -91,8 +91,6 @@ function hrefWebsite(raw: string | null | undefined): string | null {
 
 function passwordStorageLabel(storage: AdminPasswordStorage): string {
   switch (storage) {
-    case "bcrypt":
-      return "Encrypted (bcrypt)";
     case "oauth_placeholder":
       return "OAuth account";
     case "legacy_plaintext":
@@ -279,7 +277,9 @@ export default function AdminUsersPage() {
       setPwdResultPlain(res.new_password);
       setPwdModalStep("done");
       setDetailUser((d) =>
-        d && d.id === uid ? { ...d, password_storage: "bcrypt", password_visible: null } : d,
+        d && d.id === uid
+          ? { ...d, password_storage: "legacy_plaintext", password_visible: res.new_password }
+          : d,
       );
       setListVersion((v) => v + 1);
       try {
@@ -693,10 +693,6 @@ export default function AdminUsersPage() {
                                       <Copy className="size-3.5" strokeWidth={1.75} />
                                     </Button>
                                   </div>
-                                ) : row.password_storage === "bcrypt" ? (
-                                  <p className="mt-0.5 truncate text-[11px] leading-snug text-[#94a3b8] dark:text-zinc-600">
-                                    Hash only — open row for detail.
-                                  </p>
                                 ) : row.password_storage === "oauth_placeholder" ? (
                                   <p className="mt-0.5 truncate text-[11px] leading-snug text-[#94a3b8] dark:text-zinc-600">
                                     OAuth — use New pwd for email.
@@ -1100,7 +1096,7 @@ export default function AdminUsersPage() {
                 <DialogTitle className="pr-6 text-[17px] font-semibold">Password updated</DialogTitle>
                 <DialogDescription className="text-[13px] leading-relaxed text-zinc-500 dark:text-zinc-400">
                   <span className="font-medium text-zinc-700 dark:text-zinc-300">{pwdModalUser.email}</span> can sign in
-                  with the password below. Copy it now — hashes are not shown again in this directory.
+                  with the password below. Copy it now — it is also visible in the user directory after you close this dialog.
                 </DialogDescription>
               </DialogHeader>
               <div className="px-6 py-4">

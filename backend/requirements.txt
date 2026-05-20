@@ -6,4 +6,3 @@ requests
 SQLAlchemy
 resend
 cryptography
-bcrypt>=4.1

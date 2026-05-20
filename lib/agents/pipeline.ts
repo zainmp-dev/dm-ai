@@ -1,5 +1,9 @@
 /**
- * Full AI Marketing Pipeline — expanded 9-step flow.
+ * Full AI Marketing Pipeline — expanded 9-step flow (TypeScript / OpenRouter only).
+ *
+ * NOT used by the main FlowPilot UI (which calls Python FastAPI /strategy and /content).
+ * Entry point: POST /api/ai/pipeline with FLOW_AI_PIPELINE_SECRET.
+ *
  *
  * NEW FLOW:
  * 1. Research Agent         → market intelligence, competitor analysis, pain points

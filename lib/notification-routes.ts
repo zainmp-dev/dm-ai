@@ -13,7 +13,7 @@ export function resolveNotificationLink(text: string): { href: string; label: st
     return { href: "/media", label: "Media library", kind: "media" };
   }
   if (/company and scenario|master workspace ai flow completed|workspace setup|ai flow could not complete/.test(t)) {
-    return { href: "/workspace-setup", label: "Workspace setup", kind: "workspace" };
+    return { href: "/settings?section=workspace", label: "Workspace", kind: "workspace" };
   }
   if (/strategy|competitor|marketing gap|gap issue found|agent 1/.test(t)) {
     return { href: "/strategy", label: "Strategy", kind: "strategy" };

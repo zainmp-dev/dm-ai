@@ -237,6 +237,29 @@ class Settings:
     facebook_redirect_uri: str = field(default_factory=lambda: _str_env("FACEBOOK_REDIRECT_URI"))
     # Public API prefix used in returned app-relative URLs (default keeps current dev behavior).
     public_api_prefix: str = field(default_factory=lambda: _str_env_first("FLOWPILOT_API_PREFIX", "PUBLIC_API_PREFIX") or "/api/backend")
+
+    # Per-user sliding-window caps on AI endpoints (see utils.ai_usage_limits). Use max_requests <= 0 to disable a bucket.
+    ai_rate_limit_strategy_max: int = field(default_factory=lambda: _int_env("AI_RATE_LIMIT_STRATEGY_MAX", 24))
+    ai_rate_limit_strategy_window_seconds: int = field(
+        default_factory=lambda: _int_env("AI_RATE_LIMIT_STRATEGY_WINDOW_SECONDS", 3600)
+    )
+    ai_rate_limit_content_max: int = field(default_factory=lambda: _int_env("AI_RATE_LIMIT_CONTENT_MAX", 24))
+    ai_rate_limit_content_window_seconds: int = field(
+        default_factory=lambda: _int_env("AI_RATE_LIMIT_CONTENT_WINDOW_SECONDS", 3600)
+    )
+    ai_rate_limit_creative_max: int = field(default_factory=lambda: _int_env("AI_RATE_LIMIT_CREATIVE_MAX", 48))
+    ai_rate_limit_creative_window_seconds: int = field(
+        default_factory=lambda: _int_env("AI_RATE_LIMIT_CREATIVE_WINDOW_SECONDS", 3600)
+    )
+    ai_rate_limit_search_max: int = field(default_factory=lambda: _int_env("AI_RATE_LIMIT_SEARCH_MAX", 80))
+    ai_rate_limit_search_window_seconds: int = field(
+        default_factory=lambda: _int_env("AI_RATE_LIMIT_SEARCH_WINDOW_SECONDS", 3600)
+    )
+    ai_rate_limit_analytics_max: int = field(default_factory=lambda: _int_env("AI_RATE_LIMIT_ANALYTICS_MAX", 40))
+    ai_rate_limit_analytics_window_seconds: int = field(
+        default_factory=lambda: _int_env("AI_RATE_LIMIT_ANALYTICS_WINDOW_SECONDS", 3600)
+    )
+
     # CORS origins: CORS_ORIGINS list plus FLOWPILOT_PUBLIC_ORIGIN / NEXT_PUBLIC_SITE_URL / PUBLIC_APP_ORIGIN
     # (with optional www apex pair). Production typically sets PUBLIC_SITE once in .env and omits duplicate CORS list.
     cors_origins: tuple[str, ...] = field(

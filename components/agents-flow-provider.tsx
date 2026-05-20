@@ -1,6 +1,6 @@
 "use client";
 
-import { GitBranch, Layers, ShieldCheck, Sparkles, Wand2 } from "lucide-react";
+import { GitBranch, Layers, MessageSquare, Search, ShieldCheck, Sparkles, Wand2 } from "lucide-react";
 import {
   createContext,
   useCallback,
@@ -54,32 +54,56 @@ const USER_STEPS = [
   },
 ] as const;
 
-const BACKEND_STEPS = [
+/** Agents that power the live app (Python FastAPI → Groq / Gemini / OpenRouter). */
+const ACTIVE_AGENTS = [
   {
     icon: Sparkles,
-    title: "Strategy agent",
-    body: "Reads your brand context and produces structured strategy: audience, pillars, gaps, and positioning.",
+    title: "Agent 1 — Strategy",
+    trigger: "Strategy page · Command “Run strategy” · first-time setup (strategy step only)",
+    body: "Company study, positioning, themes, market gaps, and competitor cards. Saved to your workspace; does not replace existing content posts.",
   },
   {
     icon: GitBranch,
-    title: "Competitor discovery",
-    body: "Runs inside the strategy step when needed to enrich real named competitors—not placeholders.",
+    title: "Competitor discovery (inside Agent 1)",
+    trigger: "Runs automatically when Agent 1 needs more named competitors",
+    body: "Second LLM pass to reach real vendor names for your category and region—not hardcoded lists.",
   },
   {
     icon: Layers,
-    title: "Content agent",
-    body: "Turns strategy into a calendar of posts (copy, platform, timing hints) for your review.",
-  },
-  {
-    icon: Wand2,
-    title: "Recovery pass (only if needed)",
-    body: "If calendar generation fails, a lighter recovery pass rebuilds posts from strategy so you are not blocked.",
+    title: "Agent 2 — Content calendar",
+    trigger: "Content “Regenerate” · Command “Run content” · setup flow (content step)",
+    body: "Builds calendar posts from saved strategy. Uses trimmed strategy JSON so generation stays fast on free models.",
   },
   {
     icon: ShieldCheck,
-    title: "Normalize & save",
-    body: "Results are merged, validated, and stored with your workspace—along with which AI models ran each step.",
+    title: "Review pass (optional, inside Agent 2)",
+    trigger: "After calendar JSON is produced (skipped on free models or very small calendars)",
+    body: "Light polish pass on post copy before rows are saved to your library.",
   },
+  {
+    icon: Wand2,
+    title: "Content recovery",
+    trigger: "Only if Agent 2 returns an empty or broken calendar",
+    body: "Fallback LLM pass rebuilds posts from strategy so you are not blocked.",
+  },
+  {
+    icon: MessageSquare,
+    title: "Master content suggest",
+    trigger: "Content library → suggest / voice “suggest a post”",
+    body: "Single draft (title, body, media hint) from your saved strategy—not a full calendar.",
+  },
+  {
+    icon: Search,
+    title: "Workspace search",
+    trigger: "Header AI search on workspace pages",
+    body: "Answers questions using your stored strategy, competitors, and content—no new generation unless you ask to run agents.",
+  },
+] as const;
+
+const NOT_IN_APP_UI = [
+  "9-step TypeScript pipeline (research → trends → validator → brand review → …) — only via POST /api/ai/pipeline with FLOW_AI_PIPELINE_SECRET; not used by the main UI.",
+  "Legacy niche demo chain (strategy → content → review for a single niche string) — scheduler / admin demo only.",
+  "Analytics agent — POST /analytics/analyze when you analyze a post’s performance.",
 ] as const;
 
 function AgentsFlowBody() {
@@ -109,14 +133,13 @@ function AgentsFlowBody() {
 
       <section>
         <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-          What runs on the server when you generate research
+          Active AI agents (what the app runs today)
         </h3>
         <p className="mt-2 text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">
-          One workspace “research” run chains specialized AI steps. Human approval always happens in your Workflow—nothing
-          auto-publishes without your rules.
+          All of these run on the FastAPI backend. Human approval always happens in Workflow—nothing auto-publishes.
         </p>
         <ul className="mt-4 space-y-3">
-          {BACKEND_STEPS.map((step) => {
+          {ACTIVE_AGENTS.map((step) => {
             const Icon = step.icon;
             return (
               <li
@@ -128,11 +151,23 @@ function AgentsFlowBody() {
                 </span>
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{step.title}</p>
+                  <p className="mt-0.5 text-[11px] font-medium text-blue-700/90 dark:text-blue-300/90">{step.trigger}</p>
                   <p className="mt-1 text-sm leading-relaxed text-zinc-600 dark:text-zinc-300">{step.body}</p>
                 </div>
               </li>
             );
           })}
+        </ul>
+      </section>
+
+      <section>
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+          Present in code but not the main workflow UI
+        </h3>
+        <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
+          {NOT_IN_APP_UI.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
         </ul>
       </section>
     </div>
@@ -156,7 +191,7 @@ export function AgentsFlowProvider({ children }: { children: ReactNode }) {
                 AI agents & workflow
               </DialogTitle>
               <DialogDescription className="text-sm leading-relaxed text-zinc-600 dark:text-zinc-400">
-                How your team moves work through FlowPilot, and how the backend AI pipeline supports a full research run.
+                What FlowPilot runs for you in the product, and where each agent is triggered.
               </DialogDescription>
             </DialogHeader>
           </div>

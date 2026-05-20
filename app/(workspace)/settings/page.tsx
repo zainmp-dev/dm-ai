@@ -5,9 +5,9 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   Building2,
   CheckCircle2,
+  ChevronRight,
   ExternalLink,
   Facebook,
-  Globe2,
   Instagram,
   KeyRound,
   LayoutGrid,
@@ -15,7 +15,7 @@ import {
   Linkedin,
   Mic,
   SlidersHorizontal,
-  Sparkles,
+  UserCircle2,
   UserX,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -34,9 +34,7 @@ import { useToast } from "@/components/ui/toast";
 import { Skeleton } from "@/components/ui/skeleton";
 import { clearAuthSession } from "@/lib/auth";
 import { apiDeleteAccount, apiErrorMessage } from "@/lib/api";
-import { labelForAiModel } from "@/lib/ai-models";
 import { platformLabel } from "@/lib/platform";
-import { primaryRegionLabel } from "@/lib/primary-region";
 import { setOAuthPostConnectReturn } from "@/lib/first-login-wizard";
 import {
   socialConnectAlreadyLine,
@@ -46,10 +44,12 @@ import {
 import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
 import { useAgentsFlow } from "@/components/agents-flow-provider";
+import { WorkspaceSetupPanel } from "@/components/workspace/workspace-setup-panel";
 import Link from "next/link";
 
 const SECTIONS = [
-  { id: "overview" as const, label: "Overview", short: "Workspace", icon: LayoutGrid },
+  { id: "overview" as const, label: "Overview", short: "At a glance", icon: LayoutGrid },
+  { id: "workspace" as const, label: "Workspace", short: "Brand & AI", icon: Building2 },
   { id: "integrations" as const, label: "Integrations", short: "Social", icon: Link2 },
   { id: "assistant" as const, label: "Voice & AI flow", short: "Mic", icon: Mic },
   { id: "security" as const, label: "API & security", short: "API", icon: KeyRound },
@@ -59,6 +59,7 @@ const SECTIONS = [
 
 const SECTION_PARAM_IDS: (typeof SECTIONS)[number]["id"][] = [
   "overview",
+  "workspace",
   "integrations",
   "assistant",
   "security",
@@ -88,9 +89,6 @@ function SettingsContent() {
   const searchParams = useSearchParams();
   const { openAgentsFlow } = useAgentsFlow();
   const workspace = useWorkspaceStore((s) => s.workspace);
-  const workspaceSetups = useWorkspaceStore((s) => s.workspaceSetups);
-  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const selectedAiModel = useWorkspaceStore((s) => s.selectedAiModel);
   const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
   const connectLinkedin = useWorkspaceStore((s) => s.connectLinkedin);
   const connectMeta = useWorkspaceStore((s) => s.connectMeta);
@@ -102,6 +100,11 @@ function SettingsContent() {
   const [metaConnecting, setMetaConnecting] = useState(false);
   const [deleteAccountOpen, setDeleteAccountOpen] = useState(false);
   const [deleteAccountBusy, setDeleteAccountBusy] = useState(false);
+
+  const goToSection = (id: (typeof SECTIONS)[number]["id"]) => {
+    startTransition(() => setActive(id));
+    router.replace(`/settings?section=${id}`, { scroll: false });
+  };
 
   useEffect(() => {
     const section = searchParams.get("section");
@@ -191,12 +194,6 @@ function SettingsContent() {
   const { linkedin, meta } = workspace.integrations;
   const linkedinOpenUrl = linkedinProfileLink(linkedin.accountUrl, linkedin.accountHandle);
   const prefs = workspace.preferences;
-  const activeSetup = activeWorkspaceId ? workspaceSetups.find((s) => s.id === activeWorkspaceId) : undefined;
-  const displayCompany = activeSetup?.companyName?.trim() || workspace.companyName?.trim() || workspace.profile.company || "—";
-  const displayWebsite = activeSetup?.website?.trim() || workspace.companyWebsite?.trim() || "";
-  const displayScenario = activeSetup?.scenario ?? workspace.workspaceScenario;
-  const displayRegion = primaryRegionLabel(activeSetup?.primaryRegion ?? workspace.primaryRegion);
-  const displayModel = labelForAiModel(activeSetup?.aiModel ?? selectedAiModel);
 
   return (
     <div className="flex w-full min-w-0 flex-col gap-6 lg:flex-row lg:items-start">
@@ -209,7 +206,7 @@ function SettingsContent() {
               <button
                 key={s.id}
                 type="button"
-                onClick={() => setActive(s.id)}
+                onClick={() => goToSection(s.id)}
                 className={cn(
                   "flex w-full items-center gap-3 rounded-xl px-3.5 py-3 text-left text-[15px] font-medium leading-snug transition-colors",
                   isActive
@@ -234,11 +231,15 @@ function SettingsContent() {
           })}
         </nav>
         <p className="mt-4 px-1 text-xs text-zinc-500 dark:text-zinc-400">
-          Need the full walkthrough?{" "}
-          <Link href="/workspace-setup" className="font-medium text-blue-600 hover:underline dark:text-blue-400">
-            Workspace setup
-          </Link>{" "}
-          ·{" "}
+          Multiple brands? Open the{" "}
+          <button
+            type="button"
+            onClick={() => goToSection("workspace")}
+            className="font-medium text-blue-600 hover:underline dark:text-blue-400"
+          >
+            Workspace
+          </button>{" "}
+          tab ·{" "}
           <Link href="/pipeline" className="font-medium text-blue-600 hover:underline dark:text-blue-400">
             Workflow
           </Link>
@@ -247,69 +248,74 @@ function SettingsContent() {
 
       <div className="min-w-0 flex-1 space-y-6">
         {active === "overview" && (
-          <Card className="overflow-hidden rounded-2xl border-zinc-200 shadow-sm">
-            <CardHeader className="flex flex-col gap-4 border-b border-zinc-100 bg-gradient-to-r from-slate-50/90 to-white sm:flex-row sm:items-start sm:justify-between dark:border-zinc-800 dark:from-zinc-900/40 dark:to-zinc-950">
-              <div className="min-w-0 space-y-1">
-                <CardTitle className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">Workspace</CardTitle>
-                <CardDescription className="text-sm text-zinc-600 dark:text-zinc-400">
-                  Active profile used for research and content{workspaceSetups.length > 1 ? ` · ${workspaceSetups.length} saved setups` : ""}.
-                </CardDescription>
-              </div>
-              <Button asChild className="w-full shrink-0 rounded-xl bg-blue-600 text-white hover:bg-blue-700 sm:w-auto">
-                <Link href="/workspace-setup">Manage workspaces</Link>
-              </Button>
-            </CardHeader>
-            <CardContent className="p-6">
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="flex gap-3 rounded-2xl border border-zinc-100 bg-zinc-50/60 p-4 dark:border-zinc-800 dark:bg-zinc-900/35">
-                  <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-white text-zinc-600 shadow-sm dark:bg-zinc-800 dark:text-zinc-300">
-                    <Building2 className="size-5" aria-hidden />
+          <div className="space-y-6">
+            <Card className="overflow-hidden rounded-2xl border-zinc-200/90 shadow-sm dark:border-zinc-800">
+              <CardHeader className="border-b border-zinc-100 bg-gradient-to-r from-slate-50/90 to-white px-6 py-5 dark:border-zinc-800 dark:from-zinc-900/40 dark:to-zinc-950 sm:px-8">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex min-w-0 items-start gap-4">
+                    <div className="flex size-12 shrink-0 items-center justify-center rounded-2xl bg-blue-100 text-blue-700 shadow-sm dark:bg-blue-950/70 dark:text-blue-300">
+                      <UserCircle2 className="size-6" aria-hidden />
+                    </div>
+                    <div className="min-w-0 space-y-1">
+                      <CardTitle className="text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">Signed in</CardTitle>
+                      <CardDescription className="text-sm text-zinc-600 dark:text-zinc-400">
+                        {workspace.profile.name ? (
+                          <span className="block font-medium text-zinc-800 dark:text-zinc-200">{workspace.profile.name}</span>
+                        ) : null}
+                        <span className="block truncate">{workspace.profile.email}</span>
+                      </CardDescription>
+                    </div>
                   </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Company</p>
-                    <p className="mt-1 truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">{displayCompany}</p>
-                    {displayWebsite ? (
-                      <a
-                        href={displayWebsite.startsWith("http") ? displayWebsite : `https://${displayWebsite}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="mt-1 block truncate text-sm text-blue-600 hover:underline dark:text-blue-400"
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-11 shrink-0 rounded-xl border-zinc-200 font-medium dark:border-zinc-700"
+                    onClick={() => goToSection("account")}
+                  >
+                    Account &amp; security
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="p-6 sm:p-8">
+                <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">Jump to a section</p>
+                <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">Open the area you need without hunting the sidebar.</p>
+                <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                  {(
+                    [
+                      { id: "workspace" as const, title: "Workspace", blurb: "Brand, market, AI model, saved setups", icon: Building2 },
+                      { id: "integrations" as const, title: "Integrations", blurb: "LinkedIn & Meta publishing", icon: Link2 },
+                      { id: "assistant" as const, title: "Voice & AI flow", blurb: "Hands-free navigation & agents", icon: Mic },
+                      { id: "preferences" as const, title: "Preferences", blurb: "Posting defaults & digests", icon: SlidersHorizontal },
+                    ] satisfies { id: (typeof SECTIONS)[number]["id"]; title: string; blurb: string; icon: typeof Building2 }[]
+                  ).map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => goToSection(item.id)}
+                        className="group flex w-full items-start gap-3 rounded-2xl border border-zinc-200/90 bg-white p-4 text-left shadow-sm transition-colors hover:border-blue-200 hover:bg-blue-50/40 dark:border-zinc-800 dark:bg-zinc-950/40 dark:hover:border-blue-800/60 dark:hover:bg-blue-950/20"
                       >
-                        {displayWebsite}
-                      </a>
-                    ) : (
-                      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">No website on file</p>
-                    )}
-                  </div>
+                        <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-zinc-100 text-zinc-600 group-hover:bg-white group-hover:text-blue-700 dark:bg-zinc-800 dark:text-zinc-300 dark:group-hover:bg-zinc-900">
+                          <Icon className="size-5" aria-hidden />
+                        </div>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-zinc-900 dark:text-zinc-50">{item.title}</span>
+                            <ChevronRight className="size-4 shrink-0 text-zinc-400 opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
+                          </span>
+                          <span className="mt-0.5 block text-sm text-zinc-600 dark:text-zinc-400">{item.blurb}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
-                <div className="flex gap-3 rounded-2xl border border-zinc-100 bg-zinc-50/60 p-4 dark:border-zinc-800 dark:bg-zinc-900/35">
-                  <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-white text-zinc-600 shadow-sm dark:bg-zinc-800 dark:text-zinc-300">
-                    <Globe2 className="size-5" aria-hidden />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Primary region</p>
-                    <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-100">{displayRegion}</p>
-                    <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">AI research and content follow this market.</p>
-                  </div>
-                </div>
-                <div className="flex gap-3 rounded-2xl border border-zinc-100 bg-zinc-50/60 p-4 dark:border-zinc-800 dark:bg-zinc-900/35 sm:col-span-2">
-                  <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-white text-zinc-600 shadow-sm dark:bg-zinc-800 dark:text-zinc-300">
-                    <Sparkles className="size-5" aria-hidden />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Scenario & model</p>
-                    <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                      <span className="text-zinc-700 dark:text-zinc-300">Scenario:</span> {displayScenario}
-                    </p>
-                    <p className="mt-0.5 text-sm text-zinc-600 dark:text-zinc-300">
-                      <span className="text-zinc-500 dark:text-zinc-400">AI model:</span> {displayModel}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          </div>
         )}
+
+        {active === "workspace" && <WorkspaceSetupPanel />}
 
         {active === "integrations" && (
           <Card className="overflow-hidden rounded-2xl border border-zinc-200/90 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950/50">

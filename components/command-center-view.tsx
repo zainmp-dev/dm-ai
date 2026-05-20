@@ -27,6 +27,7 @@ import type { ContentItem, PublishingPlatform, WorkspaceSnapshot } from "@/lib/t
 import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 import { cn } from "@/lib/utils";
 import { useElapsedSecondsWhileActive, useSimulatedAiProgress } from "@/hooks/use-simulated-ai-progress";
+import { selectAiPipelineJobActive, useAiPipelineJobStore } from "@/lib/ai-pipeline-job-store";
 
 /** Resolved workspace branding — avoids silent failures when flowpilot_workspace.company_name is empty but Profile › Company is set. */
 function effectiveWorkspaceCompanyName(w: WorkspaceSnapshot): string {
@@ -303,8 +304,9 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
 
   const [competitorName, setCompetitorName] = useState("");
   const [competitorWebsite, setCompetitorWebsite] = useState("");
-  const [strategyLoading, setStrategyLoading] = useState(false);
-  const [contentLoading, setContentLoading] = useState(false);
+  const strategyLoading = useAiPipelineJobStore((s) => s.strategyRunning);
+  const contentLoading = useAiPipelineJobStore((s) => s.contentRunning);
+  const bootstrapStage = useAiPipelineJobStore((s) => s.bootstrapStage);
   const [calendarDays, setCalendarDays] = useState(7);
   const [platformTargetId, setPlatformTargetId] = useState<string | null>(null);
   const [previewItem, setPreviewItem] = useState<ContentItem | null>(null);
@@ -317,8 +319,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
   const [competitorResearchQuery, setCompetitorResearchQuery] = useState("");
   const [contentQueuePage, setContentQueuePage] = useState(0);
   const [competitorUploadOpen, setCompetitorUploadOpen] = useState(false);
-  const [bootstrapLoading, setBootstrapLoading] = useState(false);
-  const [bootstrapStage, setBootstrapStage] = useState<"idle" | "strategy" | "content">("idle");
+  const [bulkDeleteBusy, setBulkDeleteBusy] = useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [competitorAllDeleteOpen, setCompetitorAllDeleteOpen] = useState(false);
   const [researchPatchBusy, setResearchPatchBusy] = useState(false);
@@ -331,8 +332,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
   const [researchHoverModal, setResearchHoverModal] = useState<ResearchHoverPreviewRow | null>(null);
   const researchHoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const marketGapHoverCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const bootstrapStartedRef = useRef(false);
-
   const cancelResearchHoverClose = useCallback(() => {
     if (researchHoverCloseTimerRef.current != null) {
       clearTimeout(researchHoverCloseTimerRef.current);
@@ -562,25 +561,22 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       workspace?.workspaceConfigured,
   );
   const aiOutputMissing = Boolean(workspaceReady && workspace && !workspace.strategy && workspace.content.length === 0);
-  const aiJobActive = strategyLoading || contentLoading || bootstrapLoading;
+  const aiJobActive = useAiPipelineJobStore(selectAiPipelineJobActive);
   const aiProgressPct = useSimulatedAiProgress(aiJobActive);
   const aiElapsedSec = useElapsedSecondsWhileActive(aiJobActive);
 
   const aiPhaseLine = useMemo(() => {
     if (!aiJobActive) return "";
-    if (bootstrapLoading) {
-      if (bootstrapStage === "strategy") {
-        return "Step 1 of 2 — Learning your market and building your strategy";
-      }
-      if (bootstrapStage === "content") {
-        return `Step 2 of 2 — Creating your first ${BOOTSTRAP_CALENDAR_DAYS}-day post plan`;
-      }
-      return "Starting setup…";
+    if (bootstrapStage === "strategy") {
+      return "Step 1 of 2 — Learning your market and building your strategy";
+    }
+    if (bootstrapStage === "content") {
+      return `Step 2 of 2 — Creating your first ${BOOTSTRAP_CALENDAR_DAYS}-day post plan`;
     }
     if (strategyLoading) return "Updating strategy and competitor insights…";
     if (contentLoading) return "Writing your post ideas and schedule…";
     return "";
-  }, [aiJobActive, bootstrapLoading, bootstrapStage, strategyLoading, contentLoading]);
+  }, [aiJobActive, bootstrapStage, strategyLoading, contentLoading]);
 
   const aiElapsedLabel = useMemo(() => {
     if (aiElapsedSec < 60) return `${aiElapsedSec}s`;
@@ -607,60 +603,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       focus,
     }));
   }, [competitorDrafts, competitorName, competitorWebsite]);
-
-  useEffect(() => {
-    if (!aiOutputMissing || bootstrapStartedRef.current) {
-      return;
-    }
-    const snap = useWorkspaceStore.getState().workspace;
-    if (!snap) return;
-    const company = effectiveWorkspaceCompanyName(snap);
-    if (!company.trim()) {
-      return;
-    }
-    bootstrapStartedRef.current = true;
-    const runBootstrap = async () => {
-      const website = snap.companyWebsite.trim();
-      setBootstrapLoading(true);
-      setBootstrapStage("strategy");
-      try {
-        await generateStrategy(company, website, {
-          competitors: buildStrategyCompetitorPayload(),
-          completionNotify: false,
-        });
-      } catch (e) {
-        const msg = apiErrorMessage(e);
-        push(
-          msg.length > 100
-            ? "Strategy step didn’t finish after trying multiple fast models. Check your connection and tap Run AI setup again."
-            : msg,
-        );
-        setBootstrapLoading(false);
-        setBootstrapStage("idle");
-        return;
-      }
-      setBootstrapStage("content");
-      try {
-        const notify = await requestAiCompletionNotifyPreference("content");
-        await generateContent(BOOTSTRAP_CALENDAR_DAYS, { completionNotify: notify });
-        const usedFree = useWorkspaceStore.getState().lastRunUsedFreeModel;
-        push(
-          usedFree
-            ? `All set — your starter ${BOOTSTRAP_CALENDAR_DAYS}-day plan is ready. It used a backup mode; runs can be quicker once more AI credits are available.`
-            : `All set — your starter ${BOOTSTRAP_CALENDAR_DAYS}-day plan is ready. Use the calendar buttons below if you want more weeks at once.`,
-        );
-      } catch (e) {
-        const msg = apiErrorMessage(e);
-        push(
-          `Strategy is saved, but the ${BOOTSTRAP_CALENDAR_DAYS}-day calendar didn’t finish: ${msg.length > 90 ? `${msg.slice(0, 90)}…` : msg}. Tap “Run AI setup now” below to retry the calendar step — alternate models run automatically.`,
-        );
-      } finally {
-        setBootstrapLoading(false);
-        setBootstrapStage("idle");
-      }
-    };
-    void runBootstrap();
-  }, [aiOutputMissing, generateStrategy, generateContent, buildStrategyCompetitorPayload, push]);
 
   if (shellPending) {
     return (
@@ -730,7 +672,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       push("Complete company and workspace setup before running strategy.");
       return;
     }
-    setStrategyLoading(true);
     try {
       const notify = await requestAiCompletionNotifyPreference("strategy");
       await generateStrategy(company, website, {
@@ -740,8 +681,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       push("Strategy is updated with your latest company, website, and market details.");
     } catch (e) {
       push(apiErrorMessage(e));
-    } finally {
-      setStrategyLoading(false);
     }
   };
 
@@ -758,7 +697,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       push("Complete company and workspace setup before running AI refresh.");
       return;
     }
-    setStrategyLoading(true);
     try {
       await generateStrategy(company, website, {
         competitors: buildStrategyCompetitorPayload(),
@@ -767,10 +705,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     } catch (e) {
       push(apiErrorMessage(e));
       return;
-    } finally {
-      setStrategyLoading(false);
     }
-    setContentLoading(true);
     try {
       const notify = await requestAiCompletionNotifyPreference("content");
       await generateContent(calendarDays, { completionNotify: notify });
@@ -778,8 +713,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       push(`Strategy saved and ${calendarDays}-day content library generated.`);
     } catch (e) {
       push(apiErrorMessage(e));
-    } finally {
-      setContentLoading(false);
     }
   };
 
@@ -788,7 +721,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       push("Add a company name in Profile or Workspace setup before regenerating content.");
       return;
     }
-    setContentLoading(true);
     try {
       const notify = await requestAiCompletionNotifyPreference("content");
       await generateContent(calendarDays, { completionNotify: notify });
@@ -796,8 +728,6 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       push(`Content calendar refreshed (${calendarDays} slots).`);
     } catch (e) {
       push(apiErrorMessage(e));
-    } finally {
-      setContentLoading(false);
     }
   };
 
@@ -808,7 +738,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
       return;
     }
     setBulkDeleteOpen(false);
-    setContentLoading(true);
+    setBulkDeleteBusy(true);
     try {
       await bulkDeleteContentItems(ids);
       setContentQueuePage(0);
@@ -816,7 +746,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
     } catch (e) {
       push(apiErrorMessage(e));
     } finally {
-      setContentLoading(false);
+      setBulkDeleteBusy(false);
     }
   };
 
@@ -1582,7 +1512,7 @@ export function CommandCenterView({ serverSyncing = false }: CommandCenterViewPr
                   variant="outline"
                   size="sm"
                   className="rounded-xl"
-                  disabled={contentLoading || workspace.content.length === 0}
+                  disabled={contentLoading || bulkDeleteBusy || workspace.content.length === 0}
                   onClick={() => setBulkDeleteOpen(true)}
                 >
                   Delete all generated

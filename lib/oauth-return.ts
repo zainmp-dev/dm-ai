@@ -15,7 +15,7 @@ export function resolvePostOAuthAppUrl(settingsFallbackAbsPath: string): string 
     }
 
     const [pathRaw, savedQsRaw] = p.split("?");
-    const pathPart = pathRaw || "/workspace-setup";
+    const pathPart = pathRaw || "/settings";
 
     const fallbackQs =
       settingsFallbackAbsPath.includes("?") ? settingsFallbackAbsPath.split("?")[1]?.trim() ?? "" : "";
@@ -28,6 +28,10 @@ export function resolvePostOAuthAppUrl(settingsFallbackAbsPath: string): string 
     if (toast) merged.set("toast", toast);
     if (toastDetail != null && toastDetail !== "") merged.set("toast_detail", toastDetail);
     if (section != null && section !== "") merged.set("section", section);
+
+    if (pathPart === "/settings" && !merged.get("section")) {
+      merged.set("section", "workspace");
+    }
 
     const qs = merged.toString();
     return qs ? `${pathPart}?${qs}` : pathPart;

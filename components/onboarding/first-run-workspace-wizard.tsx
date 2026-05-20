@@ -188,8 +188,11 @@ function FirstRunWorkspaceWizardContent({ push }: { push: (message: string, opts
     const next = new URLSearchParams(searchParams.toString());
     next.delete("toast");
     next.delete("toast_detail");
+    if (!next.get("section")) {
+      next.set("section", "workspace");
+    }
     const rest = next.toString();
-    const target = rest ? `/workspace-setup?${rest}` : "/workspace-setup";
+    const target = rest ? `/settings?${rest}` : "/settings?section=workspace";
     const delayMs = showToast ? 480 : 0;
     const t = window.setTimeout(() => {
       router.replace(target);
@@ -309,7 +312,7 @@ function FirstRunWorkspaceWizardContent({ push }: { push: (message: string, opts
 
   const beginLinkedin = async () => {
     setLinkedinBusy(true);
-    setOAuthPostConnectReturn("/workspace-setup");
+    setOAuthPostConnectReturn("/settings?section=workspace");
     try {
       const r = await connectLinkedin("_self");
       if (r === "already_connected") {
@@ -324,7 +327,7 @@ function FirstRunWorkspaceWizardContent({ push }: { push: (message: string, opts
 
   const beginMeta = async () => {
     setMetaBusy(true);
-    setOAuthPostConnectReturn("/workspace-setup");
+    setOAuthPostConnectReturn("/settings?section=workspace");
     try {
       const r = await connectMeta("_self");
       if (r === "already_connected") {

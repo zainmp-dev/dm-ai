@@ -4,6 +4,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, type ReactNode } from "react";
 import { Calendar, Command, FileText, Rocket } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AiPipelineBootstrap } from "@/components/ai-pipeline-bootstrap";
 import { ContentWorkspaceView } from "@/components/content-workspace-view";
 import { CommandCenterView } from "@/components/command-center-view";
 import { ApprovalTab } from "@/components/pipeline/approval-tab";
@@ -104,6 +105,7 @@ export function PipelineContent() {
 
   return (
     <div className="w-full min-w-0 space-y-5">
+      <AiPipelineBootstrap />
       <WorkflowEndToEndFlow data={workflowData} />
 
       <div className="min-w-0 space-y-4">

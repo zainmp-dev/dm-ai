@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useEffect, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
 
 /**
  * Smooth 4–92% while `active`; snap to 100% when done, then reset.
@@ -13,19 +13,33 @@ import { startTransition, useEffect, useState } from "react";
  */
 export function useSimulatedAiProgress(active: boolean): number {
   const [pct, setPct] = useState(0);
+  const mountedRef = useRef(false);
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const safeSet = (value: number | ((prev: number) => number)) => {
+      if (!mountedRef.current) return;
+      startTransition(() => setPct(value));
+    };
+
     if (!active) {
-      startTransition(() => setPct((prev) => (prev >= 5 ? 100 : prev)));
-      const t = window.setTimeout(() => startTransition(() => setPct(0)), 850);
+      safeSet((prev) => (prev >= 5 ? 100 : prev));
+      const t = window.setTimeout(() => safeSet(0), 850);
       return () => window.clearTimeout(t);
     }
 
-    startTransition(() => setPct(4));
+    safeSet(4);
     const startTime = Date.now();
     const id = window.setInterval(() => {
       const elapsedSec = (Date.now() - startTime) / 1000;
       const timeFactor = elapsedSec < 60 ? 1.0 : elapsedSec < 180 ? 0.25 : 0.08;
+      if (!mountedRef.current) return;
       setPct((p) => {
         if (p >= 92) return p;
         const gap = 92 - p;
@@ -42,14 +56,25 @@ export function useSimulatedAiProgress(active: boolean): number {
 /** Wall-clock seconds since `active` became true; resets when `active` is false. */
 export function useElapsedSecondsWhileActive(active: boolean): number {
   const [secs, setSecs] = useState(0);
+  const mountedRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!active) {
-      startTransition(() => setSecs(0));
+      if (mountedRef.current) {
+        startTransition(() => setSecs(0));
+      }
       return;
     }
     const t0 = Date.now();
     const id = window.setInterval(() => {
+      if (!mountedRef.current) return;
       setSecs(Math.floor((Date.now() - t0) / 1000));
     }, 1000);
     return () => window.clearInterval(id);

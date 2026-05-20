@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
 import logging
 import mimetypes
@@ -12,7 +13,7 @@ import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -35,6 +36,7 @@ from agents import (
     _default_target_audience_line,
     generate_reviewed_content,
     generate_workspace_research,
+    generate_workspace_strategy_only,
     get_openrouter_key_info_for_ui,
     run_analytics_agent,
     run_workspace_content_agent,
@@ -48,45 +50,19 @@ from publisher import publish_post
 from services.posting_service import publish_flowpilot_workspace_item
 from services.ai import AIServiceError, generate_carousel, generate_image_prompt
 from scheduler import scheduler_loop
-from routes.admin_control_routes import create_admin_control_router
 from routes.ads_routes import router as ads_router
 from routes.campaign_mgmt_routes import router as campaign_mgmt_router
 from routes.social_routes import router as social_router
-from services.admin_audit_service import record_admin_audit
 from services.boost_link_service import boost_url_for_target
 from services.oauth_service import linkedin_connect_url, meta_connect_url
 from utils.http_client import request_json
 from utils.rate_limit import check_rate_limit
-from utils.admin_rbac import (
-    KNOWN_ROLES,
-    PERM_ROLES_ASSIGN,
-    PERM_USER_CREDENTIALS,
-    PERM_USERS_WRITE,
-    PLATFORM_ROLES,
-    USER_ROLE,
-    is_legacy_elevated,
-    is_platform_operator,
-    normalize_stored_role,
-    platform_operator_sql_expr,
-    role_has_permission,
-)
-from utils.password_hashing import hash_password, verify_and_maybe_upgrade_password
 from utils.state_signing import encode_state, new_nonce, verify_state
+from utils.admin_rbac import is_platform_operator, normalize_stored_role
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def _client_ip(request: Request | None) -> str | None:
-    if request is None:
-        return None
-    forwarded = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
-    if forwarded:
-        return forwarded[:80]
-    if request.client and request.client.host:
-        return str(request.client.host)[:80]
-    return None
 
 
 def _http_for_agent_error(exc: AgentError) -> tuple[int, str]:
@@ -94,14 +70,10 @@ def _http_for_agent_error(exc: AgentError) -> tuple[int, str]:
     msg = str(exc).strip()
     low = msg.lower()
     if '"code":402' in low or " 402" in low or "payment required" in low or "more credits" in low:
-        # Provider budget exhausted (usually OpenRouter). Mention direct keys so operators know
-        # Groq/Gemini can still work without topping up.
+        # Show a concise, user-actionable message; keep the raw provider text out of the UI.
         friendly = (
-            "AI generation hit a provider credit limit (often OpenRouter). "
-            "The stack tries alternate models and OpenRouter's free model router automatically when your key allows it; "
-            "if this still appears, add credits at https://openrouter.ai/settings/credits "
-            "or set GROQ_API_KEY / GOOGLE_AI_API_KEY on the server for Groq/Google directly. "
-            "Set OPENROUTER_FREE_FALLBACKS=none to disable automatic free-tier fallbacks."
+            "OpenRouter is out of credits for the current AI model. Top up at "
+            "https://openrouter.ai/settings/credits or pick a cheaper model and try again."
         )
         return 402, friendly
     logger.warning("AgentError (non-402): %s", msg[:1200])
@@ -281,10 +253,6 @@ class AdminOverviewResponse(BaseModel):
     oauth_users: int
     password_only_users: int
     total_content_items: int
-    total_competitors: int = 0
-    integration_rows: int = 0
-    integrations_connected: int = 0
-    admin_audit_events: int = 0
 
 
 class AdminUserRow(BaseModel):
@@ -303,7 +271,6 @@ class AdminUserRow(BaseModel):
     workspace_updated_at: datetime | None = None
     content_count: int = 0
     competitor_count: int = 0
-    # Password visibility: bcrypt hashes cannot be reversed. Legacy plaintext rows (no OAuth link) are shown as-is.
     password_storage: str
     password_visible: str | None = None
 
@@ -417,7 +384,7 @@ def auth_token(user_id: str) -> str:
 
 
 def serialize_auth_user(row: dict[str, Any]) -> AuthUserResponse:
-    role = normalize_stored_role(str(row.get("role") or "user"))
+    role = normalize_stored_role(row.get("role"))
     return AuthUserResponse(name=str(row["name"]), email=str(row["email"]), role=role)
 
 
@@ -699,13 +666,13 @@ def get_current_user(authorization: str | None = Header(default=None), db: Sessi
         raise HTTPException(status_code=401, detail="Invalid auth token")
 
     user = dict(row)
-    user["role"] = normalize_stored_role(str(user.get("role") or "user"))
+    user["role"] = normalize_stored_role(user.get("role"))
     _auth_user_cache_put(token, user)
     return user
 
 
 def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    """Dependency guard for platform operator endpoints (legacy name preserved for routers)."""
+    """Dependency guard for admin-only endpoints. Add as `Depends(require_admin)`."""
     if not is_platform_operator(str(user.get("role"))):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
@@ -735,15 +702,14 @@ def _admin_password_storage_and_visible(password_raw: str | None, auth_provider:
     raw = str(password_raw or "").strip()
     if not raw:
         return "none", None
-    if raw.startswith("$2"):
-        return "bcrypt", None
     if str(auth_provider or "").strip():
         return "oauth_placeholder", None
     return "legacy_plaintext", raw
 
 
 def _admin_user_row_from_rd(rd: dict) -> AdminUserRow:
-    role_out = normalize_stored_role(str(rd.get("role") or "user"))
+    raw_role = str(rd.get("role") or "user").strip().lower()
+    role_out = raw_role if raw_role in {"admin", "user"} else "user"
     ap_raw = rd.get("auth_provider")
     auth_prov = str(ap_raw).strip().lower() if ap_raw is not None else ""
     auth_prov = auth_prov if auth_prov else None
@@ -782,12 +748,12 @@ def _admin_users_where_params(*, setup: str, role: str, auth: str, q: str) -> tu
     elif setup == "in_progress":
         clauses.append("(w.workspace_id is not null and not coalesce(w.workspace_configured, false))")
     elif setup == "no_workspace":
-        clauses.append(f"(w.workspace_id is null or {platform_operator_sql_expr('u.role')})")
+        clauses.append("(w.workspace_id is null or lower(trim(coalesce(u.role, ''))) = 'admin')")
 
     if role == "admin":
-        clauses.append(platform_operator_sql_expr("u.role"))
+        clauses.append("lower(trim(coalesce(u.role, ''))) = 'admin'")
     elif role == "user":
-        clauses.append(f"not ({platform_operator_sql_expr('u.role')})")
+        clauses.append("lower(trim(coalesce(u.role, ''))) = 'user'")
 
     if auth == "email":
         clauses.append("(u.auth_provider is null or trim(coalesce(u.auth_provider, '')) = '')")
@@ -853,17 +819,6 @@ _WORKSPACE_SNAPSHOT_SQL = text(
           'account_handle', i.account_handle,
           'account_url', i.account_url
         )) from flowpilot_integrations i where i.workspace_id = :wid), '[]'::json) as integrations,
-      coalesce((select json_agg(json_build_object(
-          'name', e.name,
-          'engagement', e.engagement,
-          'reach', e.reach
-        ) order by e.position)
-        from flowpilot_engagement_series e where e.workspace_id = :wid), '[]'::json) as engagement_series,
-      coalesce((select json_agg(json_build_object(
-          'name', g.name,
-          'leads', g.leads
-        ) order by g.position)
-        from flowpilot_leads_growth g where g.workspace_id = :wid), '[]'::json) as leads_growth,
       coalesce((select json_agg(json_build_object(
           'id', m.id,
           'name', m.name,
@@ -967,8 +922,8 @@ def workspace_snapshot(db: Session, workspace_id: str, user: dict[str, Any]) -> 
                 }
     snapshot["integrations"] = integrations
 
-    snapshot["engagement_series"] = _coerce_json_value(row["engagement_series"]) or []
-    snapshot["leads_growth"] = _coerce_json_value(row["leads_growth"]) or []
+    snapshot["engagement_series"] = _workspace_engagement_series_computed(db, workspace_id)
+    snapshot["leads_growth"] = _workspace_leads_growth_computed(db, workspace_id)
     snapshot["media_library"] = _coerce_json_value(row["media_library"]) or []
 
     return snapshot
@@ -1193,32 +1148,61 @@ def _activation_platform(db: Session, workspace_id: str, body: ContentLibraryReq
     return _default_platform(db, workspace_id)
 
 
-def _seed_demo_metrics(db: Session, workspace_id: str) -> None:
-    engagement_exists = db.execute(
-        text("select 1 from flowpilot_engagement_series where workspace_id = :workspace_id limit 1"),
+def _chart_week_label(week_start: date) -> str:
+    return f"{week_start.strftime('%b')} {week_start.day}"
+
+
+def _workspace_engagement_series_computed(db: Session, workspace_id: str) -> list[dict[str, Any]]:
+    """Weekly successful publishes and cumulative total in-window (for reach line)."""
+    rows = db.execute(
+        text(
+            """
+            select date_trunc('week', p.timestamp::timestamptz)::date as week_start, count(*)::int as cnt
+            from flowpilot_publishing_log p
+            where p.workspace_id = :workspace_id
+              and lower(trim(coalesce(p.status, ''))) = 'success'
+            group by 1
+            order by 1 asc
+            """
+        ),
         {"workspace_id": workspace_id},
-    ).first()
-    if engagement_exists is None:
-        for position, (name, engagement, reach) in enumerate(
-            [("Mon", 18, 420), ("Tue", 24, 530), ("Wed", 31, 680), ("Thu", 29, 610), ("Fri", 36, 760), ("Sat", 22, 480), ("Sun", 27, 540)]
-        ):
-            db.execute(
-                text(
-                    "insert into flowpilot_engagement_series (workspace_id, position, name, engagement, reach) "
-                    "values (:workspace_id, :position, :name, :engagement, :reach)"
-                ),
-                {"workspace_id": workspace_id, "position": position, "name": name, "engagement": engagement, "reach": reach},
-            )
-    leads_exists = db.execute(
-        text("select 1 from flowpilot_leads_growth where workspace_id = :workspace_id limit 1"),
+    ).mappings().all()
+    if not rows:
+        return []
+    trimmed = rows[-12:]
+    out: list[dict[str, Any]] = []
+    cum = 0
+    for r in trimmed:
+        wk = r["week_start"]
+        if not isinstance(wk, date):
+            continue
+        cnt = int(r["cnt"] or 0)
+        cum += cnt
+        out.append({"name": _chart_week_label(wk), "engagement": cnt, "reach": cum})
+    return out
+
+
+def _workspace_leads_growth_computed(db: Session, workspace_id: str) -> list[dict[str, Any]]:
+    rows = db.execute(
+        text(
+            """
+            select date_trunc('week', l.captured_at::timestamptz)::date as week_start, count(*)::int as cnt
+            from flowpilot_leads l
+            where l.workspace_id = :workspace_id
+            group by 1
+            order by 1 asc
+            """
+        ),
         {"workspace_id": workspace_id},
-    ).first()
-    if leads_exists is None:
-        for position, (name, leads) in enumerate([("Week 1", 4), ("Week 2", 7), ("Week 3", 11), ("Week 4", 16)]):
-            db.execute(
-                text("insert into flowpilot_leads_growth (workspace_id, position, name, leads) values (:workspace_id, :position, :name, :leads)"),
-                {"workspace_id": workspace_id, "position": position, "name": name, "leads": leads},
-            )
+    ).mappings().all()
+    if not rows:
+        return []
+    trimmed = rows[-12:]
+    return [
+        {"name": _chart_week_label(r["week_start"]), "leads": int(r["cnt"] or 0)}
+        for r in trimmed
+        if isinstance(r["week_start"], date)
+    ]
 
 
 def _cloudinary_public_id_stem(file_name: str | None, *, prefix: str = "flowpilot") -> str:
@@ -1987,7 +1971,7 @@ def _validate_research_payload(
     research["content"] = _normalize_content_rows(research.get("content"))
 
 
-def save_workspace_ai_flow(
+def save_workspace_strategy_flow(
     db: Session,
     *,
     workspace_id: str,
@@ -1996,19 +1980,47 @@ def save_workspace_ai_flow(
     scenario: str,
     competitors: list[dict[str, str]],
     ai_model: str | None,
-    replace_content: bool,
-    calendar_days: int = DEFAULT_WORKSPACE_CALENDAR_DAYS,
     primary_region: str = "uae-india",
 ) -> dict[str, Any]:
-    research = generate_workspace_research(
+    """Persist Agent 1 outputs only (strategy + competitors). Does not run or replace content."""
+    research = generate_workspace_strategy_only(
         company_name=company_name,
         website=website,
         scenario=scenario,
         competitors=competitors,
         ai_model=ai_model,
-        calendar_days=calendar_days,
         primary_region=_normalize_primary_region(primary_region),
     )
+    return _persist_workspace_research(
+        db,
+        workspace_id=workspace_id,
+        company_name=company_name,
+        website=website,
+        scenario=scenario,
+        competitors=competitors,
+        research=research,
+        replace_content=False,
+        activity_message=(
+            f"Strategy research completed for {company_name} with {{model}}: competitor study, positioning, and market "
+            f"gaps saved (content library unchanged — run content generation when ready)."
+        ),
+        ai_model=ai_model,
+    )
+
+
+def _persist_workspace_research(
+    db: Session,
+    *,
+    workspace_id: str,
+    company_name: str,
+    website: str,
+    scenario: str,
+    competitors: list[dict[str, str]],
+    research: dict[str, Any],
+    replace_content: bool,
+    activity_message: str,
+    ai_model: str | None = None,
+) -> dict[str, Any]:
     ai_model_used = research.pop("_ai_model_used", None)
     ai_model_requested = research.pop("_ai_model_requested", None)
     ai_models_by_step = research.pop("_ai_models_by_step", None)
@@ -2103,13 +2115,8 @@ def save_workspace_ai_flow(
                 strategy_version=next_strategy_version,
             )
 
-    competitor_mode = "manual competitor inputs" if competitors else "automatic competitor discovery"
     model_label = ai_model_used or ai_model or settings.openrouter_model
-    record_activity(
-        db,
-        workspace_id,
-        f"Master workspace AI flow completed for {company_name} with {model_label}: Agent 1 finished website/domain research, competitor study, positioning, feature gaps, and strategy using {competitor_mode}; Agent 2 generated content from that strategy.",
-    )
+    record_activity(db, workspace_id, activity_message.replace("{model}", model_label))
     scenario_summary = str(company_study.get("scenario_summary", "")).strip()
     if scenario_summary:
         record_activity(db, workspace_id, f"Company and scenario study: {scenario_summary}")
@@ -2121,6 +2128,48 @@ def save_workspace_ai_flow(
     research["strategy_version"] = next_strategy_version
     research["strategy_locked"] = strategy_locked_flag
     return research
+
+
+def save_workspace_ai_flow(
+    db: Session,
+    *,
+    workspace_id: str,
+    company_name: str,
+    website: str,
+    scenario: str,
+    competitors: list[dict[str, str]],
+    ai_model: str | None,
+    replace_content: bool,
+    calendar_days: int = DEFAULT_WORKSPACE_CALENDAR_DAYS,
+    primary_region: str = "uae-india",
+) -> dict[str, Any]:
+    """Full Agent 1 → Agent 2 flow (strategy + content generation)."""
+    research = generate_workspace_research(
+        company_name=company_name,
+        website=website,
+        scenario=scenario,
+        competitors=competitors,
+        ai_model=ai_model,
+        calendar_days=calendar_days,
+        primary_region=_normalize_primary_region(primary_region),
+    )
+    competitor_mode = "manual competitor inputs" if competitors else "automatic competitor discovery"
+    return _persist_workspace_research(
+        db,
+        workspace_id=workspace_id,
+        company_name=company_name,
+        website=website,
+        scenario=scenario,
+        competitors=competitors,
+        research=research,
+        replace_content=replace_content,
+        activity_message=(
+            f"Master workspace AI flow completed for {company_name} with {{model}}: Agent 1 finished website/domain "
+            f"research, competitor study, positioning, and strategy using {competitor_mode}; Agent 2 generated content "
+            f"from that strategy."
+        ),
+        ai_model=ai_model,
+    )
 
 
 def _db_text_array_to_list(value: object) -> list[str]:
@@ -2406,7 +2455,6 @@ app.add_middleware(
 app.include_router(social_router)
 app.include_router(ads_router)
 app.include_router(campaign_mgmt_router)
-app.include_router(create_admin_control_router(require_admin=require_admin))
 
 
 @app.get("/")
@@ -2616,6 +2664,15 @@ def auth_oauth_start(body: OAuthStartRequest, request: Request) -> OAuthStartRes
     return OAuthStartResponse(auth_url=auth_url)
 
 
+@app.get("/auth/session", response_model=AuthUserResponse)
+def auth_session(user: dict[str, Any] = Depends(get_current_user)) -> AuthUserResponse:
+    return AuthUserResponse(
+        name=str(user.get("name") or ""),
+        email=str(user.get("email") or ""),
+        role=str(user.get("role") or "user"),
+    )
+
+
 @app.get("/auth/oauth/callback", response_model=AuthResponse)
 def auth_oauth_callback(
     request: Request,
@@ -2665,13 +2722,12 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)) -> AuthResponse:
         raise HTTPException(status_code=409, detail="Account already exists. Please log in.")
 
     user_id = f"usr-{uuid.uuid4().hex[:10]}"
-    password_hash = hash_password(password)
     db.execute(
         text(
             "insert into flowpilot_users (id, name, email, password, role, created_at) "
             "values (:id, :name, :email, :password, 'user', now())"
         ),
-        {"id": user_id, "name": name, "email": email, "password": password_hash},
+        {"id": user_id, "name": name, "email": email, "password": password},
     )
     db.commit()
 
@@ -2693,16 +2749,8 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     stored_pw = str(row.get("password") or "")
-    ok, upgraded_hash = verify_and_maybe_upgrade_password(stored_pw, body.password)
-    if not ok:
+    if not hmac.compare_digest(stored_pw, body.password):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-
-    if upgraded_hash is not None:
-        db.execute(
-            text("update flowpilot_users set password = :password where id = :id"),
-            {"password": upgraded_hash, "id": str(row["id"])},
-        )
-        db.commit()
 
     user_row = {k: row[k] for k in ("id", "name", "email", "role")}
     return AuthResponse(token=auth_token(str(row["id"])), user=serialize_auth_user(user_row))
@@ -2715,25 +2763,14 @@ def admin_overview(db: Session = Depends(get_db), _admin: dict[str, Any] = Depen
             """
             select
                 (select count(*)::int from flowpilot_users where deleted_at is null) as total_users,
-                (select count(*)::int from flowpilot_users where deleted_at is null and """
-                + platform_operator_sql_expr("role")
-                + """) as admin_count,
+                (select count(*)::int from flowpilot_users where deleted_at is null and lower(coalesce(role, '')) = 'admin') as admin_count,
                 (select count(*)::int from flowpilot_workspace) as workspace_rows,
                 (select count(*)::int from flowpilot_workspace where workspace_configured) as configured_workspaces,
                 (select count(*)::int from flowpilot_users where deleted_at is null and auth_provider is not null and trim(auth_provider) <> '')
                     as oauth_users,
                 (select count(*)::int from flowpilot_users where deleted_at is null and (auth_provider is null or trim(coalesce(auth_provider, '')) = ''))
                     as password_only_users,
-                (select count(*)::int from flowpilot_content) as total_content_items,
-                (select count(*)::int from flowpilot_competitors) as total_competitors,
-                (select count(*)::int from flowpilot_integrations i
-                    inner join flowpilot_users u on u.id = i.workspace_id and u.deleted_at is null)
-                    as integration_rows,
-                (select count(*)::int from flowpilot_integrations i
-                    inner join flowpilot_users u on u.id = i.workspace_id and u.deleted_at is null
-                    where coalesce(i.connected, false))
-                    as integrations_connected,
-                (select count(*)::int from flowpilot_admin_audit) as admin_audit_events
+                (select count(*)::int from flowpilot_content) as total_content_items
             """
         )
     ).mappings().first()
@@ -2746,10 +2783,6 @@ def admin_overview(db: Session = Depends(get_db), _admin: dict[str, Any] = Depen
             oauth_users=0,
             password_only_users=0,
             total_content_items=0,
-            total_competitors=0,
-            integration_rows=0,
-            integrations_connected=0,
-            admin_audit_events=0,
         )
     return AdminOverviewResponse(
         total_users=int(row["total_users"] or 0),
@@ -2759,10 +2792,6 @@ def admin_overview(db: Session = Depends(get_db), _admin: dict[str, Any] = Depen
         oauth_users=int(row["oauth_users"] or 0),
         password_only_users=int(row["password_only_users"] or 0),
         total_content_items=int(row["total_content_items"] or 0),
-        total_competitors=int(row["total_competitors"] or 0),
-        integration_rows=int(row["integration_rows"] or 0),
-        integrations_connected=int(row["integrations_connected"] or 0),
-        admin_audit_events=int(row["admin_audit_events"] or 0),
     )
 
 
@@ -2839,20 +2868,13 @@ def admin_users(
 
 @app.post("/admin/users", response_model=AdminCreateUserResponse)
 def admin_create_user(
-    request: Request,
     body: AdminCreateUserRequest,
     db: Session = Depends(get_db),
-    admin_actor: dict[str, Any] = Depends(require_admin),
+    _admin: dict[str, Any] = Depends(require_admin),
 ) -> AdminCreateUserResponse:
-    if not role_has_permission(str(admin_actor.get("role")), PERM_USERS_WRITE):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
-
-    role_norm = normalize_stored_role(str(body.role or USER_ROLE))
-    if role_norm not in KNOWN_ROLES:
+    role_norm = str(body.role or "user").strip().lower()
+    if role_norm not in {"admin", "user"}:
         raise HTTPException(status_code=400, detail="Invalid role")
-    if role_norm in PLATFORM_ROLES:
-        if not role_has_permission(str(admin_actor.get("role")), PERM_ROLES_ASSIGN):
-            role_norm = USER_ROLE
     email = body.email.strip().lower()
     name = body.name.strip() or _auth_name_from_email(email)
     if not email:
@@ -2882,19 +2904,9 @@ def admin_create_user(
             "id": user_id,
             "name": name,
             "email": email,
-            "password": hash_password(plain),
+            "password": plain,
             "role": role_norm,
         },
-    )
-    record_admin_audit(
-        db,
-        actor_id=str(admin_actor.get("id") or ""),
-        actor_email=str(admin_actor.get("email") or ""),
-        action="admin.user.create",
-        resource_type="user",
-        resource_id=user_id,
-        meta={"email": email, "role": role_norm},
-        ip=_client_ip(request),
     )
     db.commit()
     return AdminCreateUserResponse(
@@ -2908,14 +2920,11 @@ def admin_create_user(
 
 @app.post("/admin/users/{user_id}/password", response_model=AdminSetPasswordResponse)
 def admin_set_user_password(
-    request: Request,
     user_id: str,
     body: AdminSetPasswordRequest,
     db: Session = Depends(get_db),
-    admin_actor: dict[str, Any] = Depends(require_admin),
+    _admin: dict[str, Any] = Depends(require_admin),
 ) -> AdminSetPasswordResponse:
-    if not role_has_permission(str(admin_actor.get("role")), PERM_USER_CREDENTIALS):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
     uid = user_id.strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Invalid user id")
@@ -2936,17 +2945,7 @@ def admin_set_user_password(
 
     db.execute(
         text("update flowpilot_users set password = :password where id = :id"),
-        {"password": hash_password(plain), "id": uid},
-    )
-    record_admin_audit(
-        db,
-        actor_id=str(admin_actor.get("id") or ""),
-        actor_email=str(admin_actor.get("email") or ""),
-        action="admin.user.password_rotate",
-        resource_type="user",
-        resource_id=uid,
-        meta={},
-        ip=_client_ip(request),
+        {"password": plain, "id": uid},
     )
     db.commit()
     return AdminSetPasswordResponse(new_password=plain)
@@ -2954,17 +2953,14 @@ def admin_set_user_password(
 
 @app.delete("/admin/users/{user_id}")
 def admin_soft_delete_user(
-    request: Request,
     user_id: str,
     db: Session = Depends(get_db),
-    admin_actor: dict[str, Any] = Depends(require_admin),
+    admin: dict[str, Any] = Depends(require_admin),
 ) -> dict[str, bool]:
-    if not role_has_permission(str(admin_actor.get("role")), PERM_USERS_WRITE):
-        raise HTTPException(status_code=403, detail="Insufficient permissions")
     uid = user_id.strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Invalid user id")
-    if uid == str(admin_actor.get("id") or ""):
+    if uid == str(admin.get("id") or ""):
         raise HTTPException(status_code=400, detail="You cannot remove your own account while signed in.")
 
     row = db.execute(
@@ -2974,31 +2970,20 @@ def admin_soft_delete_user(
     if row is None:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if is_legacy_elevated(str(row.get("role"))):
+    if str(row.get("role") or "user").strip().lower() == "admin":
         count_row = db.execute(
             text(
                 "select count(*)::int as n from flowpilot_users "
-                "where deleted_at is null "
-                "and lower(trim(coalesce(role, ''))) in ('admin','super_admin')"
+                "where deleted_at is null and lower(trim(coalesce(role, ''))) = 'admin'"
             ),
         ).mappings().first()
         n = int(count_row["n"] or 0) if count_row is not None else 0
         if n <= 1:
-            raise HTTPException(status_code=400, detail="Cannot remove the last privileged operator.")
+            raise HTTPException(status_code=400, detail="Cannot remove the last active admin.")
 
     db.execute(
         text("update flowpilot_users set deleted_at = now() where id = :id"),
         {"id": uid},
-    )
-    record_admin_audit(
-        db,
-        actor_id=str(admin_actor.get("id") or ""),
-        actor_email=str(admin_actor.get("email") or ""),
-        action="admin.user.soft_delete",
-        resource_type="user",
-        resource_id=uid,
-        meta={"target_role": normalize_stored_role(str(row.get("role")))},
-        ip=_client_ip(request),
     )
     db.commit()
     return {"ok": True}
@@ -3459,7 +3444,6 @@ def setup_workspace(
         ),
         {"workspace_id": workspace_id},
     )
-    _seed_demo_metrics(db, workspace_id)
     record_activity(
         db,
         workspace_id,
@@ -3485,7 +3469,7 @@ def strategy(
         raise HTTPException(status_code=400, detail="Company name is required before strategy research")
 
     try:
-        research = save_workspace_ai_flow(
+        research = save_workspace_strategy_flow(
             db,
             workspace_id=workspace_id,
             company_name=company_name,
@@ -3493,8 +3477,6 @@ def strategy(
             scenario=scenario,
             competitors=normalize_competitor_inputs(body.competitors),
             ai_model=body.ai_model,
-            replace_content=False,
-            calendar_days=DEFAULT_WORKSPACE_CALENDAR_DAYS,
             primary_region=context["primary_region"],
         )
         db.commit()
@@ -4035,11 +4017,8 @@ def connect_meta(
             status_code=400,
             detail="Could not start Meta connection. Try again or contact support.",
         ) from None
-    return {"auth_url": auth_url, "integrations": workspace_snapshot(db, workspace_id, user)["integrations"]}
-
-
 @app.get("/profile")
-def get_profile(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+def read_profile(db: Session = Depends(get_db), user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     workspace_id = str(user["id"])
     return {"profile": workspace_snapshot(db, workspace_id, user)["profile"]}
 

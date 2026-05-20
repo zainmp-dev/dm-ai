@@ -298,6 +298,14 @@ export async function apiWorkspaceSearch(body: { query: string; aiModel?: string
 
 type AuthApiUser = { name: string; email: string; role?: string };
 
+export async function apiGetAuthSession(): Promise<AuthApiUser> {
+  const { data } = await apiClient.get<AuthApiUser>("/auth/session", {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
 export async function apiSignup(body: { name: string; email: string; password: string }) {
   const { data } = await apiClient.post<{ token: string; user: AuthApiUser }>("/signup", body, {
     skipGlobalLoading: true,
@@ -322,13 +330,18 @@ export interface AdminOverview {
   oauth_users: number;
   password_only_users: number;
   total_content_items: number;
-  total_competitors: number;
-  integration_rows: number;
-  integrations_connected: number;
-  admin_audit_events: number;
 }
 
-export type AdminPasswordStorage = "none" | "bcrypt" | "oauth_placeholder" | "legacy_plaintext";
+/** GET /admin/platform/session — operator identity and RBAC permissions. */
+export interface AdminPlatformSession {
+  user_id: string;
+  email: string;
+  role: string;
+  role_label: string;
+  permissions: string[];
+}
+
+export type AdminPasswordStorage = "none" | "oauth_placeholder" | "legacy_plaintext";
 
 export interface AdminUserRow {
   id: string;
@@ -421,6 +434,14 @@ export async function apiAdminOverview(): Promise<AdminOverview> {
   return data;
 }
 
+export async function apiAdminPlatformSession(): Promise<AdminPlatformSession> {
+  const { data } = await apiClient.get<AdminPlatformSession>("/admin/platform/session", {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
 export async function apiAdminUsers(params: {
   page?: number;
   page_size?: number;
@@ -455,7 +476,7 @@ export interface AdminCreateUserResponse {
 export async function apiAdminCreateUser(body: {
   email: string;
   name?: string;
-  role?: string;
+  role?: "admin" | "user";
   password?: string | null;
 }): Promise<AdminCreateUserResponse> {
   const { data } = await apiClient.post<AdminCreateUserResponse>("/admin/users", body, {
@@ -532,158 +553,6 @@ export async function apiAdminContentSummary(): Promise<AdminContentSummaryRespo
   return data;
 }
 
-export interface AdminPlatformSession {
-  user_id: string;
-  email: string;
-  role: string;
-  role_label: string;
-  permissions: string[];
-}
-
-export async function apiAdminPlatformSession(): Promise<AdminPlatformSession> {
-  const { data } = await apiClient.get<AdminPlatformSession>("/admin/platform/session", {
-    skipGlobalLoading: true,
-    timeout: AUTH_REQUEST_TIMEOUT_MS,
-  });
-  return data;
-}
-
-export interface AdminDbOverview {
-  ok: boolean;
-  postgres_version?: string | null;
-  database_bytes?: number | null;
-  active_connections?: number | null;
-  notes: string[];
-}
-
-export async function apiAdminDbOverview(): Promise<AdminDbOverview> {
-  const { data } = await apiClient.get<AdminDbOverview>("/admin/db/overview", {
-    skipGlobalLoading: true,
-    timeout: AUTH_REQUEST_TIMEOUT_MS,
-  });
-  return data;
-}
-
-export interface AdminDbTableMetric {
-  schema_name?: string;
-  table_name: string;
-  row_estimate?: number | null;
-  total_bytes?: number | null;
-}
-
-export async function apiAdminDbTables(): Promise<{ tables: AdminDbTableMetric[] }> {
-  const { data } = await apiClient.get<{ tables: AdminDbTableMetric[] }>("/admin/db/tables", {
-    skipGlobalLoading: true,
-    timeout: AUTH_REQUEST_TIMEOUT_MS,
-  });
-  return data;
-}
-
-export async function apiAdminDbTableRows(params: {
-  table: string;
-  page?: number;
-  page_size?: number;
-  q?: string;
-}): Promise<{
-  columns: string[];
-  rows: Record<string, unknown>[];
-  page: number;
-  page_size: number;
-  total: number;
-}> {
-  const { data } = await apiClient.get(
-    `/admin/db/tables/${encodeURIComponent(params.table)}/rows`,
-    {
-      params: {
-        page: params.page ?? 1,
-        page_size: params.page_size ?? 25,
-        q: params.q ?? "",
-      },
-      skipGlobalLoading: true,
-      timeout: AUTH_REQUEST_TIMEOUT_MS,
-    },
-  );
-  return data;
-}
-
-export interface AdminAuditEventRow {
-  id: number;
-  actor_id: string;
-  actor_email: string | null;
-  action: string;
-  resource_type: string;
-  resource_id: string | null;
-  meta: Record<string, unknown>;
-  ip: string | null;
-  created_at: string | null;
-}
-
-export async function apiAdminAuditEvents(params: {
-  page?: number;
-  page_size?: number;
-  q?: string;
-}): Promise<{
-  items: AdminAuditEventRow[];
-  total: number;
-  page: number;
-  page_size: number;
-  total_pages: number;
-}> {
-  const { data } = await apiClient.get("/admin/audit/events", {
-    params: {
-      page: params.page ?? 1,
-      page_size: params.page_size ?? 40,
-      q: params.q ?? "",
-    },
-    skipGlobalLoading: true,
-    timeout: AUTH_REQUEST_TIMEOUT_MS,
-  });
-  return data;
-}
-
-export async function apiAdminOpsOverview(): Promise<{
-  integration_jobs_pending: number | null;
-  integration_jobs_failed: number | null;
-  notes: string[];
-}> {
-  const { data } = await apiClient.get("/admin/ops/overview", {
-    skipGlobalLoading: true,
-    timeout: AUTH_REQUEST_TIMEOUT_MS,
-  });
-  return data;
-}
-
-export async function apiAdminAiSummary(): Promise<{ openrouter_configured: boolean; notes: string[] }> {
-  const { data } = await apiClient.get("/admin/ai/summary", {
-    skipGlobalLoading: true,
-    timeout: AUTH_REQUEST_TIMEOUT_MS,
-  });
-  return data;
-}
-
-export async function apiAdminAnalyticsOverview(): Promise<{
-  dau_estimate: number | null;
-  token_usage_placeholder: number | null;
-  series: { label: string; value: number }[];
-}> {
-  const { data } = await apiClient.get("/admin/analytics/overview", {
-    skipGlobalLoading: true,
-    timeout: AUTH_REQUEST_TIMEOUT_MS,
-  });
-  return data;
-}
-
-export async function apiAdminRbacMatrix(): Promise<{
-  roles: { role_id: string; label: string; assignable: boolean }[];
-  permissions: string[];
-}> {
-  const { data } = await apiClient.get("/admin/platform/rbac-matrix", {
-    skipGlobalLoading: true,
-    timeout: AUTH_REQUEST_TIMEOUT_MS,
-  });
-  return data;
-}
-
 export async function apiStartOAuth(body: {
   provider: "google" | "facebook";
   intent?: "login" | "signup";
@@ -702,12 +571,25 @@ export async function apiStartOAuth(body: {
 }
 
 export async function apiCompleteOAuth(body: { code: string; state: string }) {
-  const { data } = await apiClient.get<{ token: string; user: { name: string; email: string } }>("/auth/oauth/callback", {
+  const { data } = await apiClient.get<{ token: string; user: AuthApiUser }>("/auth/oauth/callback", {
     params: { code: body.code, state: body.state },
     skipGlobalLoading: true,
   });
   return data;
 }
+
+type PostStrategyResponse = {
+  strategy: Record<string, unknown>;
+  competitors: Record<string, unknown>[];
+  ai_model_used?: string | null;
+  ai_model_requested?: string | null;
+  ai_models_by_step?: { strategy?: string; content?: string };
+  used_free_model?: boolean;
+};
+
+// Strategy runs are long (30–180s+). Share one in-flight promise so tab remounts / double-clicks
+// do not start duplicate agent runs.
+let generateStrategyInflight: Promise<PostStrategyResponse> | null = null;
 
 export async function apiPostStrategy(
   companyName: string,
@@ -716,25 +598,26 @@ export async function apiPostStrategy(
   competitors?: { name: string; website: string; focus: string }[],
   scenario?: WorkspaceScenario,
 ) {
-  const { data } = await apiClient.post<{
-    strategy: Record<string, unknown>;
-    competitors: Record<string, unknown>[];
-    ai_model_used?: string | null;
-    ai_model_requested?: string | null;
-    ai_models_by_step?: { strategy?: string; content?: string };
-    used_free_model?: boolean;
-  }>(
-    "/strategy",
-    {
-      company_name: companyName,
-      website,
-      ai_model: aiModel,
-      competitors,
-      scenario,
-    },
-    { timeout: AI_LONG_REQUEST_TIMEOUT_MS },
-  );
-  return data;
+  if (generateStrategyInflight) {
+    return generateStrategyInflight;
+  }
+  const request = apiClient
+    .post<PostStrategyResponse>(
+      "/strategy",
+      {
+        company_name: companyName,
+        website,
+        ai_model: aiModel,
+        competitors,
+        scenario,
+      },
+      { timeout: AI_LONG_REQUEST_TIMEOUT_MS },
+    )
+    .then((res) => res.data);
+  generateStrategyInflight = request.finally(() => {
+    generateStrategyInflight = null;
+  });
+  return generateStrategyInflight;
 }
 
 export type MasterContentSuggestion = {
