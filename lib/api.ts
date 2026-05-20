@@ -330,6 +330,10 @@ export interface AdminOverview {
   oauth_users: number;
   password_only_users: number;
   total_content_items: number;
+  total_competitors?: number;
+  integration_rows?: number;
+  integrations_connected?: number;
+  admin_audit_events?: number;
 }
 
 /** GET /admin/platform/session — operator identity and RBAC permissions. */
@@ -476,7 +480,7 @@ export interface AdminCreateUserResponse {
 export async function apiAdminCreateUser(body: {
   email: string;
   name?: string;
-  role?: "admin" | "user";
+  role?: string;
   password?: string | null;
 }): Promise<AdminCreateUserResponse> {
   const { data } = await apiClient.post<AdminCreateUserResponse>("/admin/users", body, {
@@ -547,6 +551,182 @@ export async function apiAdminIntegrations(params: {
 
 export async function apiAdminContentSummary(): Promise<AdminContentSummaryResponse> {
   const { data } = await apiClient.get<AdminContentSummaryResponse>("/admin/content/summary", {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export interface AdminDbOverview {
+  ok: boolean;
+  postgres_version: string | null;
+  database_bytes: number | null;
+  active_connections: number | null;
+  notes: string[];
+}
+
+export interface AdminDbTableMetric {
+  schema_name?: string;
+  table_name: string;
+  row_estimate: number | null;
+  total_bytes: number | null;
+}
+
+export interface AdminDbTablesResponse {
+  tables: AdminDbTableMetric[];
+}
+
+export interface AdminDbTableRowsResponse {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export async function apiAdminDbOverview(): Promise<AdminDbOverview> {
+  const { data } = await apiClient.get<AdminDbOverview>("/admin/db/overview", {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export async function apiAdminDbTables(): Promise<AdminDbTablesResponse> {
+  const { data } = await apiClient.get<AdminDbTablesResponse>("/admin/db/tables", {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export async function apiAdminDbTableRows(params: {
+  table: string;
+  page?: number;
+  page_size?: number;
+  q?: string;
+}): Promise<AdminDbTableRowsResponse> {
+  const { data } = await apiClient.get<AdminDbTableRowsResponse>(
+    `/admin/db/tables/${encodeURIComponent(params.table)}/rows`,
+    {
+      params: {
+        page: params.page ?? 1,
+        page_size: params.page_size ?? 25,
+        q: params.q ?? "",
+      },
+      skipGlobalLoading: true,
+      timeout: AUTH_REQUEST_TIMEOUT_MS,
+    },
+  );
+  return data;
+}
+
+export interface AdminOpsOverview {
+  integration_jobs_pending: number | null;
+  integration_jobs_failed: number | null;
+  notes: string[];
+}
+
+export async function apiAdminOpsOverview(): Promise<AdminOpsOverview> {
+  const { data } = await apiClient.get<AdminOpsOverview>("/admin/ops/overview", {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export interface AdminRbacRole {
+  role_id: string;
+  label: string;
+  assignable: boolean;
+}
+
+export interface AdminRbacMatrix {
+  roles: AdminRbacRole[];
+  permissions: string[];
+}
+
+export async function apiAdminRbacMatrix(): Promise<AdminRbacMatrix> {
+  const { data } = await apiClient.get<AdminRbacMatrix>("/admin/platform/rbac-matrix", {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export interface AdminAiProviderKey {
+  configured: boolean;
+  key_suffix: string | null;
+}
+
+export interface AdminAiSummary {
+  openrouter_configured: boolean;
+  notes: string[];
+  providers?: Record<string, AdminAiProviderKey>;
+  model_routing?: Record<string, string>;
+  rate_limits?: Record<string, Record<string, number | string>>;
+  agents?: Array<{ id: string; label: string; summary?: string }>;
+  operator_hints?: string[];
+}
+
+export async function apiAdminAiSummary(): Promise<AdminAiSummary> {
+  const { data } = await apiClient.get<AdminAiSummary>("/admin/ai/summary", {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export interface AdminAnalyticsGrowthPoint {
+  label: string;
+  value: number;
+}
+
+export interface AdminAnalyticsOverview {
+  dau_estimate: number | null;
+  token_usage_placeholder: number | null;
+  series: AdminAnalyticsGrowthPoint[];
+}
+
+export async function apiAdminAnalyticsOverview(): Promise<AdminAnalyticsOverview> {
+  const { data } = await apiClient.get<AdminAnalyticsOverview>("/admin/analytics/overview", {
+    skipGlobalLoading: true,
+    timeout: AUTH_REQUEST_TIMEOUT_MS,
+  });
+  return data;
+}
+
+export interface AdminAuditEvent {
+  id: number;
+  actor_id: string;
+  actor_email: string | null;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  meta: Record<string, unknown>;
+  ip: string | null;
+  created_at: string | null;
+}
+
+export interface AdminAuditEventsPageResponse {
+  items: AdminAuditEvent[];
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+}
+
+export async function apiAdminAuditEvents(params: {
+  page?: number;
+  page_size?: number;
+  q?: string;
+}): Promise<AdminAuditEventsPageResponse> {
+  const { data } = await apiClient.get<AdminAuditEventsPageResponse>("/admin/audit/events", {
+    params: {
+      page: params.page ?? 1,
+      page_size: params.page_size ?? 25,
+      q: params.q ?? "",
+    },
     skipGlobalLoading: true,
     timeout: AUTH_REQUEST_TIMEOUT_MS,
   });

@@ -125,8 +125,9 @@ export default function AdminOverviewPage() {
   }, []);
 
   const integrationPct = useMemo(() => {
-    if (!overview || overview.integration_rows <= 0) return null;
-    return Math.round((100 * overview.integrations_connected) / overview.integration_rows);
+    const rows = overview?.integration_rows ?? 0;
+    if (!overview || rows <= 0) return null;
+    return Math.round((100 * (overview.integrations_connected ?? 0)) / rows);
   }, [overview]);
 
   if (!overview) {
@@ -186,7 +187,7 @@ export default function AdminOverviewPage() {
         <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard
             label="Competitor profiles"
-            value={overview.total_competitors}
+            value={overview.total_competitors ?? "—"}
             hint="Rows in competitor research tables"
             icon={Target}
             accent="#0891b2"
@@ -194,7 +195,7 @@ export default function AdminOverviewPage() {
           />
           <StatCard
             label="Integrations"
-            value={`${overview.integrations_connected}/${overview.integration_rows}`}
+            value={`${overview.integrations_connected ?? "—"}/${overview.integration_rows ?? "—"}`}
             subtitle={integrationPct != null ? `${integrationPct}% connected` : undefined}
             hint="Channel rows for active workspaces"
             icon={Plug}
@@ -203,7 +204,7 @@ export default function AdminOverviewPage() {
           />
           <StatCard
             label="Audit events"
-            value={overview.admin_audit_events}
+            value={overview.admin_audit_events ?? "—"}
             hint="Privileged actions recorded"
             icon={ScrollText}
             accent="#4f46e5"
@@ -314,7 +315,9 @@ export default function AdminOverviewPage() {
               <div className="flex justify-between gap-2 border-b border-dashed border-[#e5e7eb] pb-3 dark:border-zinc-800">
                 <dt className="text-[#64748b] dark:text-zinc-500">Competitors / workspace</dt>
                 <dd className="font-medium tabular-nums text-[#0f172a] dark:text-zinc-100">
-                  {overview.workspace_rows ? (overview.total_competitors / overview.workspace_rows).toFixed(1) : "—"}
+                  {overview.workspace_rows && overview.total_competitors != null
+                    ? (overview.total_competitors / overview.workspace_rows).toFixed(1)
+                    : "—"}
                 </dd>
               </div>
               <div className="flex justify-between gap-2">
