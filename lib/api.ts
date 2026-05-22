@@ -345,7 +345,7 @@ export interface AdminPlatformSession {
   permissions: string[];
 }
 
-export type AdminPasswordStorage = "none" | "oauth_placeholder" | "legacy_plaintext";
+export type AdminPasswordStorage = "none" | "oauth_placeholder" | "hashed" | "legacy_plaintext";
 
 export interface AdminUserRow {
   id: string;

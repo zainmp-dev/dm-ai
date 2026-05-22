@@ -161,8 +161,22 @@ class Settings:
     openrouter_cache_ttl_seconds: int = field(default_factory=lambda: _int_env("OPENROUTER_CACHE_TTL_SECONDS", 90))
     openrouter_concurrency_limit: int = field(default_factory=lambda: _int_env("OPENROUTER_CONCURRENCY_LIMIT", 6))
     # Cap completion length so OpenRouter does not reserve a huge budget on each call (causes 402 when balance is small).
-    # Lower OPENROUTER_MAX_TOKENS in .env only when credits are constrained. Agent 1/2 JSON needs room (512 truncates badly).
-    openrouter_max_tokens: int = field(default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS", 8192))
+    # Task-specific caps below override this when set (> 0). Agent JSON needs room — do not set global below 2048.
+    openrouter_max_tokens: int = field(default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS", 4096))
+    openrouter_max_tokens_strategy: int = field(
+        default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS_STRATEGY", 6144)
+    )
+    openrouter_max_tokens_content: int = field(default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS_CONTENT", 4096))
+    openrouter_max_tokens_review: int = field(default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS_REVIEW", 2048))
+    openrouter_max_tokens_competitor: int = field(
+        default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS_COMPETITOR", 2048)
+    )
+    openrouter_max_tokens_search: int = field(default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS_SEARCH", 1024))
+    openrouter_max_tokens_analytics: int = field(
+        default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS_ANALYTICS", 1024)
+    )
+    openrouter_max_tokens_repair: int = field(default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS_REPAIR", 2048))
+    openrouter_max_tokens_suggest: int = field(default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS_SUGGEST", 1536))
     # Comma-separated OpenRouter model ids tried after the requested model and OPENROUTER_MODEL (quota/model errors only).
     openrouter_model_fallbacks: str = field(default_factory=lambda: _str_env("OPENROUTER_MODEL_FALLBACKS"))
     # Comma-separated free OpenRouter model ids (HTTP 402 last resort). Set to ``none`` to disable. When unset

@@ -31,18 +31,14 @@ from utils.admin_rbac import (
     PERM_DB_READ,
     PERM_OPS,
     PERM_SECURITY,
+    PERM_USER_CREDENTIALS,
 )
 from utils.ai_usage_limits import public_rate_limits
+from utils.privacy import admin_viewer_may_see_contact_pii, mask_email, redact_text, sanitize_db_row, secret_tail
 from utils.rate_limit import check_rate_limit
 
 logger = logging.getLogger(__name__)
 
-
-def _secret_tail(raw: str | None) -> str | None:
-    t = (raw or "").strip()
-    if not t:
-        return None
-    return ("…" + t[-4:]) if len(t) > 4 else "…****"
 
 _SAFE_EXTRA_TABLES = frozenset(
     {
@@ -310,7 +306,7 @@ def create_admin_control_router(*, require_admin: Callable[..., dict[str, Any]])
         serializable: list[dict[str, Any]] = []
         for row in data_rows:
             item: dict[str, Any] = {}
-            for k, v in dict(row).items():
+            for k, v in sanitize_db_row(dict(row)).items():
                 if hasattr(v, "isoformat"):
                     item[str(k)] = v.isoformat()
                 else:
@@ -351,11 +347,16 @@ def create_admin_control_router(*, require_admin: Callable[..., dict[str, Any]])
             raise HTTPException(status_code=403, detail="Insufficient permissions")
         items_raw, total = fetch_audit_page(db, page=page, page_size=page_size, q=q)
         total_pages = (total + page_size - 1) // page_size if total else 0
+        reveal_pii = admin_viewer_may_see_contact_pii(str(admin.get("role")))
         items = [
             AuditEventRow(
                 id=int(r["id"]),
                 actor_id=str(r.get("actor_id") or ""),
-                actor_email=str(r["actor_email"]) if r.get("actor_email") else None,
+                actor_email=(
+                    mask_email(str(r["actor_email"]), reveal=reveal_pii)
+                    if r.get("actor_email")
+                    else None
+                ),
                 action=str(r.get("action") or ""),
                 resource_type=str(r.get("resource_type") or ""),
                 resource_id=str(r["resource_id"]) if r.get("resource_id") else None,
@@ -430,18 +431,18 @@ def create_admin_control_router(*, require_admin: Callable[..., dict[str, Any]])
             notes.append("OPENROUTER_API_KEY is not configured — paid model routing and completions will fail.")
 
         providers = {
-            "openrouter": AiProviderKeyRow(configured=ok, key_suffix=_secret_tail(cfg.openrouter_api_key)),
+            "openrouter": AiProviderKeyRow(configured=ok, key_suffix=secret_tail(cfg.openrouter_api_key)),
             "groq": AiProviderKeyRow(
                 configured=bool((cfg.groq_api_key or "").strip()),
-                key_suffix=_secret_tail(cfg.groq_api_key),
+                key_suffix=secret_tail(cfg.groq_api_key),
             ),
             "google_ai_gemini": AiProviderKeyRow(
                 configured=bool((cfg.google_ai_api_key or "").strip()),
-                key_suffix=_secret_tail(cfg.google_ai_api_key),
+                key_suffix=secret_tail(cfg.google_ai_api_key),
             ),
             "pexels_stock_media": AiProviderKeyRow(
                 configured=bool((cfg.pexels_api_key or "").strip()),
-                key_suffix=_secret_tail(cfg.pexels_api_key),
+                key_suffix=secret_tail(cfg.pexels_api_key),
             ),
         }
 

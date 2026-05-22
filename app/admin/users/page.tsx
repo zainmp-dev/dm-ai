@@ -93,8 +93,10 @@ function passwordStorageLabel(storage: AdminPasswordStorage): string {
   switch (storage) {
     case "oauth_placeholder":
       return "OAuth account";
+    case "hashed":
+      return "Password (hashed)";
     case "legacy_plaintext":
-      return "Legacy plaintext";
+      return "Legacy — re-hash on login";
     case "none":
     default:
       return "None";
@@ -278,7 +280,7 @@ export default function AdminUsersPage() {
       setPwdModalStep("done");
       setDetailUser((d) =>
         d && d.id === uid
-          ? { ...d, password_storage: "legacy_plaintext", password_visible: res.new_password }
+          ? { ...d, password_storage: "hashed", password_visible: null }
           : d,
       );
       setListVersion((v) => v + 1);
@@ -674,26 +676,7 @@ export default function AdminUsersPage() {
                                 <p className="truncate text-[11px] font-medium text-[#64748b] dark:text-zinc-500">
                                   {passwordStorageLabel(row.password_storage)}
                                 </p>
-                                {row.password_visible ? (
-                                  <div className="mt-1 flex max-w-full items-center gap-1">
-                                    <code className="block min-w-0 flex-1 truncate rounded bg-[#f1f5f9] px-1.5 py-0.5 font-mono text-[11px] dark:bg-zinc-800">
-                                      {row.password_visible}
-                                    </code>
-                                    <Button
-                                      type="button"
-                                      variant="ghost"
-                                      size="sm"
-                                      className="size-7 min-w-7 shrink-0 p-0 text-[#64748b]"
-                                      aria-label="Copy password"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        void copyText("Password", row.password_visible!);
-                                      }}
-                                    >
-                                      <Copy className="size-3.5" strokeWidth={1.75} />
-                                    </Button>
-                                  </div>
-                                ) : row.password_storage === "oauth_placeholder" ? (
+                                {row.password_storage === "oauth_placeholder" ? (
                                   <p className="mt-0.5 truncate text-[11px] leading-snug text-[#94a3b8] dark:text-zinc-600">
                                     OAuth — use New pwd for email.
                                   </p>
@@ -863,24 +846,6 @@ export default function AdminUsersPage() {
                 <DetailField label="Joined">{formatDtDetail(detailUser.created_at)}</DetailField>
                 <DetailField label="Sign-in">{authLabel(detailUser.auth_provider)}</DetailField>
                 <DetailField label="Password">{passwordStorageLabel(detailUser.password_storage)}</DetailField>
-                {detailUser.password_visible ? (
-                  <DetailField label="Legacy password">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <code className="break-all rounded-lg bg-amber-50 px-2 py-1 font-mono text-[12px] text-amber-950 dark:bg-amber-950/40 dark:text-amber-100">
-                        {detailUser.password_visible}
-                      </code>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-8 rounded-lg text-[12px]"
-                        onClick={() => void copyText("Password", detailUser.password_visible!)}
-                      >
-                        Copy
-                      </Button>
-                    </div>
-                  </DetailField>
-                ) : null}
                 <DetailField label="Workspace">
                   <div className="space-y-1">
                     <p>{setupLabel(detailUser).label}</p>

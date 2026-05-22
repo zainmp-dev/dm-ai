@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
-import hmac
 import json
 import logging
 import mimetypes
@@ -56,6 +55,17 @@ from routes.social_routes import router as social_router
 from services.boost_link_service import boost_url_for_target
 from services.oauth_service import linkedin_connect_url, meta_connect_url
 from utils.http_client import request_json
+from middleware.security_headers import SecurityHeadersMiddleware
+from services.auth_passwords import hash_password, password_storage_kind, verify_password
+from utils.ai_usage_limits import enforce_ai_usage_limit
+from utils.admin_rbac import PERM_USER_CREDENTIALS, role_has_permission
+from utils.privacy import (
+    admin_viewer_may_see_contact_pii,
+    mask_email,
+    mask_name,
+    redact_text,
+    truncate_log_label,
+)
 from utils.rate_limit import check_rate_limit
 from utils.state_signing import encode_state, new_nonce, verify_state
 from utils.admin_rbac import is_platform_operator, normalize_stored_role
@@ -76,7 +86,7 @@ def _http_for_agent_error(exc: AgentError) -> tuple[int, str]:
             "https://openrouter.ai/settings/credits or pick a cheaper model and try again."
         )
         return 402, friendly
-    logger.warning("AgentError (non-402): %s", msg[:1200])
+    logger.warning("AgentError (non-402): %s", redact_text(msg, max_len=1200))
     return 502, "AI generation failed. Try again or choose another model."
 
 
@@ -485,7 +495,7 @@ def _upsert_oauth_user(
                 "id": user_id,
                 "name": resolved_name,
                 "email": email_norm,
-                "password": uuid.uuid4().hex,
+                "password": hash_password(uuid.uuid4().hex),
                 "auth_provider": provider,
                 "auth_subject": subject,
             },
@@ -698,16 +708,8 @@ def _generate_admin_password() -> str:
     return secrets.token_urlsafe(14)
 
 
-def _admin_password_storage_and_visible(password_raw: str | None, auth_provider: str | None) -> tuple[str, str | None]:
-    raw = str(password_raw or "").strip()
-    if not raw:
-        return "none", None
-    if str(auth_provider or "").strip():
-        return "oauth_placeholder", None
-    return "legacy_plaintext", raw
-
-
-def _admin_user_row_from_rd(rd: dict) -> AdminUserRow:
+def _admin_user_row_from_rd(rd: dict, *, viewer_role: str | None) -> AdminUserRow:
+    reveal_pii = admin_viewer_may_see_contact_pii(viewer_role)
     raw_role = str(rd.get("role") or "user").strip().lower()
     role_out = raw_role if raw_role in {"admin", "user"} else "user"
     ap_raw = rd.get("auth_provider")
@@ -715,14 +717,11 @@ def _admin_user_row_from_rd(rd: dict) -> AdminUserRow:
     auth_prov = auth_prov if auth_prov else None
     wc_raw = rd.get("workspace_configured")
     pw_raw = rd.get("password")
-    storage, visible = _admin_password_storage_and_visible(
-        str(pw_raw) if pw_raw is not None else None,
-        auth_prov,
-    )
+    storage = password_storage_kind(str(pw_raw) if pw_raw is not None else None, auth_prov)
     return AdminUserRow(
         id=str(rd["id"]),
-        name=str(rd.get("name") or ""),
-        email=str(rd.get("email") or ""),
+        name=mask_name(str(rd.get("name") or ""), reveal=reveal_pii),
+        email=mask_email(str(rd.get("email") or ""), reveal=reveal_pii),
         role=role_out,
         auth_provider=auth_prov,
         created_at=rd.get("created_at"),
@@ -736,7 +735,7 @@ def _admin_user_row_from_rd(rd: dict) -> AdminUserRow:
         content_count=int(rd.get("content_count") or 0),
         competitor_count=int(rd.get("competitor_count") or 0),
         password_storage=storage,
-        password_visible=visible,
+        password_visible=None,
     )
 
 
@@ -2445,6 +2444,7 @@ app = FastAPI(
     docs_url=None,
 )
 
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),
@@ -2727,7 +2727,7 @@ def signup(body: SignupRequest, db: Session = Depends(get_db)) -> AuthResponse:
             "insert into flowpilot_users (id, name, email, password, role, created_at) "
             "values (:id, :name, :email, :password, 'user', now())"
         ),
-        {"id": user_id, "name": name, "email": email, "password": password},
+        {"id": user_id, "name": name, "email": email, "password": hash_password(password)},
     )
     db.commit()
 
@@ -2748,9 +2748,15 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> AuthResponse:
     if row is None:
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    stored_pw = str(row.get("password") or "")
-    if not hmac.compare_digest(stored_pw, body.password):
+    ok, upgraded = verify_password(body.password, str(row.get("password") or ""))
+    if not ok:
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    if upgraded:
+        db.execute(
+            text("update flowpilot_users set password = :password where id = :id"),
+            {"password": upgraded, "id": str(row["id"])},
+        )
+        db.commit()
 
     user_row = {k: row[k] for k in ("id", "name", "email", "role")}
     return AuthResponse(token=auth_token(str(row["id"])), user=serialize_auth_user(user_row))
@@ -2798,7 +2804,7 @@ def admin_overview(db: Session = Depends(get_db), _admin: dict[str, Any] = Depen
 @app.get("/admin/users", response_model=AdminUsersPageResponse)
 def admin_users(
     db: Session = Depends(get_db),
-    _admin: dict[str, Any] = Depends(require_admin),
+    admin: dict[str, Any] = Depends(require_admin),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     q: str = Query("", max_length=220),
@@ -2856,7 +2862,8 @@ def admin_users(
         ),
         list_params,
     ).mappings().all()
-    items = [_admin_user_row_from_rd(dict(r)) for r in rows]
+    viewer_role = str(admin.get("role") or "")
+    items = [_admin_user_row_from_rd(dict(r), viewer_role=viewer_role) for r in rows]
     return AdminUsersPageResponse(
         items=items,
         total=total,
@@ -2870,8 +2877,10 @@ def admin_users(
 def admin_create_user(
     body: AdminCreateUserRequest,
     db: Session = Depends(get_db),
-    _admin: dict[str, Any] = Depends(require_admin),
+    admin: dict[str, Any] = Depends(require_admin),
 ) -> AdminCreateUserResponse:
+    if not role_has_permission(str(admin.get("role")), PERM_USER_CREDENTIALS):
+        raise HTTPException(status_code=403, detail="Insufficient permissions to manage credentials")
     role_norm = str(body.role or "user").strip().lower()
     if role_norm not in {"admin", "user"}:
         raise HTTPException(status_code=400, detail="Invalid role")
@@ -2904,7 +2913,7 @@ def admin_create_user(
             "id": user_id,
             "name": name,
             "email": email,
-            "password": plain,
+            "password": hash_password(plain),
             "role": role_norm,
         },
     )
@@ -2923,8 +2932,10 @@ def admin_set_user_password(
     user_id: str,
     body: AdminSetPasswordRequest,
     db: Session = Depends(get_db),
-    _admin: dict[str, Any] = Depends(require_admin),
+    admin: dict[str, Any] = Depends(require_admin),
 ) -> AdminSetPasswordResponse:
+    if not role_has_permission(str(admin.get("role")), PERM_USER_CREDENTIALS):
+        raise HTTPException(status_code=403, detail="Insufficient permissions to manage credentials")
     uid = user_id.strip()
     if not uid:
         raise HTTPException(status_code=400, detail="Invalid user id")
@@ -2945,7 +2956,7 @@ def admin_set_user_password(
 
     db.execute(
         text("update flowpilot_users set password = :password where id = :id"),
-        {"password": plain, "id": uid},
+        {"password": hash_password(plain), "id": uid},
     )
     db.commit()
     return AdminSetPasswordResponse(new_password=plain)
@@ -3030,7 +3041,7 @@ left join (
 @app.get("/admin/workspaces", response_model=AdminWorkspacesPageResponse)
 def admin_workspaces(
     db: Session = Depends(get_db),
-    _admin: dict[str, Any] = Depends(require_admin),
+    admin: dict[str, Any] = Depends(require_admin),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     q: str = Query("", max_length=220),
@@ -3078,14 +3089,15 @@ def admin_workspaces(
         list_params,
     ).mappings().all()
 
+    reveal_pii = admin_viewer_may_see_contact_pii(str(admin.get("role")))
     items = []
     for r in rows:
         rd = dict(r)
         items.append(
             AdminWorkspaceRow(
                 workspace_id=str(rd["workspace_id"]),
-                owner_name=str(rd.get("owner_name") or ""),
-                owner_email=str(rd.get("owner_email") or ""),
+                owner_name=mask_name(str(rd.get("owner_name") or ""), reveal=reveal_pii),
+                owner_email=mask_email(str(rd.get("owner_email") or ""), reveal=reveal_pii),
                 company_name=str(rd.get("company_name") or ""),
                 company_website=str(rd.get("company_website") or ""),
                 workspace_scenario=str(rd.get("workspace_scenario") or ""),
@@ -3138,7 +3150,7 @@ def _integrations_where_params(*, connected: str, platform: str, q: str) -> tupl
 @app.get("/admin/integrations", response_model=AdminIntegrationsPageResponse)
 def admin_integrations(
     db: Session = Depends(get_db),
-    _admin: dict[str, Any] = Depends(require_admin),
+    admin: dict[str, Any] = Depends(require_admin),
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=100),
     q: str = Query("", max_length=220),
@@ -3189,6 +3201,7 @@ join flowpilot_users u on u.id = i.workspace_id and u.deleted_at is null
         list_params,
     ).mappings().all()
 
+    reveal_pii = admin_viewer_may_see_contact_pii(str(admin.get("role")))
     items = []
     for r in rows:
         rd = dict(r)
@@ -3197,8 +3210,8 @@ join flowpilot_users u on u.id = i.workspace_id and u.deleted_at is null
         items.append(
             AdminIntegrationRow(
                 workspace_id=str(rd["workspace_id"]),
-                owner_name=str(rd.get("owner_name") or ""),
-                owner_email=str(rd.get("owner_email") or ""),
+                owner_name=mask_name(str(rd.get("owner_name") or ""), reveal=reveal_pii),
+                owner_email=mask_email(str(rd.get("owner_email") or ""), reveal=reveal_pii),
                 platform=str(rd.get("platform") or ""),
                 connected=bool(rd.get("connected")),
                 account_name=str(an) if an is not None else None,
@@ -3247,6 +3260,7 @@ def workspace_search(
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     workspace_id = str(user["id"])
+    enforce_ai_usage_limit(settings, user_id=workspace_id, category="search")
     snapshot = workspace_snapshot(db, workspace_id, user)
     if not snapshot.get("workspace_configured"):
         raise HTTPException(status_code=400, detail="Complete workspace setup before using AI search.")
@@ -3461,6 +3475,7 @@ def strategy(
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     workspace_id = str(user["id"])
+    enforce_ai_usage_limit(settings, user_id=workspace_id, category="strategy")
     context = _workspace_context(db, workspace_id)
     company_name = body.company_name.strip() or context["company_name"]
     website = body.website.strip() or context["company_website"]
@@ -3511,6 +3526,7 @@ def workspace_content(
     created_content_id: str | None = None
     ai_model_used_for_response: str | None = None
     if body.action == "generate":
+        enforce_ai_usage_limit(settings, user_id=workspace_id, category="content")
         # Reject overlapping generations: each AI flow takes 30-180s; a duplicate click or
         # Strict-Mode double-mount would otherwise launch a second flow that doubles load
         # and trips OpenRouter free-model rate limits.
@@ -3570,6 +3586,7 @@ def workspace_content(
         finally:
             _release_content_lock(workspace_id)
     elif body.action == "suggest":
+        enforce_ai_usage_limit(settings, user_id=workspace_id, category="creative")
         context = _workspace_context(db, workspace_id)
         if not (context.get("company_name") or "").strip():
             raise HTTPException(
@@ -4287,8 +4304,9 @@ def remove_media_library_item(body: MediaRemoveRequest, db: Session = Depends(ge
 @app.post("/analytics/analyze")
 def analyze_content(
     body: AnalyticsRequest,
-    _user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
+    enforce_ai_usage_limit(settings, user_id=str(user["id"]), category="analytics")
     try:
         return run_analytics_agent(body.content, body.likes, body.comments, body.reach, body.ai_model)
     except AgentError as exc:
@@ -4298,7 +4316,8 @@ def analyze_content(
 
 
 @app.post("/ai/carousel")
-def ai_carousel(body: CarouselRequest, _user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+def ai_carousel(body: CarouselRequest, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    enforce_ai_usage_limit(settings, user_id=str(user["id"]), category="creative")
     try:
         return generate_carousel(
             topic=body.topic,
@@ -4308,7 +4327,11 @@ def ai_carousel(body: CarouselRequest, _user: dict[str, Any] = Depends(get_curre
     except AIServiceError:
         logger.exception("Carousel generation failed")
         raise HTTPException(status_code=502, detail="Carousel generation failed. Try again later.") from None
-def ai_image_prompt(body: ImagePromptRequest, _user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+
+
+@app.post("/ai/image-prompt")
+def ai_image_prompt(body: ImagePromptRequest, user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    enforce_ai_usage_limit(settings, user_id=str(user["id"]), category="creative")
     try:
         return generate_image_prompt(
             brief=body.brief,

@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sqlalchemy import text  # noqa: E402
 
 from database import SessionLocal  # noqa: E402
+from services.auth_passwords import hash_password  # noqa: E402
 
 
 def _require_session():
@@ -62,7 +63,7 @@ def cmd_create(email: str, password: str, name: str) -> None:
                     "set name = :name, password = :password, role = 'admin' "
                     "where id = :id"
                 ),
-                {"id": existing["id"], "name": name, "password": password},
+                {"id": existing["id"], "name": name, "password": hash_password(password)},
             )
             session.commit()
             print(f"Updated existing user '{email_norm}' → role=admin (id={existing['id']}).")
@@ -74,7 +75,7 @@ def cmd_create(email: str, password: str, name: str) -> None:
                 "insert into flowpilot_users (id, name, email, password, role, created_at) "
                 "values (:id, :name, :email, :password, 'admin', now())"
             ),
-            {"id": user_id, "name": name, "email": email_norm, "password": password},
+            {"id": user_id, "name": name, "email": email_norm, "password": hash_password(password)},
         )
         session.commit()
         print(f"Created admin '{email_norm}' (id={user_id}).")

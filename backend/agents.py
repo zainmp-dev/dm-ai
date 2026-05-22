@@ -11,6 +11,26 @@ from urllib.parse import urlparse
 import requests
 
 from config import settings
+from utils.privacy import redact_text, truncate_log_label
+
+
+def completion_max_tokens(task: str) -> int:
+    """Per-task completion budget; falls back to OPENROUTER_MAX_TOKENS when task env is <= 0."""
+    global_cap = max(256, min(int(settings.openrouter_max_tokens), 32768))
+    per_task = {
+        "strategy": settings.openrouter_max_tokens_strategy,
+        "content": settings.openrouter_max_tokens_content,
+        "review": settings.openrouter_max_tokens_review,
+        "competitor": settings.openrouter_max_tokens_competitor,
+        "search": settings.openrouter_max_tokens_search,
+        "analytics": settings.openrouter_max_tokens_analytics,
+        "repair": settings.openrouter_max_tokens_repair,
+        "suggest": settings.openrouter_max_tokens_suggest,
+    }
+    raw = int(per_task.get(task, 0) or 0)
+    if raw > 0:
+        return max(256, min(raw, global_cap))
+    return global_cap
 from prompts import (
     SYSTEM_PROMPT,
     analytics_agent_prompt,
@@ -338,13 +358,13 @@ def _parse_openrouter_affordable_max_tokens(error_body: str) -> int | None:
         return None
 
 
-def _openrouter_single_model(model: str, prompt: str) -> str:
+def _openrouter_single_model(model: str, prompt: str, *, task: str = "default") -> str:
     """Same LLM stack as workspace agents: Groq → Gemini → OpenRouter (preferred_model)."""
     try:
         result = ai_service.retry_request(
             prompt=prompt,
             preferred_model=model,
-            max_tokens=settings.openrouter_max_tokens,
+            max_tokens=completion_max_tokens(task),
             temperature=0.7,
             prefer_groq_first=True,
             prefer_gemini=True,
@@ -357,13 +377,15 @@ def _openrouter_single_model(model: str, prompt: str) -> str:
 def call_openrouter_with_fallback(
     prompt: str,
     preferred_model: str | None = None,
+    *,
+    task: str = "default",
 ) -> tuple[str, str]:
     """Groq first (when configured), then Gemini, then OpenRouter with model routing."""
     try:
         result = ai_service.retry_request(
             prompt=prompt,
             preferred_model=preferred_model,
-            max_tokens=settings.openrouter_max_tokens,
+            max_tokens=completion_max_tokens(task),
             temperature=0.7,
             prefer_groq_first=True,
             prefer_gemini=True,
@@ -376,6 +398,8 @@ def call_openrouter_with_fallback(
 def call_gemini_with_openrouter_fallback(
     prompt: str,
     preferred_openrouter_model: str | None = None,
+    *,
+    task: str = "strategy",
 ) -> tuple[str, str]:
     """Strategy-agent multi-tier chain: Groq → Gemini → OpenRouter.
 
@@ -411,7 +435,7 @@ def call_gemini_with_openrouter_fallback(
             result = ai_service.retry_request(
                 prompt=prompt,
                 preferred_model=model,
-                max_tokens=settings.openrouter_max_tokens,
+                max_tokens=completion_max_tokens(task),
                 temperature=0.7,
                 prefer_groq_first=True,
                 prefer_gemini=True,
@@ -424,7 +448,7 @@ def call_gemini_with_openrouter_fallback(
                 "agents.strategy model=%s failed status=%s — trying next in chain",
                 model,
                 exc.status_code,
-                str(exc)[:200],
+                redact_text(str(exc), max_len=200),
             )
             continue
 
@@ -675,7 +699,7 @@ def run_workspace_setup_master(
         region_focus_research=region_focus,
     )
     try:
-        raw, used = call_openrouter_with_fallback(prompt, ai_model)
+        raw, used = call_openrouter_with_fallback(prompt, ai_model, task="strategy")
         parsed = _extract_json(raw, preferred_model=ai_model)
         if isinstance(parsed, dict) and _master_setup_has_required_keys(parsed):
             _canonicalize_master_setup(
@@ -732,7 +756,9 @@ def _extract_json(
         if _allow_repair:
             shape = expected_shape or "Valid JSON object or array as requested."
             try:
-                repaired, _ = call_openrouter_with_fallback(json_repair_prompt(raw_text, shape), preferred_model)
+                repaired, _ = call_openrouter_with_fallback(
+                    json_repair_prompt(raw_text, shape), preferred_model, task="repair"
+                )
             except AgentError as exc:
                 raise AgentError("AI response did not contain JSON") from exc
             return _extract_json(repaired, expected_shape=expected_shape, _allow_repair=False, preferred_model=preferred_model)
@@ -750,14 +776,16 @@ def _extract_json(
             raise AgentError("AI response JSON could not be parsed") from exc
         shape = expected_shape or "Valid JSON object or array as requested."
         try:
-            repaired, _ = call_openrouter_with_fallback(json_repair_prompt(raw_text, shape), preferred_model)
+            repaired, _ = call_openrouter_with_fallback(
+                json_repair_prompt(raw_text, shape), preferred_model, task="repair"
+            )
         except AgentError as repair_exc:
             raise AgentError("AI response JSON could not be parsed") from repair_exc
         return _extract_json(repaired, expected_shape=expected_shape, _allow_repair=False, preferred_model=preferred_model)
 
 
-def call_openrouter(prompt: str, model: str | None = None) -> str:
-    return _openrouter_single_model(model or settings.openrouter_model, prompt)
+def call_openrouter(prompt: str, model: str | None = None, *, task: str = "default") -> str:
+    return _openrouter_single_model(model or settings.openrouter_model, prompt, task=task)
 
 
 def run_strategy_agent(niche: str) -> dict[str, Any]:
@@ -830,7 +858,7 @@ def generate_workspace_strategy_only(
     flow_started = time.time()
     logger.info(
         "agents.strategy_only start company=%s scenario=%s region=%s requested_model=%s",
-        (company_name or "")[:60],
+        truncate_log_label(company_name),
         scenario,
         primary_region,
         ai_model or "(auto)",
@@ -870,7 +898,7 @@ def generate_workspace_research(
     flow_started = time.time()
     logger.info(
         "agents.flow start company=%s scenario=%s region=%s days=%s requested_model=%s",
-        (company_name or "")[:60],
+        truncate_log_label(company_name),
         scenario,
         primary_region,
         calendar_days,
@@ -960,7 +988,7 @@ def run_workspace_strategy_agent(
     )
     prompt = strategy_agent_prompt(context, primary_region_code=primary_region)
     logger.info("agents.strategy llm=start prompt_chars=%s provider=gemini_first", len(prompt))
-    raw, used_model = call_gemini_with_openrouter_fallback(prompt, preferred_openrouter_model=ai_model)
+    raw, used_model = call_gemini_with_openrouter_fallback(prompt, preferred_openrouter_model=ai_model, task="strategy")
     result = _extract_json(raw, preferred_model=ai_model)
     if not isinstance(result, dict):
         raise AgentError("Workspace strategy agent did not return a JSON object")
@@ -1076,7 +1104,7 @@ def run_workspace_content_agent(
     trimmed_strategy = _trim_strategy_for_content_prompt(strategy_output)
     prompt = content_agent_prompt(context, trimmed_strategy, effective_days)
     logger.info("agents.content llm=start prompt_chars=%s", len(prompt))
-    raw, model_used = call_openrouter_with_fallback(prompt, ai_model)
+    raw, model_used = call_openrouter_with_fallback(prompt, ai_model, task="content")
     parsed = _extract_json(raw, preferred_model=ai_model)
     extras: dict[str, Any] = {}
     post_items: list[Any]
@@ -1132,6 +1160,7 @@ def run_workspace_content_agent(
             rraw, review_used = call_openrouter_with_fallback(
                 review_agent_prompt(context, post_items),
                 ai_model,
+                task="review",
             )
             reviewed = _extract_json(rraw, preferred_model=ai_model)
             if isinstance(reviewed, list) and len(reviewed) > 0:
@@ -1352,7 +1381,7 @@ def suggest_master_content_post(
     else:
         platform_hint = ""
     prompt = single_post_suggest_prompt(context, strategy_snapshot, hint, platform=platform_hint)
-    raw, used_model = call_openrouter_with_fallback(prompt, ai_model)
+    raw, used_model = call_openrouter_with_fallback(prompt, ai_model, task="suggest")
     result = _extract_json(raw)
     if not isinstance(result, dict):
         raise AgentError("AI did not return a JSON object for the post draft")
@@ -1408,7 +1437,7 @@ def generate_reviewed_content(niche: str) -> tuple[dict[str, Any], list[dict[str
 def run_analytics_agent(content: str, likes: int, comments: int, reach: int, ai_model: str | None = None) -> dict[str, Any]:
     context = build_brand_context(brand_name="the brand", industry="digital business", competitors=[])
     result = _extract_json(
-        call_openrouter(analytics_agent_prompt(context, content, likes, comments, reach), ai_model),
+        call_openrouter(analytics_agent_prompt(context, content, likes, comments, reach), ai_model, task="analytics"),
     )
     if not isinstance(result, dict):
         raise AgentError("Analytics agent did not return a JSON object")
@@ -1424,7 +1453,7 @@ def run_workspace_search_agent(
 ) -> tuple[str, str]:
     region_description = workspace_region_label(primary_region)
     prompt = workspace_search_prompt(workspace_context_json, query, region_description)
-    text, used_model = call_openrouter_with_fallback(prompt, ai_model)
+    text, used_model = call_openrouter_with_fallback(prompt, ai_model, task="search")
     cleaned = (text or "").strip()
     if not cleaned:
         raise AgentError("Workspace search returned an empty answer")
@@ -1523,7 +1552,7 @@ def _run_competitor_discovery_llm(
         user_seeds_json=seeds,
         partial_competitors_json=partial,
     )
-    raw, _used = call_openrouter_with_fallback(prompt, ai_model)
+    raw, _used = call_openrouter_with_fallback(prompt, ai_model, task="competitor")
     parsed = _extract_json(raw, preferred_model=ai_model)
     rows: list[dict[str, Any]] = []
     if isinstance(parsed, list):
@@ -1917,7 +1946,7 @@ RULES:
 - Avoid generic business advice.
 """
     try:
-        raw, _used = call_openrouter_with_fallback(prompt, ai_model)
+        raw, _used = call_openrouter_with_fallback(prompt, ai_model, task="content")
         parsed = _extract_json(raw, preferred_model=ai_model)
         if isinstance(parsed, list):
             return [x for x in parsed if isinstance(x, dict)]
