@@ -540,6 +540,48 @@ def _init_workspace_tables(connection: object) -> None:
         """,
         "create index if not exists idx_flowpilot_admin_audit_created on flowpilot_admin_audit(created_at desc)",
         "create index if not exists idx_flowpilot_admin_audit_actor on flowpilot_admin_audit(actor_id)",
+        """
+        create table if not exists flowpilot_blog_settings (
+            workspace_id text primary key references flowpilot_workspace(workspace_id) on delete cascade,
+            settings_json text not null default '{}',
+            updated_at timestamptz not null default now()
+        )
+        """,
+        """
+        create table if not exists flowpilot_categories (
+            id uuid primary key default gen_random_uuid(),
+            workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
+            name text not null,
+            description text not null default '',
+            created_at timestamptz not null default now()
+        )
+        """,
+        "create index if not exists idx_flowpilot_categories_workspace on flowpilot_categories(workspace_id)",
+        """
+        create table if not exists flowpilot_blogs (
+            id uuid primary key default gen_random_uuid(),
+            workspace_id text not null references flowpilot_workspace(workspace_id) on delete cascade,
+            title text not null,
+            author text not null default '',
+            keywords text[] not null default '{}',
+            category_id uuid references flowpilot_categories(id) on delete set null,
+            meta_description text not null default '',
+            content text not null default '',
+            featured_image_url text not null default '',
+            status text not null default 'draft',
+            views integer not null default 0,
+            clicks integer not null default 0,
+            published_at timestamptz,
+            created_at timestamptz not null default now(),
+            updated_at timestamptz not null default now()
+        )
+        """,
+        "create index if not exists idx_flowpilot_blogs_workspace_status on flowpilot_blogs(workspace_id, status)",
+        "create index if not exists idx_flowpilot_blogs_category on flowpilot_blogs(category_id)",
+        "create index if not exists idx_flowpilot_blogs_workspace_title on flowpilot_blogs(workspace_id, title)",
+        "create index if not exists idx_flowpilot_blogs_workspace_author on flowpilot_blogs(workspace_id, author)",
+        "create index if not exists idx_flowpilot_blogs_workspace_created on flowpilot_blogs(workspace_id, created_at desc)",
+        "create index if not exists idx_flowpilot_blogs_workspace_updated on flowpilot_blogs(workspace_id, updated_at desc)",
     ]
     for statement in statements:
         connection.execute(text(statement))

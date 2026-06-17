@@ -7,12 +7,12 @@
     "dev:all": "npm run backend:free-port && concurrently -k -n api,web -c magenta,cyan \"npm run backend:dev\" \"npx --yes wait-on -t 120000 -i 200 http-get://127.0.0.1:8011/health && npm run dev\"",
     "dev:all:stable": "npm run backend:free-port && concurrently -k -n api,web -c magenta,cyan \"npm run backend:dev:stable\" \"npx --yes wait-on -t 120000 -i 200 http-get://127.0.0.1:8011/health && npm run dev\"",
     "backend:free-port": "node scripts/backend-free-port.mjs",
-    "backend:deps": "./.venv/bin/pip install -r backend/requirements.txt",
+    "backend:deps": "node scripts/venv-exec.mjs -m pip install -r backend/requirements.txt",
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "backend:dev": "./.venv/bin/python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --reload --reload-dir backend --reload-delay 2 --port 8011",
-    "backend:dev:stable": "./.venv/bin/python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8011 --http h11"
+    "backend:dev": "node scripts/venv-exec.mjs -m uvicorn main:app --app-dir backend --host 127.0.0.1 --reload --reload-dir backend --reload-delay 2 --port 8011",
+    "backend:dev:stable": "node scripts/venv-exec.mjs -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8011 --http h11"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
@@ -36,6 +36,8 @@
     "read-excel-file": "^9.0.6",
     "recharts": "^3.2.1",
     "sonner": "^2.0.7",
+    "suneditor": "^2.47.8",
+    "suneditor-react": "^3.6.1",
     "tailwind-merge": "^3.3.1",
     "zustand": "^5.0.8"
   },

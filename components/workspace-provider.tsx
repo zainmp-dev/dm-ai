@@ -6,6 +6,7 @@ import { useWorkspaceStore } from "@/lib/workspace-store";
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const refreshWorkspace = useWorkspaceStore((s) => s.refreshWorkspace);
   const loadWorkspaceSetups = useWorkspaceStore((s) => s.loadWorkspaceSetups);
+  const hydrateClientPreferences = useWorkspaceStore((s) => s.hydrateClientPreferences);
   const syncAuthSessionFromServer = useWorkspaceStore((s) => s.syncAuthSessionFromServer);
   const workspace = useWorkspaceStore((s) => s.workspace);
   const workspaceSetups = useWorkspaceStore((s) => s.workspaceSetups);
@@ -13,12 +14,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const setActiveWorkspace = useWorkspaceStore((s) => s.setActiveWorkspace);
 
   useEffect(() => {
+    hydrateClientPreferences();
     loadWorkspaceSetups();
     void (async () => {
       await syncAuthSessionFromServer();
       await refreshWorkspace({ soft: true });
     })();
-  }, [loadWorkspaceSetups, refreshWorkspace, syncAuthSessionFromServer]);
+  }, [hydrateClientPreferences, loadWorkspaceSetups, refreshWorkspace, syncAuthSessionFromServer]);
 
   // Wait until the initial GET /workspace has populated `workspace` before syncing
   // the active local setup. Otherwise `setActiveWorkspace` sees `workspace === null`,

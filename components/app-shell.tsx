@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, type ReactNode } from "react";
 import {
   Bell,
+  BookOpen,
   Check,
   ChevronDown,
   ChevronsUpDown,
@@ -55,6 +56,7 @@ const PAGE_TITLES: Record<string, string> = {
   "/scheduling": "Workflow",
   "/publishing": "Workflow",
   "/campaigns": "Campaigns",
+  "/blog": "Blog",
   "/notifications": "Notifications",
   "/profile": "Profile",
   "/media": "Media Setup",
@@ -79,7 +81,8 @@ type SidebarNavItem = {
 const SIDEBAR_NAV: SidebarNavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/pipeline", label: "Workflow", icon: Workflow },
-  { href: "/campaigns", label: "Campaigns", icon: Megaphone, dividerAfter: true },
+  { href: "/campaigns", label: "Campaigns", icon: Megaphone },
+  { href: "/blog", label: "Blog", icon: BookOpen, dividerAfter: true },
   { href: "/notifications", label: "Notifications", icon: Bell, notificationBadge: true },
   { href: "/media", label: "Media Setup", icon: Images },
   {
@@ -171,7 +174,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const clearWorkspaceError = useWorkspaceStore((s) => s.clearWorkspaceError);
   const { push: pushToast } = useToast();
 
-  const title = pathname.startsWith("/competitors/") ? "Competitor research" : PAGE_TITLES[pathname] ?? "Workspace";
+  const title = pathname.startsWith("/competitors/")
+    ? "Competitor research"
+    : pathname.startsWith("/blog")
+      ? "Blog"
+      : PAGE_TITLES[pathname] ?? "Workspace";
   const hasSavedWorkspaceSetup = Boolean(activeWorkspaceId) || workspaceSetups.length > 0;
   const visibleWorkspace = hasSavedWorkspaceSetup ? workspace : null;
   const profile = visibleWorkspace?.profile;

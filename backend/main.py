@@ -50,9 +50,18 @@ from services.posting_service import publish_flowpilot_workspace_item
 from services.ai import AIServiceError, generate_carousel, generate_image_prompt
 from scheduler import scheduler_loop
 from routes.ads_routes import router as ads_router
+from routes.blog_routes import api_router as api_blog_router, router as blog_router
 from routes.campaign_mgmt_routes import router as campaign_mgmt_router
 from routes.social_routes import router as social_router
 from services.boost_link_service import boost_url_for_target
+from services.media.cloudinary_service import (
+    cloudinary_public_id_from_delivery_url as _cloudinary_public_id_from_delivery_url,
+    cloudinary_public_id_stem as _cloudinary_public_id_stem,
+    cloudinary_uploads_ready as _cloudinary_uploads_ready,
+    try_destroy_cloudinary_delivery_asset as _try_destroy_cloudinary_delivery_asset,
+    try_upload_remote_to_cloudinary as _try_upload_remote_to_cloudinary,
+    upload_data_url_to_cloudinary as _upload_to_cloudinary,
+)
 from services.oauth_service import linkedin_connect_url, meta_connect_url
 from utils.http_client import request_json
 from middleware.security_headers import SecurityHeadersMiddleware
@@ -521,11 +530,6 @@ def _upsert_oauth_user(
         db.commit()
     resolved_name = (str(row.get("name") or "").strip() or name.strip() or _auth_name_from_email(email_norm))
     return {"id": user_id, "name": resolved_name, "email": email_norm, "role": str(row.get("role") or "user")}, False
-
-def _cloudinary_uploads_ready() -> bool:
-    return bool(
-        settings.cloudinary_cloud_name and settings.cloudinary_api_key and settings.cloudinary_api_secret
-    )
 
 
 def default_workspace_snapshot(user: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1202,155 +1206,6 @@ def _workspace_leads_growth_computed(db: Session, workspace_id: str) -> list[dic
         for r in trimmed
         if isinstance(r["week_start"], date)
     ]
-
-
-def _cloudinary_public_id_stem(file_name: str | None, *, prefix: str = "flowpilot") -> str:
-    """Strip to a Cloudinary-safe public_id stem (alphanumeric, hyphen, underscore)."""
-    raw = (file_name or "").strip()
-    if raw:
-        base = Path(raw).name
-        stem = base.rsplit(".", 1)[0] if "." in base else base
-        safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", stem).strip("_")
-        if safe:
-            return safe[:120]
-    return f"{prefix}-{uuid.uuid4().hex[:10]}"
-
-
-def _upload_to_cloudinary(data_url: str, file_name: str | None) -> str:
-    if not settings.cloudinary_cloud_name or not settings.cloudinary_api_key or not settings.cloudinary_api_secret:
-        raise HTTPException(status_code=400, detail="Cloudinary credentials are not configured")
-    timestamp = str(int(time.time()))
-    public_id = _cloudinary_public_id_stem(file_name)
-    # Signed upload: every POST param except `file` and `api_key` must be included in the signature.
-    params_to_sign = {
-        "folder": settings.cloudinary_folder,
-        "public_id": public_id,
-        "timestamp": timestamp,
-    }
-    signature_payload = "&".join(f"{key}={params_to_sign[key]}" for key in sorted(params_to_sign))
-    signature = hashlib.sha1(f"{signature_payload}{settings.cloudinary_api_secret}".encode()).hexdigest()
-    try:
-        response = requests.post(
-            f"https://api.cloudinary.com/v1_1/{settings.cloudinary_cloud_name}/auto/upload",
-            data={
-                **params_to_sign,
-                "api_key": settings.cloudinary_api_key,
-                "signature": signature,
-                "file": data_url,
-            },
-            timeout=settings.request_timeout_seconds,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except requests.RequestException as exc:
-        detail = exc.response.text[:300] if exc.response is not None else str(exc)
-        raise HTTPException(status_code=502, detail=f"Cloudinary upload failed: {detail}") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="Cloudinary returned invalid JSON") from exc
-
-    secure_url = str(payload.get("secure_url", "")).strip()
-    if not secure_url:
-        raise HTTPException(status_code=502, detail="Cloudinary upload did not return a secure URL")
-    return secure_url
-
-
-def _try_upload_remote_to_cloudinary(source_url: str, *, public_id: str) -> str | None:
-    """Re-host a remote https asset in Cloudinary. Returns secure_url or None on failure."""
-    if not settings.cloudinary_cloud_name or not settings.cloudinary_api_key or not settings.cloudinary_api_secret:
-        return None
-    if not source_url.startswith("https://") or source_url.startswith("https://res.cloudinary.com/"):
-        return None
-    timestamp = str(int(time.time()))
-    params_to_sign: dict[str, str] = {
-        "folder": settings.cloudinary_folder,
-        "public_id": public_id,
-        "timestamp": timestamp,
-    }
-    signature_payload = "&".join(f"{key}={params_to_sign[key]}" for key in sorted(params_to_sign))
-    signature = hashlib.sha1(f"{signature_payload}{settings.cloudinary_api_secret}".encode()).hexdigest()
-    try:
-        response = requests.post(
-            f"https://api.cloudinary.com/v1_1/{settings.cloudinary_cloud_name}/auto/upload",
-            data={
-                **params_to_sign,
-                "api_key": settings.cloudinary_api_key,
-                "signature": signature,
-                "file": source_url,
-            },
-            timeout=settings.request_timeout_seconds,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except requests.RequestException as exc:
-        detail = exc.response.text[:500] if exc.response is not None else str(exc)
-        logger.warning("Cloudinary remote upload failed: %s", detail)
-        return None
-    except ValueError as exc:
-        logger.warning("Cloudinary remote upload invalid JSON: %s", exc)
-        return None
-
-    secure_url = str(payload.get("secure_url", "")).strip()
-    if not secure_url:
-        return None
-    return secure_url
-
-
-def _cloudinary_public_id_from_delivery_url(url: str) -> tuple[str, str, str] | None:
-    """Parse a res.cloudinary.com delivery URL → (cloud_name, resource_type, public_id)."""
-    try:
-        u = urlparse(url.strip())
-        if (u.netloc or "").lower().split(":")[0] != "res.cloudinary.com":
-            return None
-        parts = [x for x in u.path.strip("/").split("/") if x]
-        if len(parts) < 4 or parts[2] != "upload":
-            return None
-        cloud_name, resource_type = parts[0], parts[1]
-        if resource_type not in ("image", "video", "raw"):
-            return None
-        rest = parts[3:]
-        if rest and rest[0].startswith("v") and len(rest[0]) > 1 and rest[0][1:].isdigit():
-            rest = rest[1:]
-        if not rest:
-            return None
-        last = rest[-1]
-        if "." in last:
-            base, ext = last.rsplit(".", 1)
-            if ext.isalnum() and 1 <= len(ext) <= 8:
-                rest = rest[:-1] + [base]
-        public_id = "/".join(rest)
-        if not public_id or ".." in public_id:
-            return None
-        return cloud_name, resource_type, public_id
-    except (ValueError, IndexError):
-        return None
-
-
-def _try_destroy_cloudinary_delivery_asset(media_url: str) -> None:
-    """Remove the asset from Cloudinary when deleting a library row (best-effort)."""
-    parsed = _cloudinary_public_id_from_delivery_url(media_url)
-    if parsed is None:
-        return
-    cloud_name, resource_type, public_id = parsed
-    if cloud_name != settings.cloudinary_cloud_name:
-        logger.warning("Skipping Cloudinary destroy: URL cloud %r != CLOUDINARY_CLOUD_NAME", cloud_name)
-        return
-    if not settings.cloudinary_api_key or not settings.cloudinary_api_secret:
-        return
-    timestamp = str(int(time.time()))
-    params_to_sign = {"public_id": public_id, "timestamp": timestamp}
-    signature_payload = "&".join(f"{k}={params_to_sign[k]}" for k in sorted(params_to_sign))
-    signature = hashlib.sha1(f"{signature_payload}{settings.cloudinary_api_secret}".encode()).hexdigest()
-    try:
-        endpoint = f"https://api.cloudinary.com/v1_1/{cloud_name}/{resource_type}/destroy"
-        response = requests.post(
-            endpoint,
-            data={**params_to_sign, "api_key": settings.cloudinary_api_key, "signature": signature},
-            timeout=settings.request_timeout_seconds,
-        )
-        if response.status_code >= 400:
-            logger.warning("Cloudinary destroy failed (%s): %s", response.status_code, response.text[:400])
-    except requests.RequestException as exc:
-        logger.warning("Cloudinary destroy request failed: %s", exc)
 
 
 MEDIA_PATH_SEG = "media-assets"
@@ -2455,6 +2310,8 @@ app.add_middleware(
 app.include_router(social_router)
 app.include_router(ads_router)
 app.include_router(campaign_mgmt_router)
+app.include_router(blog_router)
+app.include_router(api_blog_router)
 
 
 @app.get("/")

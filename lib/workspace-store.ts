@@ -196,6 +196,8 @@ interface WorkspaceStore {
   setFirstRunOnboardingFocused: (value: boolean) => void;
   sidebarCollapsed: boolean;
   setSelectedAiModel: (model: string) => void;
+  /** Sync localStorage-backed prefs after mount (avoids SSR/client hydration mismatch). */
+  hydrateClientPreferences: () => void;
   setSidebarCollapsed: (value: boolean) => void;
   /** Bumped after `syncAuthSessionFromServer` updates local role/name from GET /auth/session (re-renders staff UI). */
   authSessionRevision: number;
@@ -279,12 +281,16 @@ export const useWorkspaceStore = create<WorkspaceStore>()((set, get) => ({
   workspaceHydrated: false,
   loading: false,
   error: null,
-  selectedAiModel: loadSelectedAiModel(),
+  selectedAiModel: DEFAULT_AI_MODEL,
   lastRunUsedFreeModel: false,
   firstRunOnboardingFocused: false,
   setFirstRunOnboardingFocused: (firstRunOnboardingFocused) => set({ firstRunOnboardingFocused }),
   sidebarCollapsed: false,
   authSessionRevision: 0,
+  hydrateClientPreferences: () => {
+    if (typeof window === "undefined") return;
+    set({ selectedAiModel: loadSelectedAiModel() });
+  },
   setSelectedAiModel: (model) => {
     const m = normalizeStoredAiModel(model);
     if (typeof window !== "undefined") {
