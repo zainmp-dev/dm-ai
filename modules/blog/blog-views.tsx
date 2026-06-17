@@ -5,7 +5,6 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
-  ArrowRight,
   BadgeCheck,
   BookOpen,
   Calendar,
@@ -56,6 +55,12 @@ const BLOG_TAB_ACTIVE =
 
 const BLOG_TAB_INACTIVE =
   "border-blue-100/80 bg-slate-50/50 text-slate-600 hover:border-blue-200 hover:bg-blue-50/40 hover:shadow-sm dark:border-blue-950/50 dark:bg-zinc-800/40 dark:text-slate-300 dark:hover:bg-blue-950/30";
+
+const BLOG_PILL_ACTIVE =
+  "border-slate-900 bg-slate-900 text-white shadow-sm dark:border-zinc-100 dark:bg-zinc-100 dark:text-slate-900";
+
+const BLOG_PILL_INACTIVE =
+  "border-slate-200 bg-white text-slate-700 hover:border-slate-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-zinc-600";
 
 const BLOG_NAV: Array<{
   href: string;
@@ -192,6 +197,33 @@ type BlogCardData = {
   updatedAt: string | null;
 };
 
+function BlogPostCardActions({ postId, onDelete }: { postId: string; onDelete: () => void }) {
+  return (
+    <>
+      <Button
+        variant="secondary"
+        size="icon"
+        className="size-8 rounded-full border-0 bg-white/95 text-slate-700 shadow-md backdrop-blur-sm hover:bg-white dark:bg-zinc-900/95 dark:text-zinc-200"
+        asChild
+      >
+        <Link href={`/blog/posts/${postId}/edit`} aria-label="Edit post">
+          <Edit2 className="size-3.5" />
+        </Link>
+      </Button>
+      <Button
+        variant="secondary"
+        size="icon"
+        className="size-8 rounded-full border-0 bg-white/95 text-slate-700 shadow-md backdrop-blur-sm hover:bg-red-50 hover:text-red-600 dark:bg-zinc-900/95 dark:text-zinc-200"
+        type="button"
+        onClick={onDelete}
+        aria-label="Delete post"
+      >
+        <Trash2 className="size-3.5" />
+      </Button>
+    </>
+  );
+}
+
 function BlogPostCard({
   post,
   actions,
@@ -201,54 +233,35 @@ function BlogPostCard({
 }) {
   return (
     <article className="group">
-      <Link href={`/blog/posts/${post.id}`} className="block">
-        <div className="relative aspect-[16/10] w-full overflow-hidden rounded-3xl bg-slate-900">
+      <div className="relative">
+        <Link href={`/blog/posts/${post.id}`} className="block overflow-hidden rounded-2xl bg-slate-100 dark:bg-zinc-800">
           {post.image ? (
-            <>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={post.image}
-                alt=""
-                aria-hidden
-                className="absolute inset-0 h-full w-full scale-110 object-cover opacity-40 blur-md"
-              />
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={post.image}
-                alt=""
-                className="relative z-10 block h-full w-full object-contain object-center transition-transform duration-500 group-hover:scale-[1.02]"
-              />
-            </>
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={post.image}
+              alt=""
+              className="aspect-[4/3] w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
+            />
           ) : (
-            <div className="flex h-full w-full items-center justify-center bg-slate-100 dark:bg-zinc-800">
-              <FileText className="size-12 text-slate-300 dark:text-zinc-600" strokeWidth={1.25} />
+            <div className="flex aspect-[4/3] w-full items-center justify-center bg-slate-100 dark:bg-zinc-800">
+              <FileText className="size-10 text-slate-300 dark:text-zinc-600" strokeWidth={1.25} />
             </div>
           )}
-          <span
-            className="absolute bottom-3 right-3 flex size-9 items-center justify-center rounded-full bg-white shadow-md shadow-black/10 transition duration-200 group-hover:scale-105 dark:bg-zinc-900 dark:shadow-black/30"
-            aria-hidden
-          >
-            <ArrowRight className="size-4 text-slate-900 dark:text-zinc-100" strokeWidth={2} />
-          </span>
-        </div>
-
-        <div className="mt-4 space-y-1.5">
-          <p className="text-sm text-slate-500 dark:text-slate-400">{post.categoryName || "Uncategorized"}</p>
-          <h3 className="line-clamp-2 text-lg font-bold leading-snug tracking-tight text-slate-900 transition-colors group-hover:text-blue-600 dark:text-zinc-50 dark:group-hover:text-blue-400">
-            {post.title}
-          </h3>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            {post.author || "Unknown author"} · {formatBlogDate(post.updatedAt)}
-          </p>
-          <div className="flex items-center justify-between gap-2 pt-1">
-            <span className="text-xs text-slate-400 dark:text-slate-500">{post.views} views</span>
-            <Badge className={cn("rounded-full border-0 px-2.5 py-0.5 text-[11px] font-medium", BLOG_STATUS_COLORS[post.status])}>
-              {BLOG_STATUS_LABELS[post.status]}
-            </Badge>
+        </Link>
+        {actions ? (
+          <div className="absolute right-3 top-3 z-10 flex items-center gap-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
+            {actions}
           </div>
-        </div>
+        ) : null}
+      </div>
+
+      <Link href={`/blog/posts/${post.id}`} className="block pt-4">
+        <p className="text-sm text-slate-500 dark:text-slate-400">{post.categoryName || "Blog"}</p>
+        <h3 className="mt-2 line-clamp-2 text-lg font-semibold leading-snug tracking-tight text-slate-900 transition-colors group-hover:text-slate-600 dark:text-zinc-50 dark:group-hover:text-zinc-300">
+          {post.title}
+        </h3>
+        <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">{formatBlogDate(post.updatedAt)}</p>
       </Link>
-      {actions ? <div className="mt-3 flex items-center gap-2">{actions}</div> : null}
     </article>
   );
 }
@@ -295,17 +308,7 @@ export function BlogDashboard() {
   };
 
   const postActions = (post: BlogCardData) => (
-    <>
-      <Button variant="outline" size="sm" asChild>
-        <Link href={`/blog/posts/${post.id}/edit`}>
-          <Edit2 className="mr-1 h-4 w-4" />
-          Edit
-        </Link>
-      </Button>
-      <Button variant="outline" size="sm" type="button" onClick={() => handleDelete(post)}>
-        <Trash2 className="h-4 w-4" />
-      </Button>
-    </>
+    <BlogPostCardActions postId={post.id} onDelete={() => handleDelete(post)} />
   );
 
   if (loading) {
@@ -415,7 +418,7 @@ export function BlogDashboard() {
             <p className="text-sm text-muted-foreground">No blog posts yet.</p>
           </div>
         ) : recentView === "card" ? (
-          <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3 lg:gap-10">
             {data.recentPosts.map((post) => (
               <BlogPostCard key={post.id} post={post} actions={postActions(post)} />
             ))}
@@ -539,30 +542,35 @@ export function BlogList() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-8">
       <div className="relative w-full">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search blogs..." className="w-full pl-9" />
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search blogs..."
+          className="h-11 w-full rounded-full border-slate-200 bg-white pl-9 dark:border-zinc-700 dark:bg-zinc-900"
+        />
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap gap-1.5">
+      <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-between">
+        <div className="flex flex-wrap justify-center gap-2">
           {STATUS_FILTERS.map((value) => (
             <button
               key={value}
               type="button"
               onClick={() => setStatus(value)}
               className={cn(
-                "rounded-xl border px-4 py-2 text-sm font-semibold transition-all duration-200",
-                status === value ? BLOG_TAB_ACTIVE : BLOG_TAB_INACTIVE
+                "rounded-full border px-5 py-2 text-sm font-medium transition-all duration-200",
+                status === value ? BLOG_PILL_ACTIVE : BLOG_PILL_INACTIVE
               )}
             >
-              {value === "all" ? "All" : value === "published" ? "Published" : "Draft"}
+              {value === "all" ? "All blogs" : value === "published" ? "Published" : "Draft"}
             </button>
           ))}
         </div>
         <div
-          className="flex items-center gap-1 rounded-xl border border-blue-100/80 bg-slate-50/50 p-1 dark:border-blue-950/50 dark:bg-zinc-800/40"
+          className="flex items-center gap-1 rounded-full border border-slate-200 bg-white p-1 dark:border-zinc-700 dark:bg-zinc-900"
           role="group"
           aria-label="Blog list view"
         >
@@ -572,10 +580,10 @@ export function BlogList() {
             aria-pressed={listView === "card"}
             aria-label="Card view"
             className={cn(
-              "inline-flex h-7 w-8 items-center justify-center rounded-lg transition",
+              "inline-flex h-8 w-9 items-center justify-center rounded-full transition",
               listView === "card"
-                ? "bg-blue-600 text-white shadow-sm dark:bg-blue-500"
-                : "text-slate-500 hover:bg-white hover:text-slate-700 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+                ? "bg-slate-900 text-white dark:bg-zinc-100 dark:text-slate-900"
+                : "text-slate-500 hover:text-slate-800 dark:hover:text-zinc-200"
             )}
           >
             <LayoutGrid className="h-4 w-4" />
@@ -586,10 +594,10 @@ export function BlogList() {
             aria-pressed={listView === "list"}
             aria-label="List view"
             className={cn(
-              "inline-flex h-7 w-8 items-center justify-center rounded-lg transition",
+              "inline-flex h-8 w-9 items-center justify-center rounded-full transition",
               listView === "list"
-                ? "bg-blue-600 text-white shadow-sm dark:bg-blue-500"
-                : "text-slate-500 hover:bg-white hover:text-slate-700 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+                ? "bg-slate-900 text-white dark:bg-zinc-100 dark:text-slate-900"
+                : "text-slate-500 hover:text-slate-800 dark:hover:text-zinc-200"
             )}
           >
             <List className="h-4 w-4" />
@@ -598,9 +606,9 @@ export function BlogList() {
       </div>
 
       {loading ? (
-        <div className={cn(listView === "card" ? "grid gap-6 sm:grid-cols-2 xl:grid-cols-3" : "space-y-3")}>
+        <div className={cn(listView === "card" ? "grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3 lg:gap-10" : "space-y-3")}>
           {Array.from({ length: listView === "card" ? 6 : 4 }).map((_, i) => (
-            <Skeleton key={i} className={cn(listView === "card" ? "aspect-[4/3] rounded-3xl" : "h-20 rounded-2xl")} />
+            <Skeleton key={i} className={cn(listView === "card" ? "aspect-[4/3] rounded-2xl" : "h-20 rounded-2xl")} />
           ))}
         </div>
       ) : filtered.length === 0 ? (
@@ -608,24 +616,12 @@ export function BlogList() {
           No blogs found. Create a new post to get started.
         </Card>
       ) : listView === "card" ? (
-        <div className="grid gap-6 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3 lg:gap-10">
           {filtered.map((post) => (
             <BlogPostCard
               key={post.id}
               post={post}
-              actions={
-                <>
-                  <Button variant="outline" size="sm" asChild>
-                    <Link href={`/blog/posts/${post.id}/edit`}>
-                      <Edit2 className="mr-1 h-4 w-4" />
-                      Edit
-                    </Link>
-                  </Button>
-                  <Button variant="outline" size="sm" type="button" onClick={() => handleDelete(post)}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </>
-              }
+              actions={<BlogPostCardActions postId={post.id} onDelete={() => handleDelete(post)} />}
             />
           ))}
         </div>
