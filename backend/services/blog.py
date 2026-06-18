@@ -37,7 +37,7 @@ _IFRAME_TAG_RE = re.compile(r"<iframe[^>]*>.*?</iframe>", re.IGNORECASE | re.DOT
 _ON_EVENT_ATTR_RE = re.compile(r"""\s+on\w+\s*=\s*(['"]).*?\1""", re.IGNORECASE | re.DOTALL)
 
 BLOG_LIST_COLUMNS = """
-    id, workspace_id, title, author, keywords, category_id,
+    id, workspace_id, title, slug, author, keywords, category_id,
     meta_description, content, featured_image_url, status,
     views, clicks, published_at, created_at, updated_at
 """
@@ -74,6 +74,11 @@ def sanitize_blog_content(html: str) -> str:
     return cleaned
 
 
+def _resolve_slug(raw_slug: Any, title: str) -> str:
+    slug_source = str(raw_slug or "").strip() or title
+    return _slugify(slug_source)
+
+
 def validate_blog_payload(payload: dict[str, Any]) -> dict[str, Any]:
     title = str(payload.get("title") or "").strip()
     if not title:
@@ -91,9 +96,12 @@ def validate_blog_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if status not in BLOG_STATUSES:
         raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
 
+    slug = _resolve_slug(payload.get("slug"), title)
+
     return {
         **payload,
         "title": title[:500],
+        "slug": slug[:200],
         "author": str(payload.get("author") or "").strip()[:200],
         "content": content,
         "meta_description": str(payload.get("meta_description") or "").strip()[:500],
@@ -136,10 +144,11 @@ def row_to_post(row: dict[str, Any], category_name: str = "") -> dict[str, Any]:
     keywords = row.get("keywords") or []
     content = row.get("content") or ""
     title = row.get("title") or ""
+    stored_slug = str(row.get("slug") or "").strip()
     return {
         "id": str(row["id"]),
         "title": title,
-        "slug": _slugify(title),
+        "slug": stored_slug if stored_slug else _slugify(title),
         "author": row.get("author") or "",
         "content": content,
         "description": _plain_text(content)[:150],
@@ -234,7 +243,7 @@ def list_blog_summaries(workspace_id: str) -> list[dict[str, Any]]:
         rows = db.execute(
             text(
                 """
-                select b.id, b.title, b.featured_image_url, c.name as category_name
+                select b.id, b.title, b.slug, b.featured_image_url, c.name as category_name
                 from flowpilot_blogs b
                 left join flowpilot_categories c on c.id = b.category_id
                 where b.workspace_id = :ws
@@ -247,7 +256,7 @@ def list_blog_summaries(workspace_id: str) -> list[dict[str, Any]]:
             {
                 "id": str(r["id"]),
                 "title": r.get("title") or "",
-                "slug": _slugify(str(r.get("title") or "")),
+                "slug": _resolve_slug(r.get("slug"), str(r.get("title") or "")),
                 "category_name": r.get("category_name") or "",
                 "image": r.get("featured_image_url") or "",
             }
@@ -292,11 +301,11 @@ def create_blog(workspace_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             text(
                 """
                 insert into flowpilot_blogs (
-                    id, workspace_id, title, author, keywords, category_id,
+                    id, workspace_id, title, slug, author, keywords, category_id,
                     meta_description, content, featured_image_url, status,
                     published_at, created_at, updated_at
                 ) values (
-                    :id, :ws, :title, :author, :keywords, :category_id,
+                    :id, :ws, :title, :slug, :author, :keywords, :category_id,
                     :meta_description, :content, :featured_image_url, :status,
                     :published_at, :created_at, :updated_at
                 )
@@ -306,6 +315,7 @@ def create_blog(workspace_id: str, payload: dict[str, Any]) -> dict[str, Any]:
                 "id": blog_id,
                 "ws": workspace_id,
                 "title": payload["title"],
+                "slug": payload["slug"],
                 "author": payload.get("author") or "",
                 "keywords": payload.get("keywords") or [],
                 "category_id": payload.get("category_id") or None,
@@ -332,6 +342,7 @@ def update_blog(workspace_id: str, blog_id: str, payload: dict[str, Any]) -> dic
 
     merged = {
         "title": payload.get("title") if payload.get("title") is not None else existing["title"],
+        "slug": payload.get("slug") if payload.get("slug") is not None else existing["slug"],
         "author": payload.get("author") if payload.get("author") is not None else existing["author"],
         "keywords": payload.get("keywords") if payload.get("keywords") is not None else existing["tags"],
         "category_id": payload.get("category_id") if "category_id" in payload else (existing["categoryId"] or None),
@@ -365,6 +376,7 @@ def update_blog(workspace_id: str, blog_id: str, payload: dict[str, Any]) -> dic
                 """
                 update flowpilot_blogs set
                     title = :title,
+                    slug = :slug,
                     author = :author,
                     keywords = :keywords,
                     category_id = :category_id,
@@ -382,6 +394,7 @@ def update_blog(workspace_id: str, blog_id: str, payload: dict[str, Any]) -> dic
                 "ws": workspace_id,
                 "id": blog_id,
                 "title": merged["title"],
+                "slug": merged["slug"],
                 "author": merged.get("author") or "",
                 "keywords": merged.get("keywords") or [],
                 "category_id": category_id,
@@ -805,8 +818,9 @@ def run_blog_generation(
     body: Any,
     user: dict[str, Any],
     db: Session,
+    workspace_id: str,
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     enforce_ai_usage_limit(settings, user_id=str(user["id"]), category="content")
 
     mode = (body.mode or "full").strip().lower()

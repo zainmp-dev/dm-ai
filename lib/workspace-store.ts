@@ -140,6 +140,23 @@ function writeStoredWorkspaceSetups(setups: WorkspaceSetupConfig[], activeWorksp
   }
 }
 
+/** Headers for APIs that partition data by the active client workspace setup (e.g. Blog CMS). */
+export function getActiveWorkspaceRequestHeaders(): Record<string, string> {
+  const { activeWorkspaceId, workspaceSetups } = useWorkspaceStore.getState();
+  if (!activeWorkspaceId) return {};
+  const setup = workspaceSetups.find((item) => item.id === activeWorkspaceId);
+  const headers: Record<string, string> = {
+    "X-Flowpilot-Workspace-Setup-Id": activeWorkspaceId,
+  };
+  if (setup?.companyName?.trim()) {
+    headers["X-Flowpilot-Workspace-Company-Name"] = setup.companyName.trim();
+  }
+  if (setup?.website?.trim()) {
+    headers["X-Flowpilot-Workspace-Website"] = setup.website.trim();
+  }
+  return headers;
+}
+
 /** Loose match for website fields so local setup and API snapshot don't trigger redundant POST /workspace. */
 function normalizeWebsiteKey(url: string): string {
   const raw = url.trim().toLowerCase();

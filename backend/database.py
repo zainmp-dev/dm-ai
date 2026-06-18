@@ -582,6 +582,8 @@ def _init_workspace_tables(connection: object) -> None:
         "create index if not exists idx_flowpilot_blogs_workspace_author on flowpilot_blogs(workspace_id, author)",
         "create index if not exists idx_flowpilot_blogs_workspace_created on flowpilot_blogs(workspace_id, created_at desc)",
         "create index if not exists idx_flowpilot_blogs_workspace_updated on flowpilot_blogs(workspace_id, updated_at desc)",
+        "alter table flowpilot_blogs add column if not exists slug text not null default ''",
+        "create index if not exists idx_flowpilot_blogs_workspace_slug on flowpilot_blogs(workspace_id, slug)",
     ]
     for statement in statements:
         connection.execute(text(statement))

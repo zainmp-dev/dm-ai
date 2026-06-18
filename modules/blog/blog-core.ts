@@ -1,6 +1,7 @@
 import axios from "axios";
 
 import { getAuthToken } from "@/lib/auth";
+import { getActiveWorkspaceRequestHeaders } from "@/lib/workspace-store";
 
 export type BlogStatus = "draft" | "published" | "scheduled" | "archived";
 
@@ -233,6 +234,10 @@ blogClient.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  const scopeHeaders = getActiveWorkspaceRequestHeaders();
+  for (const [key, value] of Object.entries(scopeHeaders)) {
+    config.headers[key] = value;
+  }
   return config;
 });
 
@@ -296,6 +301,7 @@ export async function deleteBlogPost(id: string): Promise<void> {
 function mapBlogInput(input: BlogPostInput) {
   return {
     title: input.title,
+    slug: input.slug,
     author: input.author,
     keywords: input.tags ?? [],
     categoryId: input.categoryId,

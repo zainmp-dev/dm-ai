@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from services import blog as blog_svc
 from utils.admin_rbac import normalize_stored_role
+from utils.workspace_scope import tenant_workspace_dependency
 
 router = APIRouter(prefix="/blog", tags=["blog"])
 api_router = APIRouter(prefix="/api", tags=["blog-cms"])
@@ -56,8 +57,20 @@ def get_current_user(
     return user
 
 
-def _workspace_id(user: dict[str, Any]) -> str:
-    return str(user["id"])
+def _tenant_workspace(
+    user: dict[str, Any] = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    x_flowpilot_workspace_setup_id: str | None = Header(default=None, alias="X-Flowpilot-Workspace-Setup-Id"),
+    x_flowpilot_workspace_company_name: str | None = Header(default=None, alias="X-Flowpilot-Workspace-Company-Name"),
+    x_flowpilot_workspace_website: str | None = Header(default=None, alias="X-Flowpilot-Workspace-Website"),
+) -> str:
+    return tenant_workspace_dependency(
+        user,
+        db,
+        x_flowpilot_workspace_setup_id,
+        x_flowpilot_workspace_company_name,
+        x_flowpilot_workspace_website,
+    )
 
 
 def _normalize_status(status: str) -> str:
@@ -74,10 +87,10 @@ def _normalize_status(status: str) -> str:
 
 @router.get("/dashboard")
 def blog_dashboard(
-    user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     rows = db.execute(
         text(
             """
@@ -133,10 +146,10 @@ def blog_dashboard(
 
 @router.get("/clicks")
 def blog_clicks(
-    user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     rows = db.execute(
         text(
             """
@@ -174,10 +187,10 @@ def blog_clicks(
 
 @router.get("/settings")
 def get_settings(
-    user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     row = db.execute(
         text("select settings_json from flowpilot_blog_settings where workspace_id = :workspace_id"),
         {"workspace_id": ws},
@@ -203,6 +216,7 @@ def get_settings(
 
 class BlogInput(BaseModel):
     title: str = Field(min_length=1)
+    slug: str = ""
     author: str = ""
     keywords: list[str] = Field(default_factory=list)
     categoryId: str | None = None
@@ -239,6 +253,7 @@ def _blog_payload(body: BlogInput, user: dict[str, Any]) -> dict[str, Any]:
     category_id = body.categoryId or body.category_id
     return {
         "title": body.title,
+        "slug": body.slug,
         "author": body.author.strip() or str(user.get("name") or "Admin"),
         "keywords": keywords,
         "category_id": category_id or None,
@@ -254,9 +269,9 @@ def list_blogs(
     status: str | None = Query(default=None),
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=10, ge=1, le=100),
-    user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     data = blog_svc.list_blogs(ws, status=status, page=page, limit=limit)
     return {"success": True, "data": data}
 
@@ -264,9 +279,9 @@ def list_blogs(
 @api_router.get("/blogs/{blog_id}")
 def get_blog(
     blog_id: str,
-    user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     row = blog_svc.get_blog(ws, blog_id)
     if not row:
         raise HTTPException(status_code=404, detail="Blog not found")
@@ -277,8 +292,9 @@ def get_blog(
 def create_blog(
     body: BlogInput,
     user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     payload = _blog_payload(body, user)
     payload["status"] = _normalize_status(payload["status"])
     created = blog_svc.create_blog(ws, payload)
@@ -290,8 +306,9 @@ def update_blog(
     blog_id: str,
     body: BlogInput,
     user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     payload = _blog_payload(body, user)
     payload["status"] = _normalize_status(payload["status"])
     updated = blog_svc.update_blog(ws, blog_id, payload)
@@ -303,9 +320,9 @@ def update_blog(
 @api_router.delete("/blogs/{blog_id}")
 def delete_blog(
     blog_id: str,
-    user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     if not blog_svc.delete_blog(ws, blog_id):
         raise HTTPException(status_code=404, detail="Blog not found")
     return {"success": True, "message": "Blog deleted"}
@@ -314,9 +331,9 @@ def delete_blog(
 @api_router.post("/blogs/upload-image")
 async def upload_blog_image(
     file: UploadFile = File(...),
-    user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     data = await file.read()
     url = blog_svc.upload_featured_image(ws, data, file.filename or "image.jpg", file.content_type or "")
     return {"success": True, "data": {"url": url, "featuredImageUrl": url}, "message": "Image uploaded"}
@@ -324,18 +341,18 @@ async def upload_blog_image(
 
 @api_router.get("/categories")
 def list_categories(
-    user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     return {"success": True, "data": blog_svc.list_categories(ws)}
 
 
 @api_router.post("/categories")
 def create_category(
     body: CategoryInput,
-    user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     cat_id = blog_svc.create_category(ws, body.name, body.description)
     return {"success": True, "data": {"id": cat_id}, "message": "Category created"}
 
@@ -344,9 +361,9 @@ def create_category(
 def update_category(
     category_id: str,
     body: CategoryInput,
-    user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     if not blog_svc.update_category(ws, category_id, body.name, body.description):
         raise HTTPException(status_code=404, detail="Category not found")
     return {"success": True, "message": "Category updated"}
@@ -355,9 +372,9 @@ def update_category(
 @api_router.delete("/categories/{category_id}")
 def delete_category(
     category_id: str,
-    user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
 ) -> dict[str, Any]:
-    ws = _workspace_id(user)
+    ws = workspace_id
     if not blog_svc.delete_category(ws, category_id):
         raise HTTPException(status_code=404, detail="Category not found")
     return {"success": True, "message": "Category deleted"}
@@ -368,5 +385,6 @@ def api_generate_blog(
     body: BlogGenerateInput,
     user: dict[str, Any] = Depends(get_current_user),
     db: Session = Depends(get_db),
+    workspace_id: str = Depends(_tenant_workspace),
 ) -> dict[str, Any]:
-    return blog_svc.run_blog_generation(body=body, user=user, db=db)
+    return blog_svc.run_blog_generation(body=body, user=user, db=db, workspace_id=workspace_id)

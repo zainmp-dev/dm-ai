@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { useWorkspaceStore } from "@/lib/workspace-store";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -271,6 +272,7 @@ type RecentPostsView = "list" | "card";
 export function BlogDashboard() {
   const { push } = useToast();
   const confirm = useConfirm();
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const [data, setData] = useState<BlogDashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -284,11 +286,12 @@ export function BlogDashboard() {
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchBlogDashboard()
       .then(setData)
       .catch(() => setError("Unable to load blog dashboard."))
       .finally(() => setLoading(false));
-  }, []);
+  }, [activeWorkspaceId]);
 
   const handleDelete = async (post: BlogCardData) => {
     const ok = await confirm({
@@ -472,6 +475,7 @@ export function BlogList() {
   const searchParams = useSearchParams();
   const { push } = useToast();
   const confirm = useConfirm();
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const [posts, setPosts] = useState<BlogPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -497,11 +501,11 @@ export function BlogList() {
 
   useEffect(() => {
     load();
-  }, [page, status]);
+  }, [page, status, activeWorkspaceId]);
 
   useEffect(() => {
     setPage(1);
-  }, [status]);
+  }, [status, activeWorkspaceId]);
 
   const filtered = useMemo(() => {
     return (posts ?? []).filter((post) => {
@@ -750,17 +754,19 @@ function BlogPostNav({
 }
 
 export function BlogPostView({ postId }: { postId: string }) {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const [post, setPost] = useState<BlogPost | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchBlogPost(postId)
       .then(setPost)
       .catch(() => setError("Unable to load this blog post."))
       .finally(() => setLoading(false));
-  }, [postId]);
+  }, [postId, activeWorkspaceId]);
 
   if (loading) {
     return (
@@ -910,16 +916,19 @@ export function BlogPostView({ postId }: { postId: string }) {
 }
 
 export function BlogClicked() {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const [data, setData] = useState<BlogClicksData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    setLoading(true);
+    setError(null);
     fetchBlogClicks()
       .then(setData)
       .catch(() => setError("Unable to load click analytics."))
       .finally(() => setLoading(false));
-  }, []);
+  }, [activeWorkspaceId]);
 
   if (loading) {
     return (

@@ -858,6 +858,8 @@ export function BlogEditor({ postId }: { postId?: string }) {
   const [image, setImage] = useState("");
   const [categoryId, setCategoryId] = useState("");
   const [tags, setTags] = useState("");
+  const [permalink, setPermalink] = useState("");
+  const permalinkTouched = useRef(false);
   const [status, setStatus] = useState<BlogStatus>("draft");
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
@@ -869,6 +871,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
   const [lastAiModel, setLastAiModel] = useState<string | null>(null);
   const selectedAiModel = useWorkspaceStore((s) => s.selectedAiModel);
   const setSelectedAiModel = useWorkspaceStore((s) => s.setSelectedAiModel);
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const ai = useBlogAIAssistant();
 
   useEffect(() => {
@@ -886,7 +889,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [activeWorkspaceId]);
 
   useEffect(() => {
     if (!postId) return;
@@ -900,12 +903,26 @@ export function BlogEditor({ postId }: { postId?: string }) {
         setImage(post.image);
         setCategoryId(post.categoryId);
         setTags(post.tags.join(", "));
+        setPermalink(post.slug);
+        permalinkTouched.current = true;
         setStatus(normalizeEditorStatus(post.status));
         if (editorRef.current) editorRef.current.setContents(post.content);
       })
       .catch(() => push("Failed to load blog", { kind: "error" }))
       .finally(() => setLoading(false));
-  }, [postId, push]);
+  }, [postId, activeWorkspaceId, push]);
+
+  const handleTitleChange = (value: string) => {
+    setTitle(value);
+    if (!permalinkTouched.current) {
+      setPermalink(slugify(value));
+    }
+  };
+
+  const handlePermalinkChange = (value: string) => {
+    permalinkTouched.current = true;
+    setPermalink(value);
+  };
 
   const selectedCategory = categories.find((c) => c.id === categoryId);
   const activeCategories = categories.filter((c) => c.status !== "inactive");
@@ -921,7 +938,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
   };
 
   const aiFormHandlers = {
-    setTitle,
+    setTitle: handleTitleChange,
     setAuthor,
     setMetaDescription,
     setTags,
@@ -1003,7 +1020,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
 
     const payload: BlogPostInput = {
       title: trimmedTitle,
-      slug: slugify(trimmedTitle),
+      slug: permalink.trim() || slugify(trimmedTitle),
       author: author.trim(),
       content: editorHtml,
       description: plain.slice(0, 150),
@@ -1098,7 +1115,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
                 <div className="relative mt-1">
                   <Input
                     value={title}
-                    onChange={(e) => setTitle(e.target.value)}
+                    onChange={(e) => handleTitleChange(e.target.value)}
                     required
                     className={cn(fieldClass, "mt-0 pr-11")}
                   />
@@ -1119,14 +1136,25 @@ export function BlogEditor({ postId }: { postId?: string }) {
               </div>
             </div>
 
-            <div>
-              <Label className="text-sm font-medium">Keywords</Label>
-              <Input
-                value={tags}
-                onChange={(e) => setTags(e.target.value)}
-                placeholder="keyword one, keyword two"
-                className={cn(fieldClass, "mt-1")}
-              />
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <Label className="text-sm font-medium">Keywords</Label>
+                <Input
+                  value={tags}
+                  onChange={(e) => setTags(e.target.value)}
+                  placeholder="keyword one, keyword two"
+                  className={cn(fieldClass, "mt-1")}
+                />
+              </div>
+              <div>
+                <Label className="text-sm font-medium">Permalink</Label>
+                <Input
+                  value={permalink}
+                  onChange={(e) => handlePermalinkChange(e.target.value)}
+                  placeholder="my-custom-permalink"
+                  className={cn(fieldClass, "mt-1")}
+                />
+              </div>
             </div>
 
             <div>
