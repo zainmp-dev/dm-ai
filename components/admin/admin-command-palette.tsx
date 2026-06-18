@@ -6,7 +6,7 @@ import { useEffect, useMemo } from "react";
 import type { AdminNavItem } from "@/lib/admin/nav-config";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 
-export function  AdminCommandPalette({
+export function   AdminCommandPalette({
   open,
   onOpenChange,
   items,
