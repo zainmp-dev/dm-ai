@@ -854,8 +854,7 @@ export function BlogPostView({ postId }: { postId: string }) {
             {post.tags.map((tag) => (
               <Badge
                 key={tag}
-                variant="outline"
-                className="rounded-full border-slate-200 bg-slate-50 px-3 py-0.5 text-xs font-medium text-slate-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
+                className="rounded-full border border-slate-200 bg-slate-50 px-3 py-0.5 text-xs font-medium text-slate-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
               >
                 {tag}
               </Badge>
