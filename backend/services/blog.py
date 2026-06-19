@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import html as html_module
 import json
 import logging
 import re
@@ -44,6 +45,14 @@ BLOG_LIST_COLUMNS = """
 
 DEFAULT_PAGE_SIZE = 10
 MAX_PAGE_SIZE = 100
+
+# Blog AI budgets — keep completion caps aligned with ~1500–2000 word articles.
+BLOG_DEFAULT_WORD_COUNT = 1500
+BLOG_MAX_WORD_COUNT = 2000
+BLOG_METADATA_MAX_TOKENS = 1024
+BLOG_BODY_MAX_TOKENS = 3000
+BLOG_AVOID_TITLE_LIMIT = 5
+BLOG_INTERNAL_LINK_CATALOG_LIMIT = 5
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +271,36 @@ def list_blog_summaries(workspace_id: str) -> list[dict[str, Any]]:
             }
             for r in rows
         ]
+
+
+def list_linkable_blog_posts(workspace_id: str, *, exclude_post_id: str | None = None) -> list[dict[str, Any]]:
+    """Published sibling posts for AI internal linking."""
+    with _session() as db:
+        rows = db.execute(
+            text(
+                """
+                select b.id, b.title, b.slug, c.name as category_name
+                from flowpilot_blogs b
+                left join flowpilot_categories c on c.id = b.category_id
+                where b.workspace_id = :ws and b.status in ('published', 'draft', 'scheduled')
+                order by b.updated_at desc
+                limit 20
+                """
+            ),
+            {"ws": workspace_id},
+        ).mappings().all()
+    posts = [
+        {
+            "id": str(r["id"]),
+            "title": r.get("title") or "",
+            "slug": _resolve_slug(r.get("slug"), str(r.get("title") or "")),
+            "category_name": r.get("category_name") or "",
+        }
+        for r in rows
+    ]
+    if exclude_post_id:
+        posts = [p for p in posts if p["id"] != exclude_post_id]
+    return posts
 
 
 def get_blog(workspace_id: str, blog_id: str) -> dict[str, Any] | None:
@@ -653,7 +692,7 @@ def _build_style_context(posts: list[dict[str, Any]]) -> str:
     categories = [str(p.get("category_name") or "").strip() for p in posts if str(p.get("category_name") or "").strip()]
     top_categories = list(dict.fromkeys(categories))[:5]
     return (
-        f"Existing blog titles for tone reference: {', '.join(titles[:8]) or 'n/a'}.\n"
+        f"Existing blog titles for tone reference: {', '.join(titles[:5]) or 'n/a'}.\n"
         f"Common categories: {', '.join(top_categories) or 'n/a'}."
     )
 
@@ -671,22 +710,169 @@ def _duplicate_title(title: str, posts: list[dict[str, Any]], exclude_post_id: s
     return None
 
 
+def _blog_post_href(post_id: str) -> str:
+    return f"/blog/posts/{post_id}"
+
+
+def _linkable_posts(posts: list[dict[str, Any]], exclude_post_id: str | None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for post in posts:
+        if exclude_post_id and str(post.get("id")) == exclude_post_id:
+            continue
+        post_id = str(post.get("id") or "").strip()
+        title = str(post.get("title") or "").strip()
+        if post_id and title:
+            out.append(post)
+    return out
+
+
+def _build_internal_links_catalog(posts: list[dict[str, Any]], exclude_post_id: str | None) -> str:
+    linkable = _linkable_posts(posts, exclude_post_id)
+    if not linkable:
+        return ""
+    lines = [
+        f'- "{p["title"]}" → <a href="{_blog_post_href(str(p["id"]))}">...</a>'
+        for p in linkable[:BLOG_INTERNAL_LINK_CATALOG_LIMIT]
+    ]
+    return (
+        "Internal linking catalog — weave at least 2 contextual in-body links using these exact paths:\n"
+        + "\n".join(lines)
+    )
+
+
+def _has_internal_blog_links(content_html: str) -> bool:
+    return bool(re.search(r"""href=["']/blog/posts/[^"']+["']""", content_html, re.IGNORECASE))
+
+
+def _build_related_reading_block(posts: list[dict[str, Any]], exclude_post_id: str | None, limit: int = 3) -> str:
+    linkable = _linkable_posts(posts, exclude_post_id)[:limit]
+    if not linkable:
+        return ""
+    items = "".join(
+        f'<li><a href="{_blog_post_href(str(p["id"]))}">{html_module.escape(str(p["title"]))}</a></li>'
+        for p in linkable
+    )
+    return f'<h2>Related reading</h2><ul>{items}</ul>'
+
+
+def _ensure_internal_links(
+    content_html: str,
+    posts: list[dict[str, Any]],
+    exclude_post_id: str | None,
+) -> str:
+    """Guarantee internal links on every generated post when sibling posts exist."""
+    if _has_internal_blog_links(content_html):
+        return content_html
+    block = _build_related_reading_block(posts, exclude_post_id)
+    if not block:
+        return content_html
+
+    faq_match = re.search(r"<h2[^>]*>\s*Frequently\s+Asked\s+Questions", content_html, re.IGNORECASE)
+    if faq_match:
+        return content_html[: faq_match.start()] + block + content_html[faq_match.start() :]
+
+    return content_html.rstrip() + block
+
+
+def _extract_json_string_field(raw: str, field: str) -> str:
+    text = _strip_json_fences(raw)
+    complete = re.search(rf'"{re.escape(field)}"\s*:\s*"((?:\\.|[^"\\])*)"', text, re.DOTALL)
+    if complete:
+        try:
+            return str(json.loads(f'"{complete.group(1)}"')).strip()
+        except json.JSONDecodeError:
+            return complete.group(1).replace('\\"', '"').replace("\\n", "\n").strip()
+
+    truncated = re.search(rf'"{re.escape(field)}"\s*:\s*"((?:\\.|[^"\\])*)', text, re.DOTALL)
+    if truncated:
+        value = truncated.group(1).replace('\\"', '"').replace("\\n", "\n").strip()
+        if value:
+            return value
+    return ""
+
+
+def _blog_body_requirements(*, internal_links_requirement: str) -> str:
+    return (
+        "Article HTML requirements:\n"
+        "- Semantic HTML only (p, h2, h3, ul, ol, li, table, strong, em, a). No markdown.\n"
+        f"{internal_links_requirement}"
+        "- Direct answer in the first paragraph; 3–4 H2 sections with H3s; lists, one table, "
+        "stats/examples, key takeaways, FAQ (h2 'Frequently Asked Questions').\n"
+        "- No author byline.\n"
+    )
+
+
+def _generate_blog_body_html(
+    *,
+    generated_title: str,
+    meta_description: str,
+    keywords: list[str],
+    user_prompt: str,
+    website_name: str,
+    style_context: str,
+    internal_links_block: str,
+    internal_links_requirement: str,
+    preferred_model: str | None,
+    target_words: int,
+) -> tuple[str, str]:
+    keyword_text = ", ".join(keywords[:8]) if keywords else "(none)"
+    prompt = with_json_contract(
+        (
+            f"You are an expert content writer for {website_name or 'our company'}.\n"
+            f"{style_context}\n"
+            f"{internal_links_block}\n\n"
+            f"{user_prompt}\n\n"
+            f'Article title: "{generated_title}"\n'
+            f"Meta description: {meta_description}\n"
+            f"Keywords: {keyword_text}\n"
+            f"Target length: ~{target_words} words.\n\n"
+            f"{_blog_body_requirements(internal_links_requirement=internal_links_requirement)}\n"
+            "Return ONLY contentHtml — the full article body as one HTML string.\n"
+        ),
+        schema_hint={
+            "type": "object",
+            "required": ["contentHtml"],
+            "properties": {"contentHtml": {"type": "string"}},
+        },
+    )
+    result = ai_service.retry_request(
+        prompt=prompt,
+        preferred_model=preferred_model,
+        task_type="carousel",
+        response_format={"type": "json_object"},
+        prefer_groq_first=True,
+        prefer_gemini=True,
+        max_tokens=BLOG_BODY_MAX_TOKENS,
+    )
+    try:
+        payload = _parse_ai_json_payload(result.text, context="Blog body generation")
+    except AIServiceError:
+        payload = {}
+    content_html = str(payload.get("contentHtml") or "").strip()
+    if not content_html:
+        content_html = _extract_json_string_field(result.text, "contentHtml").strip()
+    return content_html, result.model_used
+
+
 def generate_blog_content(
     *,
     mode: str,
     categories: list[str],
     existing_posts: list[dict[str, Any]],
+    linkable_posts: list[dict[str, Any]] | None = None,
     website_name: str,
     preferred_model: str | None,
     topic: str | None = None,
     industry: str | None = None,
     audience: str | None = None,
     tone: str | None = None,
-    word_count: int = 800,
+    word_count: int = BLOG_DEFAULT_WORD_COUNT,
     title: str | None = None,
     exclude_post_id: str | None = None,
+    author_name: str = "",
 ) -> dict[str, Any]:
     style_context = _build_style_context(existing_posts)
+    posts_for_links = linkable_posts if linkable_posts is not None else existing_posts
     avoid_titles = [
         str(p.get("title") or "").strip()
         for p in existing_posts
@@ -708,42 +894,47 @@ def generate_blog_content(
             f"Industry: {(industry or 'Business').strip()}\n"
             f"Audience: {(audience or 'Professionals and decision-makers').strip()}\n"
             f"Tone: {(tone or 'Professional').strip()}\n"
-            f"Target length: ~{max(400, min(word_count, 2000))} words."
+            f"Target length: ~{max(400, min(word_count, BLOG_MAX_WORD_COUNT))} words."
         )
 
     avoid_block = ""
     if avoid_titles:
-        avoid_block = "\nDo NOT reuse or closely mimic these existing titles:\n" + "\n".join(avoid_titles[:20])
+        avoid_block = "\nDo NOT reuse or closely mimic these existing titles:\n" + "\n".join(avoid_titles[:BLOG_AVOID_TITLE_LIMIT])
 
     category_list = ", ".join(categories) if categories else "General, Updates, Insights"
+    internal_links_block = _build_internal_links_catalog(posts_for_links, exclude_post_id)
+    internal_links_requirement = ""
+    if internal_links_block:
+        internal_links_requirement = (
+            "- Include at least 2 natural in-body internal links to related posts using "
+            '<a href="/blog/posts/{post-id}">descriptive anchor text</a> with the exact paths from the catalog.\n'
+        )
+    target_words = max(400, min(word_count, BLOG_MAX_WORD_COUNT))
 
     prompt = with_json_contract(
         (
             f"You are an expert content writer for {website_name or 'our company'}.\n"
-            "Write professional, SEO-friendly, educational blog content.\n"
+            "Plan a professional, SEO-friendly blog article.\n"
             f"{style_context}\n"
+            f"{internal_links_block}\n"
             f"Available categories (pick exactly one name from this list): {category_list}\n"
             f"{avoid_block}\n\n"
             f"{user_prompt}\n\n"
+            "Return article metadata only — do NOT include the article body.\n"
             "Requirements:\n"
-            "- Use semantic HTML only (p, h2, h3, ul, li, strong, em). No markdown.\n"
-            "- Include an introduction, 3-5 main sections, a FAQ section titled 'Frequently Asked Questions', and a short CTA paragraph.\n"
-            "- metaDescription must be 120-160 characters.\n"
+            "- Primary keyword in title and metaDescription (120-160 chars).\n"
             "- keywords: 5-8 relevant phrases.\n"
-            "- author: a realistic byline name suited to the article (e.g. team member or brand voice).\n"
-            "- imagePrompt: one detailed sentence describing a professional featured banner image that visually matches this article (people, setting, objects, mood). No text or logos in the image.\n"
-            "- imagePrompt must be visually distinct from generic stock photos — specify unique subjects, composition, lighting, or setting.\n"
+            "- Do not include a byline, author name, or writer attribution.\n"
+            "- imagePrompt: one sentence for a professional featured banner image (no text/logos).\n"
         ),
         schema_hint={
             "type": "object",
-            "required": ["title", "author", "category", "metaDescription", "keywords", "contentHtml", "imagePrompt"],
+            "required": ["title", "category", "metaDescription", "keywords", "imagePrompt"],
             "properties": {
                 "title": {"type": "string"},
-                "author": {"type": "string"},
                 "category": {"type": "string"},
                 "metaDescription": {"type": "string"},
                 "keywords": {"type": "array", "items": {"type": "string"}},
-                "contentHtml": {"type": "string"},
                 "imagePrompt": {"type": "string"},
             },
         },
@@ -756,12 +947,12 @@ def generate_blog_content(
         response_format={"type": "json_object"},
         prefer_groq_first=True,
         prefer_gemini=True,
-        max_tokens=8192,
+        max_tokens=BLOG_METADATA_MAX_TOKENS,
     )
 
     try:
-        payload = json.loads(result.text)
-    except json.JSONDecodeError as exc:
+        payload = _parse_ai_json_payload(result.text, context="Blog generation")
+    except AIServiceError as exc:
         raise AIServiceError("Blog generation response was not valid JSON") from exc
 
     generated_title = str(payload.get("title") or (title or topic or "")).strip()
@@ -774,7 +965,36 @@ def generate_blog_content(
 
     content_html = str(payload.get("contentHtml") or "").strip()
     if not content_html:
+        content_html = _extract_json_string_field(result.text, "contentHtml").strip()
+
+    keywords = _normalize_keywords(payload.get("keywords"))
+    meta_description = _clamp_meta_description(
+        str(payload.get("metaDescription") or "").strip(),
+        keywords[0] if keywords else "",
+    )
+    model_used = result.model_used
+
+    if not content_html:
+        logger.info("Blog metadata returned without body — generating article HTML in follow-up call")
+        content_html, body_model = _generate_blog_body_html(
+            generated_title=generated_title,
+            meta_description=meta_description,
+            keywords=keywords,
+            user_prompt=user_prompt,
+            website_name=website_name,
+            style_context=style_context,
+            internal_links_block=internal_links_block,
+            internal_links_requirement=internal_links_requirement,
+            preferred_model=preferred_model,
+            target_words=target_words,
+        )
+        if body_model:
+            model_used = body_model
+
+    if not content_html:
         raise AIServiceError("Blog generation returned empty content")
+
+    content_html = _ensure_internal_links(content_html, posts_for_links, exclude_post_id)
 
     category_name = str(payload.get("category") or "").strip()
     if categories and category_name and category_name not in categories:
@@ -784,7 +1004,6 @@ def generate_blog_content(
     elif not category_name and categories:
         category_name = categories[0]
 
-    keywords = _normalize_keywords(payload.get("keywords"))
     image_prompt = str(payload.get("imagePrompt") or "").strip()
     used_images = [
         str(p.get("image") or "").strip()
@@ -802,14 +1021,14 @@ def generate_blog_content(
 
     return {
         "title": generated_title[:200],
-        "author": str(payload.get("author") or "").strip()[:120],
-        "metaDescription": str(payload.get("metaDescription") or "").strip()[:200],
+        "author": author_name.strip()[:120],
+        "metaDescription": meta_description[:200],
         "keywords": keywords,
         "contentHtml": content_html,
         "categoryName": category_name,
         "image": image_url,
         "imagePrompt": image_prompt,
-        "modelUsed": result.model_used,
+        "modelUsed": model_used,
     }
 
 
@@ -840,6 +1059,12 @@ def run_blog_generation(
 
     existing_posts = post_rows
 
+    linkable_posts: list[dict[str, Any]] = []
+    try:
+        linkable_posts = list_linkable_blog_posts(ws, exclude_post_id=body.excludePostId)
+    except Exception:
+        linkable_posts = []
+
     website_name = ""
     try:
         settings_row = db.execute(
@@ -852,11 +1077,14 @@ def run_blog_generation(
     except Exception:
         pass
 
+    author_name = str(getattr(body, "author", None) or user.get("name") or "Admin").strip()
+
     try:
         result = generate_blog_content(
             mode=mode,
             categories=categories,
             existing_posts=existing_posts,
+            linkable_posts=linkable_posts,
             website_name=website_name,
             preferred_model=body.aiModel,
             topic=body.topic,
@@ -866,6 +1094,256 @@ def run_blog_generation(
             word_count=body.wordCount,
             title=body.title,
             exclude_post_id=body.excludePostId,
+            author_name=author_name,
+        )
+    except AIServiceError as exc:
+        status = exc.status_code if exc.status_code in (400, 401, 402, 408, 429) else 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+    return {"success": True, "data": result}
+
+
+def _strip_json_fences(raw: str) -> str:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```\s*$", "", text)
+    return text.strip()
+
+
+def _parse_ai_json_payload(raw: str, *, context: str = "AI") -> dict[str, Any]:
+    text = _strip_json_fences(raw)
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict):
+            return payload
+    except json.JSONDecodeError:
+        pass
+
+    start = text.find("{")
+    if start < 0:
+        raise AIServiceError(f"{context} response was not valid JSON")
+
+    fragment = text[start:]
+    for end in range(len(fragment), max(1, len(fragment) - 4000), -1):
+        candidate = fragment[:end].rstrip()
+        if not candidate:
+            continue
+        if candidate[-1] not in ('"', "}", "]", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"):
+            continue
+        open_braces = candidate.count("{") - candidate.count("}")
+        open_brackets = candidate.count("[") - candidate.count("]")
+        if open_braces < 0 or open_brackets < 0:
+            continue
+        candidate_closed = candidate + ("]" * open_brackets) + ("}" * open_braces)
+        try:
+            payload = json.loads(candidate_closed)
+            if isinstance(payload, dict):
+                logger.warning("%s JSON was truncated; recovered partial payload", context)
+                return payload
+        except json.JSONDecodeError:
+            continue
+
+    raise AIServiceError(f"{context} response was not valid JSON")
+
+
+def _merge_content_additions(content_html: str, additions_html: str) -> str:
+    additions = additions_html.strip()
+    if not additions:
+        return content_html
+    faq_match = re.search(r"<h2[^>]*>\s*Frequently\s+Asked\s+Questions", content_html, re.IGNORECASE)
+    if faq_match:
+        return content_html[: faq_match.start()] + additions + content_html[faq_match.start() :]
+    return content_html.rstrip() + additions
+
+
+def _clamp_meta_description(meta: str, keyword: str = "") -> str:
+    text = " ".join(meta.split())
+    if 120 <= len(text) <= 160:
+        return text
+
+    if len(text) > 160:
+        text = text[:157].rstrip()
+        cut = text.rfind(" ")
+        if cut > 110:
+            text = text[:cut]
+        if text and text[-1] not in ".!?":
+            text = f"{text}."
+
+    if len(text) < 120:
+        suffix = (
+            f" Discover practical {keyword} tips for better results."
+            if keyword.strip()
+            else " Learn practical steps you can apply today."
+        )
+        text = f"{text}{suffix}".strip()
+        text = " ".join(text.split())
+
+    if len(text) > 160:
+        text = text[:157].rstrip()
+        cut = text.rfind(" ")
+        if cut > 110:
+            text = text[:cut]
+        if text and text[-1] not in ".!?":
+            text = f"{text}."
+
+    return text[:160]
+
+
+def _format_failed_checks_for_prompt(failed_checks: list[dict[str, Any]], focus: str = "all") -> str:
+    if not failed_checks:
+        return "No specific issues provided."
+    lines: list[str] = []
+    for check in failed_checks[:20]:
+        label = str(check.get("suggestionLabel") or check.get("label") or "").strip()
+        message = str(check.get("message") or "").strip()
+        category = str(check.get("category") or "").strip().upper()
+        if not label:
+            continue
+        detail = f" — {message}" if message else ""
+        lines.append(f"- [{category}] {label}{detail}")
+    focus_note = ""
+    if focus == "content":
+        focus_note = "Fix ALL content quality gaps first (FAQ, summary, takeaways, examples, stats, sources, tables, lists, definitions).\n"
+    elif focus == "ai_visibility":
+        focus_note = "Improve entity coverage, semantic keywords, trust signals, and citations.\n"
+    elif focus == "seo":
+        focus_note = "Fix technical SEO: keywords in title/permalink/meta, internal/external links, headings, alt text.\n"
+    body = "\n".join(lines) if lines else "No specific issues provided."
+    return f"{focus_note}{body}"
+
+
+def optimize_blog_content(
+    *,
+    title: str,
+    meta_description: str,
+    keywords: list[str],
+    content_html: str,
+    permalink: str | None,
+    author: str | None,
+    failed_checks: list[dict[str, Any]],
+    preferred_model: str | None,
+    linkable_posts: list[dict[str, Any]],
+    exclude_post_id: str | None,
+    primary_keyword: str | None,
+    focus: str = "all",
+) -> dict[str, Any]:
+    keyword = (primary_keyword or (keywords[0] if keywords else "")).strip()
+    internal_links_block = _build_internal_links_catalog(linkable_posts, exclude_post_id)
+    issues_block = _format_failed_checks_for_prompt(failed_checks, focus=focus)
+
+    prompt = with_json_contract(
+        (
+            "You are an expert blog editor. Fix the listed issues and reach a 100/100 content quality score.\n"
+            "Return ONLY new HTML blocks in additionsHtml — do NOT return the full article body.\n"
+            "We merge additionsHtml into the existing article before the FAQ (or at the end).\n"
+            f"{internal_links_block}\n\n"
+            f"Primary keyword: {keyword or '(none)'}\n"
+            f"Permalink slug: {(permalink or '').strip() or '(not set)'}\n"
+            f"Author: {(author or '').strip() or '(not set)'}\n"
+            f"Current title: {title.strip()}\n"
+            f"Current meta description: {meta_description.strip()}\n"
+            f"Current keywords: {', '.join(keywords)}\n\n"
+            "Issues to fix:\n"
+            f"{issues_block}\n\n"
+            "Requirements for additionsHtml:\n"
+            "- Add only missing sections: summary, takeaways, FAQ, lists, table, stats, examples, definitions, case study.\n"
+            "- Use semantic HTML only (p, h2, h3, ul, ol, li, table, strong, em, a, img). No markdown.\n"
+            "- Keep sentences short and words simple.\n"
+            "- Do not add or change author names or bylines.\n\n"
+            "Also return an improved title, metaDescription (120-160 chars), keywords, and permalink if needed.\n\n"
+            "Existing article HTML (for context — do not repeat in additionsHtml):\n"
+            f"{content_html.strip()[:12000]}\n"
+        ),
+        schema_hint={
+            "type": "object",
+            "required": ["title", "metaDescription", "keywords", "additionsHtml"],
+            "properties": {
+                "title": {"type": "string"},
+                "metaDescription": {"type": "string"},
+                "keywords": {"type": "array", "items": {"type": "string"}},
+                "additionsHtml": {"type": "string"},
+                "permalink": {"type": "string"},
+            },
+        },
+    )
+
+    result = ai_service.retry_request(
+        prompt=prompt,
+        preferred_model=preferred_model,
+        task_type="carousel",
+        response_format={"type": "json_object"},
+        prefer_groq_first=True,
+        prefer_gemini=True,
+        max_tokens=2048,
+    )
+
+    try:
+        payload = _parse_ai_json_payload(result.text, context="Blog optimization")
+    except AIServiceError as exc:
+        raise AIServiceError("Blog optimization response was not valid JSON") from exc
+
+    additions_html = str(payload.get("additionsHtml") or "").strip()
+    full_html = str(payload.get("contentHtml") or "").strip()
+    if full_html and len(full_html) > len(content_html) * 0.4:
+        improved_html = full_html
+    elif additions_html:
+        improved_html = _merge_content_additions(content_html, additions_html)
+    else:
+        improved_html = content_html
+
+    improved_html = _ensure_internal_links(improved_html, linkable_posts, exclude_post_id)
+
+    improved_meta = str(payload.get("metaDescription") or meta_description).strip()
+    improved_meta = _clamp_meta_description(improved_meta, keyword)
+
+    return {
+        "title": str(payload.get("title") or title).strip()[:200],
+        "metaDescription": improved_meta,
+        "keywords": _normalize_keywords(payload.get("keywords") or keywords),
+        "contentHtml": improved_html,
+        "permalink": str(payload.get("permalink") or permalink or "").strip()[:120],
+        "modelUsed": result.model_used,
+    }
+
+
+def run_blog_optimization(
+    *,
+    body: Any,
+    user: dict[str, Any],
+    workspace_id: str,
+) -> dict[str, Any]:
+    ws = workspace_id
+    # Post-generation polish runs automatically (up to several rounds per draft).
+    # It shares the same AI providers as generate but should not consume the content quota.
+
+    content_html = str(body.contentHtml or "").strip()
+    if not content_html:
+        raise HTTPException(status_code=400, detail="contentHtml is required")
+
+    linkable_posts: list[dict[str, Any]] = []
+    try:
+        linkable_posts = list_linkable_blog_posts(ws, exclude_post_id=body.excludePostId)
+    except Exception:
+        linkable_posts = []
+
+    failed_checks = [c.model_dump() if hasattr(c, "model_dump") else dict(c) for c in (body.failedChecks or [])]
+    focus = str(getattr(body, "focus", None) or "all").strip().lower()
+
+    try:
+        result = optimize_blog_content(
+            title=str(body.title or "").strip(),
+            meta_description=str(body.metaDescription or "").strip(),
+            keywords=list(body.keywords or []),
+            content_html=content_html,
+            permalink=str(body.permalink or "").strip() or None,
+            author=str(body.author or "").strip() or None,
+            failed_checks=failed_checks,
+            preferred_model=body.aiModel,
+            linkable_posts=linkable_posts,
+            exclude_post_id=body.excludePostId,
+            primary_keyword=str(body.primaryKeyword or "").strip() or None,
+            focus=focus,
         )
     except AIServiceError as exc:
         status = exc.status_code if exc.status_code in (400, 401, 402, 408, 429) else 502

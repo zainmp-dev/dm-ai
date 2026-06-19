@@ -119,25 +119,19 @@ export type BlogSettings = {
   };
 };
 
-export type BlogAIGenerationStepId =
-  | "analyzing"
-  | "learning"
-  | "generating"
-  | "checking-duplicates"
-  | "optimizing";
+export type BlogAIGenerationStepId = "generating";
 
 export type BlogAIGenerationStep = {
   id: BlogAIGenerationStepId;
   label: string;
 };
 
-export const BLOG_AI_GENERATION_STEPS: BlogAIGenerationStep[] = [
-  { id: "analyzing", label: "Analyzing existing blogs" },
-  { id: "learning", label: "Learning style" },
-  { id: "generating", label: "Generating blog" },
-  { id: "checking-duplicates", label: "Checking duplicates" },
-  { id: "optimizing", label: "Optimizing content" },
+export const BLOG_AI_GENERATION_MODAL_STEPS: BlogAIGenerationStep[] = [
+  { id: "generating", label: "Generating blog draft" },
 ];
+
+/** Target score for post-generation AI optimization. */
+export const BLOG_AI_OPTIMIZATION_TARGET_SCORE = 100;
 
 export type BlogAIFullGenerateParams = {
   topic: string;
@@ -152,7 +146,7 @@ export const BLOG_AI_DEFAULT_FULL_PARAMS: BlogAIFullGenerateParams = {
   industry: "Business",
   audience: "Professionals and decision-makers",
   tone: "Professional",
-  wordCount: 800,
+  wordCount: 1500,
 };
 
 export type BlogAIGeneratedContent = {
@@ -166,6 +160,35 @@ export type BlogAIGeneratedContent = {
   modelUsed: string;
 };
 
+export type BlogAIOptimizedContent = {
+  title: string;
+  author?: string;
+  metaDescription: string;
+  keywords: string[];
+  contentHtml: string;
+  permalink?: string;
+  modelUsed?: string;
+};
+
+export type BlogAIFailedCheckInput = {
+  id: string;
+  label: string;
+  message: string;
+  suggestionLabel: string;
+  category: string;
+  weight: number;
+};
+
+export type BlogAIOptimizationSummary = {
+  generatedScore: number;
+  optimizedScore: number;
+  fixedIssues: Array<{ id: string; label: string }>;
+  rounds: number;
+  targetScore: number;
+  permalink?: string;
+  remainingIssues: number;
+};
+
 export type BlogAIFormHandlers = {
   setTitle: (value: string) => void;
   setAuthor?: (value: string) => void;
@@ -175,6 +198,8 @@ export type BlogAIFormHandlers = {
   setContent: (value: string) => void;
   setCategoryId: (value: string) => void;
   setEditorContents: (html: string) => void;
+  setPermalink?: (value: string) => void;
+  resetPermalinkAuto?: () => void;
 };
 
 export const BLOG_STATUS_LABELS: Record<BlogStatus, string> = {
@@ -341,6 +366,8 @@ export async function deleteBlogCategory(id: string): Promise<void> {
   await blogClient.delete(`/api/categories/${id}`);
 }
 
+const BLOG_AI_REQUEST_TIMEOUT_MS = 600_000;
+
 export async function generateBlogWithAI(input: {
   mode: "full" | "title";
   aiModel?: string;
@@ -351,9 +378,29 @@ export async function generateBlogWithAI(input: {
   wordCount?: number;
   title?: string;
   excludePostId?: string;
+  author?: string;
 }): Promise<BlogAIGeneratedContent> {
   const res = await blogClient.post<{ success: boolean; data: BlogAIGeneratedContent }>("/api/blogs/generate", input, {
-    timeout: 180_000,
+    timeout: BLOG_AI_REQUEST_TIMEOUT_MS,
+  });
+  return unwrap(res);
+}
+
+export async function optimizeBlogContentWithAI(input: {
+  title: string;
+  metaDescription: string;
+  keywords: string[];
+  contentHtml: string;
+  permalink?: string;
+  author?: string;
+  failedChecks: BlogAIFailedCheckInput[];
+  primaryKeyword?: string;
+  aiModel?: string;
+  excludePostId?: string;
+  focus?: "content" | "ai_visibility" | "seo" | "all";
+}): Promise<BlogAIOptimizedContent> {
+  const res = await blogClient.post<{ success: boolean; data: BlogAIOptimizedContent }>("/api/blogs/optimize", input, {
+    timeout: BLOG_AI_REQUEST_TIMEOUT_MS,
   });
   return unwrap(res);
 }

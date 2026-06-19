@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import axios from "axios";
@@ -41,7 +41,7 @@ import { getAuthUser } from "@/lib/auth";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 import {
   BLOG_AI_DEFAULT_FULL_PARAMS,
-  BLOG_AI_GENERATION_STEPS,
+  BLOG_AI_GENERATION_MODAL_STEPS,
   BLOG_PRIMARY_BUTTON,
   createBlogCategory,
   createBlogPost,
@@ -62,6 +62,7 @@ import {
   type BlogPostInput,
   type BlogStatus,
 } from "./blog-core";
+import { BlogContentAnalysisPanel } from "./blog-content-analysis-panel";
 
 const SunEditor = dynamic(() => import("suneditor-react"), {
   ssr: false,
@@ -439,11 +440,6 @@ export function BlogQuickCategoryDialog({ open, onClose, onCreated }: BlogQuickC
 }
 
 
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function resolveCategoryId(categories: BlogCategory[], categoryName: string): string {
   const trimmed = categoryName.trim();
   if (!trimmed) return "";
@@ -478,49 +474,62 @@ export function useBlogAIAssistant() {
   }, []);
 
   const applyToForm = useCallback(
-    (result: BlogAIGeneratedContent, handlers: BlogAIFormHandlers, categories: BlogCategory[]) => {
+    (
+      result: BlogAIGeneratedContent,
+      handlers: BlogAIFormHandlers,
+      categories: BlogCategory[],
+      extra?: { permalink?: string },
+    ) => {
+      handlers.resetPermalinkAuto?.();
       handlers.setTitle(result.title);
-      if (result.author && handlers.setAuthor) handlers.setAuthor(result.author);
       handlers.setMetaDescription(result.metaDescription);
       handlers.setTags(result.keywords.join(", "));
       if (result.image) handlers.setImage(result.image);
       handlers.setContent(result.contentHtml);
       handlers.setEditorContents(result.contentHtml);
+      if (extra?.permalink && handlers.setPermalink) {
+        handlers.setPermalink(extra.permalink);
+      }
       const categoryId = resolveCategoryId(categories, result.categoryName);
       if (categoryId) handlers.setCategoryId(categoryId);
     },
-    []
+    [],
   );
+
+  type GenerationRunOptions = {
+    permalink?: string;
+    aiModel?: string;
+    excludePostId?: string;
+    author?: string;
+    image?: string;
+  };
 
   const runWithProgress = useCallback(
     async (
       request: () => Promise<BlogAIGeneratedContent>,
       handlers: BlogAIFormHandlers,
-      categories: BlogCategory[]
+      categories: BlogCategory[],
+      options: GenerationRunOptions,
     ) => {
       cancelledRef.current = false;
       setIsGenerating(true);
       setError(null);
       setCompletedSteps(new Set());
-
-      const progressPromise = (async () => {
-        for (const step of BLOG_AI_GENERATION_STEPS) {
-          if (cancelledRef.current) return;
-          setActiveStep(step.id);
-          await sleep(step.id === "generating" ? 1200 : 500);
-          if (cancelledRef.current) return;
-          setCompletedSteps((prev) => new Set([...prev, step.id]));
-        }
-      })();
+      setActiveStep("generating");
 
       try {
-        const [result] = await Promise.all([request(), progressPromise]);
-        if (cancelledRef.current) return null;
-        setLastResult(result);
-        setCompletedSteps(new Set(BLOG_AI_GENERATION_STEPS.map((s) => s.id)));
+        const generated = await request();
+        if (cancelledRef.current || !generated) return null;
+
+        setCompletedSteps(new Set(["generating"]));
+        setIsGenerating(false);
         setActiveStep(null);
-        applyToForm(result, handlers, categories);
-        return result;
+
+        const draftPermalink = options.permalink ?? slugify(generated.title);
+        setLastResult(generated);
+        applyToForm(generated, handlers, categories, { permalink: draftPermalink });
+
+        return { content: generated };
       } catch (err) {
         if (cancelledRef.current) return null;
         if (axios.isAxiosError(err) && err.response?.data) {
@@ -533,12 +542,11 @@ export function useBlogAIAssistant() {
         setError(apiErrorMessage(err));
         return null;
       } finally {
-        if (!cancelledRef.current) {
-          setIsGenerating(false);
-        }
+        setIsGenerating(false);
+        setActiveStep(null);
       }
     },
-    [applyToForm]
+    [applyToForm],
   );
 
   const generateFromTitle = useCallback(
@@ -547,7 +555,7 @@ export function useBlogAIAssistant() {
       categories: BlogCategory[],
       handlers: BlogAIFormHandlers,
       aiModel: string,
-      excludePostId?: string
+      options: GenerationRunOptions,
     ) =>
       runWithProgress(
         () =>
@@ -555,12 +563,14 @@ export function useBlogAIAssistant() {
             mode: "title",
             title,
             aiModel,
-            excludePostId,
+            excludePostId: options.excludePostId,
+            author: options.author,
           }),
         handlers,
-        categories
+        categories,
+        { ...options, aiModel },
       ),
-    [runWithProgress]
+    [runWithProgress],
   );
 
   const generateEntireBlog = useCallback(
@@ -569,7 +579,7 @@ export function useBlogAIAssistant() {
       categories: BlogCategory[],
       handlers: BlogAIFormHandlers,
       aiModel: string,
-      excludePostId?: string
+      options: GenerationRunOptions,
     ) =>
       runWithProgress(
         () =>
@@ -581,19 +591,21 @@ export function useBlogAIAssistant() {
             tone: params.tone,
             wordCount: params.wordCount,
             aiModel,
-            excludePostId,
+            excludePostId: options.excludePostId,
+            author: options.author,
           }),
         handlers,
-        categories
+        categories,
+        { ...options, aiModel },
       ),
-    [runWithProgress]
+    [runWithProgress],
   );
 
   return {
     isGenerating,
     activeStep,
     completedSteps,
-    steps: BLOG_AI_GENERATION_STEPS,
+    steps: BLOG_AI_GENERATION_MODAL_STEPS,
     error,
     lastResult,
     resetProgress,
@@ -926,6 +938,14 @@ export function BlogEditor({ postId }: { postId?: string }) {
 
   const selectedCategory = categories.find((c) => c.id === categoryId);
   const activeCategories = categories.filter((c) => c.status !== "inactive");
+  const keywordList = useMemo(
+    () =>
+      tags
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean),
+    [tags],
+  );
 
   const refreshCategories = () => {
     fetchBlogCategories().then(setCategories).catch(() => {});
@@ -949,7 +969,18 @@ export function BlogEditor({ postId }: { postId?: string }) {
       setContent(html);
       editorRef.current?.setContents(html);
     },
+    setPermalink: handlePermalinkChange,
+    resetPermalinkAuto: () => {
+      permalinkTouched.current = false;
+    },
   };
+
+  const buildGenerationOptions = () => ({
+    permalink,
+    excludePostId: postId,
+    author: author.trim() || getAuthUser()?.name || "",
+    image,
+  });
 
   const openModelPicker = (event: React.MouseEvent<HTMLElement>, mode: "full" | "title") => {
     if (ai.isGenerating) return;
@@ -973,7 +1004,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
 
     const result =
       mode === "title" && title.trim()
-        ? await ai.generateFromTitle(title.trim(), activeCategories, aiFormHandlers, modelId, postId)
+        ? await ai.generateFromTitle(title.trim(), activeCategories, aiFormHandlers, modelId, buildGenerationOptions())
         : await (() => {
             const params =
               paramsOverride ??
@@ -981,11 +1012,11 @@ export function BlogEditor({ postId }: { postId?: string }) {
                 ? { ...BLOG_AI_DEFAULT_FULL_PARAMS, topic: title.trim() }
                 : BLOG_AI_DEFAULT_FULL_PARAMS);
             setLastAiParams(params);
-            return ai.generateEntireBlog(params, activeCategories, aiFormHandlers, modelId, postId);
+            return ai.generateEntireBlog(params, activeCategories, aiFormHandlers, modelId, buildGenerationOptions());
           })();
 
     if (result) {
-      push(`Blog generated with ${result.modelUsed}`, { kind: "success" });
+      push(`Blog generated with ${result.content.modelUsed}`, { kind: "success" });
     }
   };
 
@@ -1102,14 +1133,15 @@ export function BlogEditor({ postId }: { postId?: string }) {
               )}
             >
               <Sparkles className="h-4 w-4" />
-              Generate With AI
+              {ai.isGenerating ? "Generating…" : "Generate With AI"}
             </button>
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4 md:p-6">
-          <div className="mx-auto w-full max-w-3xl space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4 md:p-6">
+          <div className="mx-auto grid w-full max-w-6xl gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,360px)] lg:items-start">
+            <form onSubmit={handleSubmit} className="min-w-0 space-y-4">
+              <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <Label className="text-sm font-medium">Title *</Label>
                 <div className="relative mt-1">
@@ -1208,36 +1240,48 @@ export function BlogEditor({ postId }: { postId?: string }) {
               <Label className="mb-2 block text-sm font-medium">Content *</Label>
               <BlogRichEditor value={content} onChange={setContent} editorRef={editorRef} />
             </div>
-          </div>
 
-          <div className="mx-auto mt-6 flex w-full max-w-3xl justify-end gap-3 border-t border-border pt-4">
-            <button
-              type="button"
-              onClick={() => router.push("/blog/posts")}
-              className="rounded-2xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-hover"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={saving}
-              onClick={() => void handleSave("draft")}
-              className="rounded-2xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-hover disabled:opacity-60"
-            >
-              Save as Draft
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className={cn(
-                "rounded-2xl px-5 py-2.5 text-sm font-semibold shadow-sm transition disabled:opacity-60",
-                BLOG_PRIMARY_BUTTON
-              )}
-            >
-              {submitLabel(isEdit, status)}
-            </button>
+              <div className="flex justify-end gap-3 border-t border-border pt-4">
+                <button
+                  type="button"
+                  onClick={() => router.push("/blog/posts")}
+                  className="rounded-2xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-hover"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void handleSave("draft")}
+                  className="rounded-2xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-hover disabled:opacity-60"
+                >
+                  Save as Draft
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className={cn(
+                    "rounded-2xl px-5 py-2.5 text-sm font-semibold shadow-sm transition disabled:opacity-60",
+                    BLOG_PRIMARY_BUTTON
+                  )}
+                >
+                  {submitLabel(isEdit, status)}
+                </button>
+              </div>
+            </form>
+
+            <BlogContentAnalysisPanel
+              title={title}
+              keywords={keywordList}
+              metaDescription={metaDescription}
+              contentHtml={content}
+              permalink={permalink}
+              author={author}
+              featuredImageUrl={image}
+              className="lg:sticky lg:top-4 lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto"
+            />
           </div>
-        </form>
+        </div>
       </div>
 
       <BlogQuickCategoryDialog

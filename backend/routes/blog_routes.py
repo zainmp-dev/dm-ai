@@ -243,9 +243,33 @@ class BlogGenerateInput(BaseModel):
     industry: str | None = None
     audience: str | None = None
     tone: str | None = None
-    wordCount: int = 800
+    wordCount: int = Field(default_factory=lambda: blog_svc.BLOG_DEFAULT_WORD_COUNT)
     title: str | None = None
     excludePostId: str | None = None
+    author: str | None = None
+
+
+class FailedCheckInput(BaseModel):
+    id: str
+    label: str
+    message: str = ""
+    suggestionLabel: str = ""
+    category: str = ""
+    weight: int = 0
+
+
+class BlogOptimizeInput(BaseModel):
+    title: str = ""
+    metaDescription: str = ""
+    keywords: list[str] = Field(default_factory=list)
+    contentHtml: str = Field(min_length=1)
+    permalink: str | None = None
+    author: str | None = None
+    failedChecks: list[FailedCheckInput] = Field(default_factory=list)
+    aiModel: str | None = None
+    excludePostId: str | None = None
+    primaryKeyword: str | None = None
+    focus: str = "all"
 
 
 def _blog_payload(body: BlogInput, user: dict[str, Any]) -> dict[str, Any]:
@@ -388,3 +412,12 @@ def api_generate_blog(
     workspace_id: str = Depends(_tenant_workspace),
 ) -> dict[str, Any]:
     return blog_svc.run_blog_generation(body=body, user=user, db=db, workspace_id=workspace_id)
+
+
+@api_router.post("/blogs/optimize")
+def api_optimize_blog(
+    body: BlogOptimizeInput,
+    user: dict[str, Any] = Depends(get_current_user),
+    workspace_id: str = Depends(_tenant_workspace),
+) -> dict[str, Any]:
+    return blog_svc.run_blog_optimization(body=body, user=user, workspace_id=workspace_id)

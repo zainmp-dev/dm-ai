@@ -4,23 +4,19 @@ import json
 import logging
 import re
 import time
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from threading import Lock, Semaphore
-from typing import Any, Iterable
+from threading import Event, Lock, Semaphore
+from typing import Any, Callable, Iterable
 
 import requests
 
 from config import settings
-from services.ai.model_router import RouterModels, detect_task_type, fallback_model, select_best_model
+from services.ai.model_router import RouterModels, detect_task_type, select_best_model
 from services.ai.prompt_builder import build_system_prompt
+from utils.token_estimate import estimate_total_request_tokens, log_usage_vs_estimate
 
 
-# Minimum max_tokens we will fall back to when OpenRouter says we can't afford the requested budget.
-_MIN_AFFORDABLE_MAX_TOKENS = 256
-# Headroom subtracted from "can only afford N" so the request fits even after price-rounding.
-_AFFORDABLE_HEADROOM_TOKENS = 64
-# Below this, paid models are useless even with retries — may switch to `:free` models if OPENROUTER_FREE_FALLBACKS is set.
-_PAID_BUDGET_FLOOR = 256
 # Free OpenRouter models queue deeply; use a longer read timeout when that tier is active.
 _FREE_MODEL_TIMEOUT_SECONDS = 360
 
@@ -46,19 +42,9 @@ def _free_model_fallbacks() -> tuple[str, ...]:
     return ()
 
 
-def _parse_affordable_max_tokens(error_message: str) -> int | None:
-    """OpenRouter 402 surfaces 'can only afford N' — extract N so we can retry within budget."""
-    match = re.search(r"can only afford\s+(\d+)", error_message, flags=re.IGNORECASE)
-    if not match:
-        return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
-
-
 def _is_free_model(model: str) -> bool:
     return ":free" in (model or "") or (model or "").startswith("openrouter/")
+
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +62,13 @@ class AIResult:
     latency_ms: int
     usage: dict[str, Any]
     retries: int
+
+
+@dataclass(frozen=True)
+class _ProviderAttempt:
+    provider_id: str
+    model_label: str
+    runner: Callable[[], AIResult]
 
 
 class AIService:
@@ -128,6 +121,326 @@ class AIService:
             return
         with self._cache_lock:
             self._cache[key] = (time.time() + self.cache_ttl_seconds, result)
+
+    @staticmethod
+    def _strip_json_fences(raw: str) -> str:
+        text = raw.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s*```\s*$", "", text)
+        return text.strip()
+
+    def _validate_response_text(
+        self,
+        text: str,
+        *,
+        response_format: dict[str, Any] | None,
+    ) -> bool:
+        """Reject empty or structurally invalid AI output before declaring a race winner."""
+        cleaned = text.strip()
+        if not cleaned:
+            return False
+        if not isinstance(response_format, dict) or response_format.get("type") != "json_object":
+            return True
+        try:
+            payload = json.loads(self._strip_json_fences(cleaned))
+        except json.JSONDecodeError:
+            return False
+        if not isinstance(payload, dict) or not payload:
+            return False
+
+        content_html = str(payload.get("contentHtml") or "").strip()
+        title = str(payload.get("title") or "").strip()
+
+        if set(payload.keys()) <= {"contentHtml"}:
+            return len(content_html) > 20
+        if title:
+            return True
+        return False
+
+    def _race_providers(
+        self,
+        *,
+        attempts: list[_ProviderAttempt],
+        routed_task: str,
+        response_format: dict[str, Any] | None,
+    ) -> AIResult:
+        """Run eligible providers concurrently; first valid response wins, others are ignored."""
+        if not attempts:
+            raise AIServiceError("No AI providers are configured")
+
+        if len(attempts) == 1:
+            only = attempts[0]
+            started = time.time()
+            logger.info("AI provider start provider=%s task=%s (single provider)", only.provider_id, routed_task)
+            try:
+                result = only.runner()
+            except AIServiceError as exc:
+                duration_ms = int((time.time() - started) * 1000)
+                logger.warning(
+                    "AI provider failed provider=%s task=%s duration_ms=%s reason=%s",
+                    only.provider_id,
+                    routed_task,
+                    duration_ms,
+                    str(exc)[:300],
+                )
+                raise
+            duration_ms = int((time.time() - started) * 1000)
+            if not self._validate_response_text(result.text, response_format=response_format):
+                raise AIServiceError(f"Provider {only.provider_id} returned an invalid response")
+            logger.info(
+                "AI provider winner provider=%s model=%s task=%s duration_ms=%s latency_ms=%s",
+                only.provider_id,
+                result.model_used,
+                routed_task,
+                duration_ms,
+                result.latency_ms,
+            )
+            return result
+
+        settled = Event()
+        winner_lock = Lock()
+        winner: AIResult | None = None
+        winner_provider: str | None = None
+        failures: list[str] = []
+
+        def _run_attempt(attempt: _ProviderAttempt) -> AIResult | None:
+            if settled.is_set():
+                return None
+            started = time.time()
+            logger.info(
+                "AI provider race start provider=%s model=%s task=%s",
+                attempt.provider_id,
+                attempt.model_label,
+                routed_task,
+            )
+            try:
+                result = attempt.runner()
+            except AIServiceError as exc:
+                duration_ms = int((time.time() - started) * 1000)
+                reason = str(exc)[:300]
+                with winner_lock:
+                    failures.append(f"{attempt.provider_id}: {reason}")
+                logger.warning(
+                    "AI provider race failed provider=%s model=%s task=%s duration_ms=%s reason=%s",
+                    attempt.provider_id,
+                    attempt.model_label,
+                    routed_task,
+                    duration_ms,
+                    reason,
+                )
+                return None
+
+            duration_ms = int((time.time() - started) * 1000)
+            if settled.is_set():
+                logger.info(
+                    "AI provider race ignored (late) provider=%s model=%s task=%s duration_ms=%s",
+                    attempt.provider_id,
+                    attempt.model_label,
+                    routed_task,
+                    duration_ms,
+                )
+                return None
+
+            if not self._validate_response_text(result.text, response_format=response_format):
+                with winner_lock:
+                    failures.append(f"{attempt.provider_id}: invalid response payload")
+                logger.warning(
+                    "AI provider race rejected provider=%s model=%s task=%s duration_ms=%s reason=invalid payload",
+                    attempt.provider_id,
+                    attempt.model_label,
+                    routed_task,
+                    duration_ms,
+                )
+                return None
+
+            with winner_lock:
+                if settled.is_set():
+                    logger.info(
+                        "AI provider race ignored (late valid) provider=%s model=%s task=%s duration_ms=%s",
+                        attempt.provider_id,
+                        attempt.model_label,
+                        routed_task,
+                        duration_ms,
+                    )
+                    return None
+                nonlocal winner, winner_provider
+                winner = result
+                winner_provider = attempt.provider_id
+                settled.set()
+            logger.info(
+                "AI provider race winner provider=%s model=%s task=%s duration_ms=%s latency_ms=%s",
+                attempt.provider_id,
+                result.model_used,
+                routed_task,
+                duration_ms,
+                result.latency_ms,
+            )
+            return result
+
+        race_started = time.time()
+        max_workers = max(1, min(len(attempts), int(getattr(settings, "openrouter_concurrency_limit", 6))))
+        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ai-race")
+        pending: set[Future[AIResult | None]] = set()
+        try:
+            for attempt in attempts:
+                pending.add(executor.submit(_run_attempt, attempt))
+
+            while pending and not settled.is_set():
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    try:
+                        if future.result() is not None and settled.is_set():
+                            break
+                    except Exception as exc:  # pragma: no cover - defensive
+                        with winner_lock:
+                            failures.append(f"unexpected: {exc}")
+        finally:
+            # Do not block on slower providers once a winner is selected.
+            executor.shutdown(wait=not settled.is_set(), cancel_futures=True)
+
+        if winner is not None:
+            race_ms = int((time.time() - race_started) * 1000)
+            logger.info(
+                "AI provider race settled winner=%s model=%s task=%s race_ms=%s failures=%s",
+                winner_provider,
+                winner.model_used,
+                routed_task,
+                race_ms,
+                len(failures),
+            )
+            return winner
+
+        summary = "; ".join(failures[:6]) if failures else "no providers returned valid output"
+        raise AIServiceError(f"All parallel AI providers failed. {summary}")
+
+    def _build_parallel_provider_attempts(
+        self,
+        *,
+        prompt: str,
+        routed_task: str,
+        model: str,
+        max_tokens: int | None,
+        temperature: float,
+        response_format: dict[str, Any] | None,
+        prefer_groq_first: bool,
+        prefer_gemini: bool,
+    ) -> list[_ProviderAttempt]:
+        """Collect every configured provider for a concurrent race (Groq, Gemini, OpenRouter paid/free)."""
+        attempts: list[_ProviderAttempt] = []
+
+        if prefer_groq_first and (getattr(settings, "groq_api_key", "") or "").strip():
+            groq_label = "groq/" + (getattr(settings, "groq_model", "") or "llama-3.3-70b-versatile").strip()
+
+            def _groq_runner() -> AIResult:
+                started = time.time()
+                with self._gate:
+                    groq_result = self._call_groq(
+                        task_type=routed_task,
+                        prompt=prompt,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        response_format=response_format,
+                    )
+                latency = int((time.time() - started) * 1000)
+                text = groq_result.get("text", "").strip()
+                if not text:
+                    raise AIServiceError("Groq returned empty content")
+                return AIResult(
+                    text=text,
+                    model_used=groq_label,
+                    latency_ms=latency,
+                    usage=groq_result.get("usage", {}),
+                    retries=0,
+                )
+
+            attempts.append(_ProviderAttempt("groq", groq_label, _groq_runner))
+
+        if prefer_gemini and (getattr(settings, "google_ai_api_key", "") or "").strip():
+            gemini_label = f"google/{(getattr(settings, 'gemini_model', '') or 'gemini-2.0-flash').strip()}"
+
+            def _gemini_runner() -> AIResult:
+                started = time.time()
+                with self._gate:
+                    gemini_result = self._call_gemini(
+                        prompt=prompt,
+                        task_type=routed_task,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        response_format=response_format,
+                    )
+                latency = int((time.time() - started) * 1000)
+                text = gemini_result.get("text", "").strip()
+                if not text:
+                    raise AIServiceError("Gemini returned empty content")
+                return AIResult(
+                    text=text,
+                    model_used=gemini_label,
+                    latency_ms=latency,
+                    usage=gemini_result.get("usage", {}),
+                    retries=0,
+                )
+
+            attempts.append(_ProviderAttempt("gemini", gemini_label, _gemini_runner))
+
+        if (getattr(settings, "openrouter_api_key", "") or "").strip():
+            paid_model = model
+
+            def _openrouter_paid_runner(paid: str = paid_model) -> AIResult:
+                started = time.time()
+                with self._gate:
+                    paid_result = self._call_chat(
+                        model=paid,
+                        task_type=routed_task,
+                        prompt=prompt,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        response_format=response_format,
+                    )
+                latency = int((time.time() - started) * 1000)
+                text = paid_result.get("text", "").strip()
+                if not text:
+                    raise AIServiceError("OpenRouter returned empty content")
+                return AIResult(
+                    text=text,
+                    model_used=paid,
+                    latency_ms=latency,
+                    usage=paid_result.get("usage", {}),
+                    retries=0,
+                )
+
+            attempts.append(_ProviderAttempt("openrouter_paid", paid_model, _openrouter_paid_runner))
+
+            for free_model in _free_model_fallbacks():
+                def _openrouter_free_runner(free: str = free_model) -> AIResult:
+                    started = time.time()
+                    with self._gate:
+                        free_result = self._call_chat(
+                            model=free,
+                            task_type=routed_task,
+                            prompt=prompt,
+                            max_tokens=max_tokens,
+                            temperature=temperature,
+                            response_format=response_format,
+                            timeout_override=_FREE_MODEL_TIMEOUT_SECONDS,
+                        )
+                    latency = int((time.time() - started) * 1000)
+                    text = free_result.get("text", "").strip()
+                    if not text:
+                        raise AIServiceError("OpenRouter free tier returned empty content")
+                    return AIResult(
+                        text=text,
+                        model_used=free,
+                        latency_ms=latency,
+                        usage=free_result.get("usage", {}),
+                        retries=0,
+                    )
+
+                attempts.append(
+                    _ProviderAttempt(f"openrouter_free:{free_model}", free_model, _openrouter_free_runner)
+                )
+
+        return attempts
 
     def _call_gemini(
         self,
@@ -345,252 +658,63 @@ class AIService:
         routed_task = detect_task_type(prompt=prompt, explicit=task_type)
         model = (preferred_model or "").strip() or select_best_model(routed_task, self.models)
 
-        # ── Groq first (when GROQ_API_KEY set): fast; falls through on errors ──
-        if prefer_groq_first:
-            groq_key = (getattr(settings, "groq_api_key", "") or "").strip()
-            if groq_key:
-                groq_started = time.time()
-                try:
-                    with self._gate:
-                        groq_result = self._call_groq(
-                            task_type=routed_task,
-                            prompt=prompt,
-                            max_tokens=max_tokens,
-                            temperature=temperature,
-                            response_format=response_format,
-                        )
-                    groq_text = groq_result.get("text", "").strip()
-                    if groq_text:
-                        groq_latency = int((time.time() - groq_started) * 1000)
-                        groq_model_label = (
-                            "groq/" + (getattr(settings, "groq_model", "") or "llama-3.3-70b-versatile").strip()
-                        )
-                        logger.info(
-                            "AI success provider=groq model=%s task=%s latency_ms=%s usage=%s",
-                            groq_model_label,
-                            routed_task,
-                            groq_latency,
-                            json.dumps(groq_result.get("usage", {}), ensure_ascii=True),
-                        )
-                        return AIResult(
-                            text=groq_text,
-                            model_used=groq_model_label,
-                            latency_ms=groq_latency,
-                            usage=groq_result.get("usage", {}),
-                            retries=0,
-                        )
-                except AIServiceError as exc:
-                    logger.warning(
-                        "Groq failed (status=%s), falling back to next providers: %s",
-                        exc.status_code,
-                        str(exc)[:300],
-                    )
+        cache_key = self._cache_key(model=model, prompt=prompt, task_type=routed_task)
+        cached = self._read_cache(cache_key)
+        if cached:
+            return cached
 
-        # ── Gemini before OpenRouter (when GOOGLE_AI_API_KEY set) ──
-        if prefer_gemini:
-            gemini_key = (getattr(settings, "google_ai_api_key", "") or "").strip()
-            if gemini_key:
-                gemini_started = time.time()
-                try:
-                    with self._gate:
-                        gemini_result = self._call_gemini(
-                            prompt=prompt,
-                            task_type=routed_task,
-                            max_tokens=max_tokens,
-                            temperature=temperature,
-                            response_format=response_format,
-                        )
-                    gemini_text = gemini_result.get("text", "").strip()
-                    if gemini_text:
-                        gemini_latency = int((time.time() - gemini_started) * 1000)
-                        gemini_model_name = f"google/{(getattr(settings, 'gemini_model', '') or 'gemini-2.0-flash').strip()}"
-                        logger.info(
-                            "AI success provider=gemini model=%s task=%s latency_ms=%s usage=%s",
-                            gemini_model_name,
-                            routed_task,
-                            gemini_latency,
-                            json.dumps(gemini_result.get("usage", {}), ensure_ascii=True),
-                        )
-                        return AIResult(
-                            text=gemini_text,
-                            model_used=gemini_model_name,
-                            latency_ms=gemini_latency,
-                            usage=gemini_result.get("usage", {}),
-                            retries=0,
-                        )
-                except AIServiceError as exc:
-                    logger.warning(
-                        "Gemini failed (status=%s), falling back to OpenRouter: %s",
-                        exc.status_code,
-                        str(exc)[:300],
-                    )
-        retries = 0
-        last_error: AIServiceError | None = None
-        # Track effective max_tokens across retries so a 402 budget hint sticks for the next attempt.
-        effective_max_tokens: int | None = max_tokens
-        # Queue of free models we will try after paid models exhaust budget; populated lazily.
-        free_models = _free_model_fallbacks()
-        free_queue: list[str] = []
-        tried_free: set[str] = set()
-        # Allow extra attempts when we transition to the free chain so the budget exhaustion doesn't end the call.
-        max_attempts = self.retry_count + 1 + len(free_models)
-
-        for _ in range(max_attempts):
-            cache_key = self._cache_key(model=model, prompt=prompt, task_type=routed_task)
-            cached = self._read_cache(cache_key)
-            if cached:
-                return cached
-
-            started = time.time()
-            try:
-                with self._gate:
-                    result = self._call_chat(
-                        model=model,
-                        task_type=routed_task,
-                        prompt=prompt,
-                        max_tokens=effective_max_tokens,
-                        temperature=temperature,
-                        response_format=response_format,
-                        timeout_override=_FREE_MODEL_TIMEOUT_SECONDS if _is_free_model(model) else None,
-                    )
-                latency = int((time.time() - started) * 1000)
-                final = AIResult(
-                    text=result.get("text", "").strip(),
-                    model_used=model,
-                    latency_ms=latency,
-                    usage=result.get("usage", {}),
-                    retries=retries,
-                )
-                if not final.text:
-                    raise AIServiceError("OpenRouter returned empty content")
-                self._write_cache(cache_key, final)
-                logger.info(
-                    "AI success model=%s task=%s latency_ms=%s retries=%s usage=%s",
-                    model,
-                    routed_task,
-                    latency,
-                    retries,
-                    json.dumps(final.usage, ensure_ascii=True),
-                )
-                return final
-            except AIServiceError as exc:
-                last_error = exc
-                retries += 1
-                logger.warning("AI request failed model=%s task=%s retry=%s err=%s", model, routed_task, retries, exc)
-
-                # On 402, two paths: (a) retry same model with reduced max_tokens if affordable budget is usable,
-                # (b) otherwise switch to a free model so the user is not blocked by an empty wallet.
-                if exc.status_code == 402:
-                    affordable = _parse_affordable_max_tokens(str(exc))
-                    if (
-                        affordable is not None
-                        and affordable >= _PAID_BUDGET_FLOOR
-                        and not _is_free_model(model)
-                    ):
-                        capped = max(_MIN_AFFORDABLE_MAX_TOKENS, affordable - _AFFORDABLE_HEADROOM_TOKENS)
-                        if effective_max_tokens is None or capped < effective_max_tokens:
-                            logger.info(
-                                "AI retrying model=%s with capped max_tokens=%s (affordable=%s)",
-                                model,
-                                capped,
-                                affordable,
-                            )
-                            effective_max_tokens = capped
-                            continue
-                    # Budget too low (or already at floor) — switch to the free model chain.
-                    if not free_queue:
-                        free_queue = [m for m in free_models if m and m not in tried_free]
-                    if free_queue:
-                        next_free = free_queue.pop(0)
-                        tried_free.add(next_free)
-                        logger.info(
-                            "AI switching to free model=%s after budget-exhausted paid model=%s",
-                            next_free,
-                            model,
-                        )
-                        model = next_free
-                        # Free models support generous max_tokens; reset cap to default budget.
-                        effective_max_tokens = max_tokens
-                        continue
-
-                # On non-402 failures, prefer the next free model if we've already started using them,
-                # otherwise route through the standard paid fallback chain.
-                if _is_free_model(model) and free_queue:
-                    next_free = free_queue.pop(0)
-                    tried_free.add(next_free)
-                    logger.info("AI switching to next free model=%s (prev free model failed)", next_free)
-                    model = next_free
-                    continue
-                model = fallback_model(routed_task, self.models, model)
-                continue
-
-        # OpenRouter wallet empty / 402 — retry direct Groq+Gemini when configured. Inner call sites may pass
-        # prefer_groq_first=False / prefer_gemini=False; a second pass here avoids blocking on credits alone.
-        if last_error is not None and getattr(last_error, "status_code", None) == 402:
-            groq_key = (getattr(settings, "groq_api_key", "") or "").strip()
-            gemini_key = (getattr(settings, "google_ai_api_key", "") or "").strip()
-            if groq_key:
-                gr_started = time.time()
-                try:
-                    with self._gate:
-                        groq_after = self._call_groq(
-                            task_type=routed_task,
-                            prompt=prompt,
-                            max_tokens=max_tokens,
-                            temperature=temperature,
-                            response_format=response_format,
-                        )
-                    gtxt = groq_after.get("text", "").strip()
-                    if gtxt:
-                        gr_lat = int((time.time() - gr_started) * 1000)
-                        label = "groq/" + (getattr(settings, "groq_model", "") or "llama-3.3-70b-versatile").strip()
-                        logger.info(
-                            "AI recovered via Groq after OpenRouter budget error model=%s task=%s latency_ms=%s",
-                            label,
-                            routed_task,
-                            gr_lat,
-                        )
-                        return AIResult(
-                            text=gtxt,
-                            model_used=label,
-                            latency_ms=gr_lat,
-                            usage=groq_after.get("usage", {}),
-                            retries=retries,
-                        )
-                except AIServiceError as exc:
-                    logger.warning("Groq fallback after OpenRouter 402 failed: %s", str(exc)[:300])
-            if gemini_key:
-                gm_started = time.time()
-                try:
-                    with self._gate:
-                        gemini_after = self._call_gemini(
-                            prompt=prompt,
-                            task_type=routed_task,
-                            max_tokens=max_tokens,
-                            temperature=temperature,
-                            response_format=response_format,
-                        )
-                    mtx = gemini_after.get("text", "").strip()
-                    if mtx:
-                        gm_lat = int((time.time() - gm_started) * 1000)
-                        gname = f"google/{(getattr(settings, 'gemini_model', '') or 'gemini-2.0-flash').strip()}"
-                        logger.info(
-                            "AI recovered via Gemini after OpenRouter budget error model=%s task=%s latency_ms=%s",
-                            gname,
-                            routed_task,
-                            gm_lat,
-                        )
-                        return AIResult(
-                            text=mtx,
-                            model_used=gname,
-                            latency_ms=gm_lat,
-                            usage=gemini_after.get("usage", {}),
-                            retries=retries,
-                        )
-                except AIServiceError as exc:
-                    logger.warning("Gemini fallback after OpenRouter 402 failed: %s", str(exc)[:300])
-
-        raise AIServiceError(f"All retry/fallback attempts exhausted. Last error: {last_error}")
+        # Concurrent provider race: Groq, Gemini, OpenRouter paid, and OpenRouter free
+        # are launched together; the first valid response wins (no sequential wait on 429/402).
+        attempts = self._build_parallel_provider_attempts(
+            prompt=prompt,
+            routed_task=routed_task,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            prefer_groq_first=prefer_groq_first,
+            prefer_gemini=prefer_gemini,
+        )
+        token_estimate = estimate_total_request_tokens(
+            system_prompt=build_system_prompt(routed_task),
+            user_prompt=prompt,
+            max_tokens=max_tokens or self.max_tokens,
+            provider_count=len(attempts),
+        )
+        logger.info(
+            "AI provider race start task=%s providers=%s prompt_tokens_est=%s completion_cap=%s "
+            "total_per_provider_est=%s total_race_est=%s prompt_chars=%s",
+            routed_task,
+            len(attempts),
+            token_estimate["prompt_tokens_est"],
+            token_estimate["completion_cap"],
+            token_estimate["total_per_provider_est"],
+            token_estimate["total_race_est"],
+            len(prompt),
+        )
+        final = self._race_providers(
+            attempts=attempts,
+            routed_task=routed_task,
+            response_format=response_format,
+        )
+        self._write_cache(cache_key, final)
+        log_usage_vs_estimate(
+            logger,
+            label="AI token usage",
+            estimate=token_estimate,
+            usage=final.usage,
+            model_used=final.model_used,
+            latency_ms=final.latency_ms,
+        )
+        logger.info(
+            "AI success model=%s task=%s latency_ms=%s retries=%s usage=%s",
+            final.model_used,
+            routed_task,
+            final.latency_ms,
+            final.retries,
+            json.dumps(final.usage, ensure_ascii=True),
+        )
+        return final
 
     def _call_chat(
         self,

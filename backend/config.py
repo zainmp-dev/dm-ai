@@ -257,7 +257,7 @@ class Settings:
     ai_rate_limit_strategy_window_seconds: int = field(
         default_factory=lambda: _int_env("AI_RATE_LIMIT_STRATEGY_WINDOW_SECONDS", 3600)
     )
-    ai_rate_limit_content_max: int = field(default_factory=lambda: _int_env("AI_RATE_LIMIT_CONTENT_MAX", 24))
+    ai_rate_limit_content_max: int = field(default_factory=lambda: _int_env("AI_RATE_LIMIT_CONTENT_MAX", 60))
     ai_rate_limit_content_window_seconds: int = field(
         default_factory=lambda: _int_env("AI_RATE_LIMIT_CONTENT_WINDOW_SECONDS", 3600)
     )

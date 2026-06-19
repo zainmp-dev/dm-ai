@@ -13,6 +13,17 @@ const EXPLICIT_UPSTREAM_MS = (() => {
 /** Always at least client auth timeout + buffer so the proxy never aborts before axios. */
 const UPSTREAM_FETCH_MS = Math.max(EXPLICIT_UPSTREAM_MS, getAuthApiTimeoutMs() + 30_000);
 
+/** Blog AI generate/optimize can run several minutes on free-tier models. */
+const BLOG_AI_PROXY_MS = Math.max(UPSTREAM_FETCH_MS, 600_000);
+
+function upstreamTimeoutMs(pathSegments: string[]): number {
+  const joined = pathSegments.join("/").toLowerCase();
+  if (joined.includes("blogs/generate") || joined.includes("blogs/optimize")) {
+    return BLOG_AI_PROXY_MS;
+  }
+  return UPSTREAM_FETCH_MS;
+}
+
 const SKIP_IN_HEADERS = new Set([
   "connection",
   "content-length",
@@ -144,7 +155,7 @@ export async function proxyToFastapi(request: NextRequest, pathSegments: string[
   try {
     const res = await fetch(target, {
       ...init,
-      signal: AbortSignal.timeout(UPSTREAM_FETCH_MS),
+      signal: AbortSignal.timeout(upstreamTimeoutMs(segments)),
     });
     const outHeaders = new Headers();
     res.headers.forEach((value, key) => {
