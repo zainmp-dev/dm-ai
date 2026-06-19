@@ -107,9 +107,9 @@ export function PrioritizedIssuesList({ groups, className }: AnalysisIssuesListP
 
   return (
     <div className={cn("space-y-3", className)}>
+      <IssueSection title={ISSUE_SECTION_LABELS.seo} checks={groups.seo} />
       <IssueSection title={ISSUE_SECTION_LABELS.content} checks={groups.content} />
       <IssueSection title={ISSUE_SECTION_LABELS.ai_visibility} checks={groups.aiVisibility} />
-      <IssueSection title={ISSUE_SECTION_LABELS.seo} checks={groups.seo} />
       {groups.totalRemaining > visibleCount ? (
         <p className="text-[10px] text-muted-foreground">
           +{groups.totalRemaining - visibleCount} more lower-priority items not shown

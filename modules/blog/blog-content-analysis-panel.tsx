@@ -301,12 +301,12 @@ export function BlogContentAnalysisPanel({
     ? "Start writing to unlock live SEO, GEO, LLM, and readability analysis."
     : remainingIssues.length === 0
       ? "All checks passing — strong content."
-      : "Improve article content first, then AI visibility and SEO.";
+      : "Improve SEO first, then article content and AI visibility.";
 
   return (
-    <aside className={cn("space-y-3", className)}>
-      <Card className="overflow-hidden rounded-2xl border-zinc-200/80 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/80">
-        <div className="border-b border-zinc-100 bg-gradient-to-r from-[#1a56db]/5 via-transparent to-violet-500/5 px-4 py-3 dark:border-zinc-800">
+    <aside className={cn("space-y-3 lg:flex lg:h-full lg:min-h-full lg:flex-col", className)}>
+      <Card className="overflow-hidden rounded-2xl border-zinc-200/80 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900/80 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
+        <div className="shrink-0 border-b border-zinc-100 bg-gradient-to-r from-[#1a56db]/5 via-transparent to-violet-500/5 px-4 py-3 dark:border-zinc-800">
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-[#1a56db]/10 text-[#1a56db] dark:bg-[#3b82f6]/15 dark:text-[#3b82f6]">
               <Sparkles className="h-4 w-4" />
@@ -318,7 +318,7 @@ export function BlogContentAnalysisPanel({
           </div>
         </div>
 
-        <div className="space-y-3 p-4">
+        <div className="space-y-3 p-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
           <div className="flex items-center gap-3 rounded-xl border border-zinc-100 bg-zinc-50/60 p-3 dark:border-zinc-800 dark:bg-zinc-950/40">
             <OverallGauge score={analysis.overallScore} active={active} />
             <div className="min-w-0 flex-1">

@@ -1139,7 +1139,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4 md:p-6">
-          <div className="mx-auto grid w-full max-w-6xl gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,360px)] lg:items-start">
+          <div className="mx-auto grid w-full max-w-6xl gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(300px,360px)]">
             <form onSubmit={handleSubmit} className="min-w-0 space-y-4">
               <div className="grid gap-4 sm:grid-cols-2">
               <div>
@@ -1270,16 +1270,18 @@ export function BlogEditor({ postId }: { postId?: string }) {
               </div>
             </form>
 
-            <BlogContentAnalysisPanel
-              title={title}
-              keywords={keywordList}
-              metaDescription={metaDescription}
-              contentHtml={content}
-              permalink={permalink}
-              author={author}
-              featuredImageUrl={image}
-              className="lg:sticky lg:top-4 lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto"
-            />
+            <div className="min-h-0 lg:flex lg:h-full lg:flex-col lg:self-stretch">
+              <BlogContentAnalysisPanel
+                title={title}
+                keywords={keywordList}
+                metaDescription={metaDescription}
+                contentHtml={content}
+                permalink={permalink}
+                author={author}
+                featuredImageUrl={image}
+                className="lg:sticky lg:top-6 lg:max-h-[calc(100vh-10rem)] lg:overscroll-y-contain"
+              />
+            </div>
           </div>
         </div>
       </div>

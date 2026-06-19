@@ -86,7 +86,7 @@ function dedupeFaqIssues(failed: ContentAnalysisCheck[]): ContentAnalysisCheck[]
   return failed.filter((c) => c.id !== "seo-faq");
 }
 
-/** Presentation-only grouping: content quality first, then AI visibility, then technical SEO. */
+/** Presentation-only grouping: technical SEO first, then content quality, then AI visibility. */
 export function prioritizeRemainingIssues(checks: ContentAnalysisCheck[]): PrioritizedIssueGroups {
   const failed = dedupeFaqIssues(checks.filter((c) => !c.passed));
 
@@ -110,12 +110,12 @@ export function prioritizeRemainingIssues(checks: ContentAnalysisCheck[]): Prior
 }
 
 const GROUP_RANK: Record<IssuePresentationGroup, number> = {
-  content: 0,
-  ai_visibility: 1,
-  seo: 2,
+  seo: 0,
+  content: 1,
+  ai_visibility: 2,
 };
 
-/** Flat list of failed checks sorted for recommendations (content → AI → SEO, then impact). */
+/** Flat list of failed checks sorted for recommendations (SEO → content → AI, then impact). */
 export function prioritizeChecksForRecommendations(checks: ContentAnalysisCheck[]): ContentAnalysisCheck[] {
   const failed = dedupeFaqIssues(checks.filter((c) => !c.passed));
 
@@ -174,12 +174,12 @@ export function getAllFailedChecksGrouped(checks: ContentAnalysisCheck[]): Faile
   };
 }
 
-/** All failed checks in fix priority order (content → AI → SEO). */
+/** All failed checks in fix priority order (SEO → content → AI). */
 export function pickOptimizationBatch(grouped: FailedChecksGrouped, limit = 25): ContentAnalysisCheck[] {
   const ordered = [
+    ...grouped.seo,
     ...grouped.content,
     ...grouped.aiVisibility,
-    ...grouped.seo,
   ];
   return ordered.slice(0, limit);
 }
