@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 import requests
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.routing import APIRoute
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -2300,6 +2301,7 @@ app = FastAPI(
 )
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),

@@ -2,7 +2,17 @@
 
 import { format, parseISO } from "date-fns";
 import { motion } from "framer-motion";
-import { CalendarClock, CheckCircle2, ChevronLeft, ChevronRight, FileStack, Timer } from "lucide-react";
+import {
+  ArrowUpRight,
+  CalendarClock,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  FileStack,
+  Megaphone,
+  Timer,
+  type LucideIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { startTransition, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
@@ -10,6 +20,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { useCampaignStore } from "@/lib/campaign-store";
+import { BLOG_DASHBOARD_METRICS, BlogWorkspaceSummary, useBlogDashboardData } from "@/modules/blog/blog-views";
 import { selectWorkspaceShellPending, useWorkspaceStore } from "@/lib/workspace-store";
 
 const ACTIVITY_FEED_PAGE_SIZE = 8;
@@ -119,9 +131,89 @@ function FeedEmptyState({ message }: { message: string }) {
   );
 }
 
+type DashboardMetric = {
+  label: string;
+  hint?: string;
+  value: number | string;
+  icon: LucideIcon;
+  href: string;
+  accent: string;
+  bg: string;
+  ring: string;
+};
+
+function DashboardMetricCard({ metric, loading }: { metric: DashboardMetric; loading?: boolean }) {
+  const Icon = metric.icon;
+
+  if (loading) {
+    return <Skeleton className="h-[7.25rem] rounded-2xl" />;
+  }
+
+  return (
+    <Link
+      href={metric.href}
+      className="group relative block overflow-hidden rounded-2xl border border-[#e5e7eb]/90 bg-white p-5 shadow-[0_1px_2px_rgba(15,23,42,0.04)] transition-all duration-200 hover:-translate-y-0.5 hover:border-[#cbd5e1] hover:shadow-[0_12px_32px_-12px_rgba(15,23,42,0.14)]"
+      aria-label={`Open ${metric.label}`}
+    >
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 h-[3px] opacity-80"
+        style={{ background: `linear-gradient(90deg, ${metric.accent}, ${metric.accent}88)` }}
+      />
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-[12.5px] font-medium text-[#64748b]">{metric.label}</p>
+          <p className="mt-2 text-[2rem] font-semibold leading-none tabular-nums tracking-tight text-[#0f172a]">
+            {metric.value}
+          </p>
+          {metric.hint ? <p className="mt-2 text-[11.5px] leading-snug text-[#94a3b8]">{metric.hint}</p> : null}
+        </div>
+        <div className="flex flex-col items-end gap-2">
+          <span
+            className={cn("flex size-11 shrink-0 items-center justify-center rounded-xl ring-1", metric.ring)}
+            style={{ background: metric.bg }}
+          >
+            <Icon className="size-[18px]" strokeWidth={1.75} style={{ color: metric.accent }} />
+          </span>
+          <ArrowUpRight className="size-3.5 text-[#cbd5e1] transition-all group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-[#64748b]" />
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+function DashboardPanel({
+  title,
+  subtitle,
+  children,
+  className,
+}: {
+  title: string;
+  subtitle?: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "overflow-hidden rounded-2xl border border-[#e5e7eb]/90 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]",
+        className,
+      )}
+    >
+      <div className="border-b border-[#f3f4f6] bg-gradient-to-r from-[#f8fafc] to-white px-5 py-4">
+        <p className="text-[13.5px] font-semibold text-[#111827]">{title}</p>
+        {subtitle ? <p className="mt-0.5 text-[11.5px] text-[#94a3b8]">{subtitle}</p> : null}
+      </div>
+      <div className="px-5 py-4">{children}</div>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const workspace = useWorkspaceStore((s) => s.workspace);
   const shellPending = useWorkspaceStore(selectWorkspaceShellPending);
+  const campaigns = useCampaignStore((s) => s.campaigns);
+  const loadCampaigns = useCampaignStore((s) => s.loadCampaigns);
+  const { data: blogData, loading: blogLoading } = useBlogDashboardData();
   const [activityQuery, setActivityQuery] = useState("");
   const [activityPage, setActivityPage] = useState(0);
 
@@ -149,58 +241,86 @@ export default function DashboardPage() {
     startTransition(() => setActivityPage(0));
   }, [activityQuery]);
 
-  if (shellPending) {
-    return (
-      <div className="space-y-6">
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-24 rounded-xl" />
-          ))}
-        </div>
-        <Skeleton className="h-80 rounded-xl" />
-        <Skeleton className="h-64 rounded-xl" />
-      </div>
-    );
-  }
+  useEffect(() => {
+    loadCampaigns();
+  }, [loadCampaigns]);
 
-  if (!workspace) {
+  const blogMetrics: DashboardMetric[] = BLOG_DASHBOARD_METRICS.map((metric) => ({
+    label: metric.label,
+    hint: metric.hint,
+    value: blogData?.stats[metric.key] ?? 0,
+    icon: metric.icon,
+    href: metric.href,
+    accent: metric.accent,
+    bg: metric.bg,
+    ring:
+      metric.key === "totalBlogs"
+        ? "ring-sky-100"
+        : metric.key === "publishedBlogs"
+          ? "ring-emerald-100"
+          : "ring-amber-100",
+  }));
+
+  if (!workspace && !shellPending) {
     return <p className="text-sm text-[#6b7280]">Workspace unavailable.</p>;
   }
 
-  const metrics = [
-    {
-      label: "Total Content",
-      value: workspace.content.length,
-      icon: FileStack,
-      href: "/pipeline?tab=content",
-      accent: "#1a56db",
-      bg: "#f0f4ff",
-    },
-    {
-      label: "Pending Approvals",
-      value: workspace.content.filter((item) => item.status === "PENDING").length,
-      icon: Timer,
-      href: "/pipeline?tab=content",
-      accent: "#b45309",
-      bg: "#fffbeb",
-    },
-    {
-      label: "Published Posts",
-      value: workspace.content.filter((item) => item.status === "PUBLISHED").length,
-      icon: CheckCircle2,
-      href: "/pipeline?tab=publishing",
-      accent: "#047857",
-      bg: "#ecfdf5",
-    },
-    {
-      label: "Scheduled Posts",
-      value: workspace.content.filter((item) => item.status === "SCHEDULED").length,
-      icon: CalendarClock,
-      href: "/pipeline?tab=scheduling",
-      accent: "#7c3aed",
-      bg: "#f5f3ff",
-    },
-  ];
+  const pipelineMetrics: DashboardMetric[] = workspace
+    ? [
+        {
+          label: "Total Content",
+          hint: "Pipeline items",
+          value: workspace.content.length,
+          icon: FileStack,
+          href: "/pipeline?tab=content",
+          accent: "#1a56db",
+          bg: "#eff6ff",
+          ring: "ring-blue-100",
+        },
+        {
+          label: "Pending Approvals",
+          hint: "Awaiting review",
+          value: workspace.content.filter((item) => item.status === "PENDING").length,
+          icon: Timer,
+          href: "/pipeline?tab=content",
+          accent: "#d97706",
+          bg: "#fffbeb",
+          ring: "ring-amber-100",
+        },
+        {
+          label: "Published Posts",
+          hint: "Live social content",
+          value: workspace.content.filter((item) => item.status === "PUBLISHED").length,
+          icon: CheckCircle2,
+          href: "/pipeline?tab=publishing",
+          accent: "#059669",
+          bg: "#ecfdf5",
+          ring: "ring-emerald-100",
+        },
+        {
+          label: "Scheduled Posts",
+          hint: "Queued to publish",
+          value: workspace.content.filter((item) => item.status === "SCHEDULED").length,
+          icon: CalendarClock,
+          href: "/pipeline?tab=scheduling",
+          accent: "#7c3aed",
+          bg: "#f5f3ff",
+          ring: "ring-violet-100",
+        },
+        {
+          label: "Total Campaigns",
+          hint: "Active marketing plans",
+          value: campaigns.length,
+          icon: Megaphone,
+          href: "/campaigns",
+          accent: "#db2777",
+          bg: "#fdf2f8",
+          ring: "ring-pink-100",
+        },
+      ]
+    : [];
+
+  const metrics = [...pipelineMetrics, ...blogMetrics];
 
   const tooltipStyle = {
     borderRadius: 10,
@@ -214,7 +334,7 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {!workspace.workspaceConfigured && (
+      {!workspace?.workspaceConfigured && workspace && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
           <div>
             <p className="text-[13.5px] font-semibold text-amber-900">Complete workspace setup</p>
@@ -229,46 +349,36 @@ export default function DashboardPage() {
       )}
 
       {/* Stats row */}
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {metrics.map((metric) => {
-          const Icon = metric.icon;
-          return (
-            <Link
-              key={metric.label}
-              href={metric.href}
-              className="group block rounded-xl border border-[#e5e7eb] bg-white px-5 py-4 transition-shadow hover:shadow-sm"
-              aria-label={`Open ${metric.label}`}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div>
-                  <p className="text-[12.5px] font-medium text-[#6b7280]">{metric.label}</p>
-                  <p
-                    className="mt-1.5 text-3xl font-semibold tabular-nums tracking-tight"
-                    style={{ color: metric.accent }}
-                  >
-                    {metric.value}
-                  </p>
-                </div>
-                <span
-                  className="flex size-9 shrink-0 items-center justify-center rounded-lg"
-                  style={{ background: metric.bg }}
-                >
-                  <Icon className="size-[17px]" strokeWidth={1.7} style={{ color: metric.accent }} />
-                </span>
-              </div>
-            </Link>
-          );
-        })}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        {shellPending && !workspace
+          ? (
+              <>
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Skeleton key={`pipeline-${i}`} className="h-[7.25rem] rounded-2xl" />
+                ))}
+                {blogMetrics.map((metric) => (
+                  <DashboardMetricCard key={metric.label} metric={metric} loading={blogLoading && !blogData} />
+                ))}
+              </>
+            )
+          : metrics.map((metric, index) => (
+              <DashboardMetricCard
+                key={metric.label}
+                metric={metric}
+                loading={index >= pipelineMetrics.length && blogLoading && !blogData}
+              />
+            ))}
       </div>
 
+      {workspace ? (
+        <>
       {/* Charts — GET /workspace engagement_series + leads_growth (DB: publishing log + leads) */}
       <div className="grid gap-4 xl:grid-cols-2">
-        <div className="rounded-xl border border-[#e5e7eb] bg-white px-5 pt-4 pb-5">
-          <p className="text-[13.5px] font-semibold text-[#111827]">Content performance</p>
-          <p className="mt-0.5 text-[11.5px] text-[#9ca3af]">
-            Successful publishes per week (from your publishing log, not sample data)
-          </p>
-          <div className="mt-3 h-64">
+        <DashboardPanel
+          title="Content performance"
+          subtitle="Successful publishes per week (from your publishing log, not sample data)"
+        >
+          <div className="h-64">
             {workspace.engagementSeries.length === 0 ? (
               <DashboardChartEmptyState
                 glyph={<LineChartEmptyGlyph />}
@@ -294,13 +404,12 @@ export default function DashboardPage() {
               </ResponsiveContainer>
             )}
           </div>
-        </div>
-        <div className="rounded-xl border border-[#e5e7eb] bg-white px-5 pt-4 pb-5">
-          <p className="text-[13.5px] font-semibold text-[#111827]">Lead growth</p>
-          <p className="mt-0.5 text-[11.5px] text-[#9ca3af]">
-            New leads per week from records in your workspace (captured-at timestamps)
-          </p>
-          <div className="mt-3 h-64">
+        </DashboardPanel>
+        <DashboardPanel
+          title="Lead growth"
+          subtitle="New leads per week from records in your workspace (captured-at timestamps)"
+        >
+          <div className="h-64">
             {workspace.leadsGrowth.length === 0 ? (
               <DashboardChartEmptyState
                 glyph={<BarChartEmptyGlyph />}
@@ -318,7 +427,7 @@ export default function DashboardPage() {
               </ResponsiveContainer>
             )}
           </div>
-        </div>
+        </DashboardPanel>
       </div>
       <p className="text-center text-[12px] text-[#9ca3af]">
         AI narrative review:{" "}
@@ -326,10 +435,19 @@ export default function DashboardPage() {
           Performance insights
         </Link>
       </p>
+        </>
+      ) : (
+        <div className="grid gap-4 xl:grid-cols-2">
+          <Skeleton className="h-80 rounded-2xl" />
+          <Skeleton className="h-80 rounded-2xl" />
+        </div>
+      )}
 
-      {/* Activity feed */}
-      <div className="rounded-xl border border-[#e5e7eb] bg-white">
-        <div className="flex flex-col gap-3 border-b border-[#e5e7eb] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+      <BlogWorkspaceSummary data={blogData} loading={blogLoading} />
+
+      {workspace ? (
+      <div className="overflow-hidden rounded-2xl border border-[#e5e7eb]/90 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+        <div className="flex flex-col gap-3 border-b border-[#f3f4f6] bg-gradient-to-r from-[#f8fafc] to-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-[13.5px] font-semibold text-[#111827]">Activity feed</p>
             {activityRows.length > 0 && (
@@ -419,6 +537,9 @@ export default function DashboardPage() {
           </div>
         )}
       </div>
+      ) : (
+        <Skeleton className="h-64 rounded-2xl" />
+      )}
     </div>
   );
 }

@@ -38,6 +38,7 @@ import {
   fetchBlogDashboard,
   fetchBlogPost,
   fetchBlogPosts,
+  getCachedBlogDashboard,
   BLOG_PRIMARY_BUTTON,
   BLOG_STATUS_COLORS,
   BLOG_STATUS_LABELS,
@@ -48,31 +49,26 @@ import {
   type BlogStatus,
 } from "./blog-core";
 
-const BLOG_SURFACE =
-  "rounded-2xl border border-blue-100/90 bg-white shadow-sm shadow-blue-900/[0.04] dark:border-blue-900/50 dark:bg-zinc-900/60";
+const BLOG_SURFACE = "rounded-xl border border-[#e5e7eb] bg-white dark:border-zinc-800 dark:bg-zinc-900/80";
 
-const BLOG_TAB_ACTIVE =
-  "border-blue-300 bg-gradient-to-b from-blue-50 to-white text-blue-950 shadow-sm ring-1 ring-blue-200/60 dark:border-blue-600 dark:from-blue-950/50 dark:to-zinc-900 dark:text-blue-50 dark:ring-blue-700/50";
+const BLOG_TAB_ACTIVE = "border-[#1a56db] text-[#1a56db]";
 
-const BLOG_TAB_INACTIVE =
-  "border-blue-100/80 bg-slate-50/50 text-slate-600 hover:border-blue-200 hover:bg-blue-50/40 hover:shadow-sm dark:border-blue-950/50 dark:bg-zinc-800/40 dark:text-slate-300 dark:hover:bg-blue-950/30";
+const BLOG_TAB_INACTIVE = "border-transparent text-[#6b7280] hover:text-[#111827] dark:text-zinc-400 dark:hover:text-zinc-100";
 
-const BLOG_PILL_ACTIVE =
-  "border-slate-900 bg-slate-900 text-white shadow-sm dark:border-zinc-100 dark:bg-zinc-100 dark:text-slate-900";
+const BLOG_PILL_ACTIVE = "border-[#1a56db] bg-[#f0f4ff] text-[#1a56db]";
 
 const BLOG_PILL_INACTIVE =
-  "border-slate-200 bg-white text-slate-700 hover:border-slate-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-zinc-600";
+  "border-[#e5e7eb] bg-white text-[#374151] hover:border-[#d1d5db] dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-zinc-600";
 
 const BLOG_NAV: Array<{
   href: string;
   label: string;
-  hint: string;
   icon: typeof LayoutDashboard;
   exact?: boolean;
   dashboard?: boolean;
 }> = [
-  { href: "/blog", label: "Dashboard", hint: "Stats and recent posts", icon: LayoutDashboard, dashboard: true },
-  { href: "/blog/posts", label: "Blogs", hint: "All posts and drafts", icon: FileText },
+  { href: "/blog", label: "Overview", icon: LayoutDashboard, dashboard: true },
+  { href: "/blog/posts", label: "All posts", icon: FileText },
 ];
 
 function isActive(pathname: string, href: string, exact?: boolean, dashboard?: boolean) {
@@ -93,61 +89,203 @@ export function BlogShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="w-full min-w-0 space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+    <div className="w-full min-w-0 space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Blog</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Create, publish, and manage your content.</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-[#111827] dark:text-zinc-50">Blog</h1>
+          <p className="mt-1 text-sm text-[#6b7280] dark:text-zinc-400">Create, publish, and manage your content.</p>
         </div>
         <Link
           href="/blog/posts/create"
           className="flex h-8 items-center gap-1.5 rounded-lg bg-[#1a56db] px-3 text-[12.5px] font-semibold text-white transition-colors hover:bg-[#1648c0] active:bg-[#1340ad]"
         >
           <Plus className="size-3.5 shrink-0" strokeWidth={2.5} />
-          Create blog
+          New post
         </Link>
       </div>
 
-      <section className={cn(BLOG_SURFACE, "p-3.5 sm:p-4")} aria-label="Blog sections">
-        <p className="text-[11px] text-slate-500 dark:text-slate-400">Choose a section below.</p>
-        <nav className="mt-3 grid gap-1.5 sm:grid-cols-2" aria-label="Blog sections">
-          {BLOG_NAV.map((item) => {
-            const active = isActive(pathname, item.href, item.exact, item.dashboard);
-            const Icon = item.icon;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "flex min-h-0 min-w-0 flex-col items-start justify-center gap-1 rounded-xl border px-3 py-2.5 text-left transition-all duration-200 sm:items-center sm:py-3 sm:text-center",
-                  active ? BLOG_TAB_ACTIVE : BLOG_TAB_INACTIVE
-                )}
-              >
-                <span className="flex w-full items-center gap-1.5 sm:justify-center">
-                  <Icon
-                    className={cn(
-                      "size-3.5 shrink-0",
-                      active ? "text-blue-600 dark:text-blue-300" : "text-slate-500 dark:text-slate-400"
-                    )}
-                    aria-hidden
-                  />
-                  <span className="text-sm font-semibold">{item.label}</span>
-                </span>
-                <span
-                  className={cn(
-                    "w-full pl-[22px] text-[10px] sm:mt-0.5 sm:pl-0 sm:text-xs",
-                    active ? "text-blue-700/80 dark:text-blue-200/80" : "text-slate-500 dark:text-slate-500"
-                  )}
-                >
-                  {item.hint}
-                </span>
-              </Link>
-            );
-          })}
-        </nav>
-      </section>
+      <nav className="flex gap-1 border-b border-[#e5e7eb] dark:border-zinc-800" aria-label="Blog sections">
+        {BLOG_NAV.map((item) => {
+          const active = isActive(pathname, item.href, item.exact, item.dashboard);
+          const Icon = item.icon;
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={cn(
+                "-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-[13px] font-medium transition-colors",
+                active ? BLOG_TAB_ACTIVE : BLOG_TAB_INACTIVE
+              )}
+            >
+              <Icon className="size-3.5 shrink-0" aria-hidden />
+              {item.label}
+            </Link>
+          );
+        })}
+      </nav>
 
       <div>{children}</div>
+    </div>
+  );
+}
+
+const WORKSPACE_BLOG_METRICS = [
+  {
+    key: "totalBlogs" as const,
+    label: "Total blogs",
+    hint: "All posts in workspace",
+    icon: BookOpen,
+    href: "/blog/posts",
+    accent: "#0ea5e9",
+    bg: "#e0f2fe",
+  },
+  {
+    key: "publishedBlogs" as const,
+    label: "Published blogs",
+    hint: "Live on your blog",
+    icon: BadgeCheck,
+    href: "/blog/posts?status=published",
+    accent: "#059669",
+    bg: "#d1fae5",
+  },
+  {
+    key: "draftBlogs" as const,
+    label: "Blog drafts",
+    hint: "Still in progress",
+    icon: FilePenLine,
+    href: "/blog/posts?status=draft",
+    accent: "#d97706",
+    bg: "#fef3c7",
+  },
+] as const;
+
+export function getCachedBlogDashboard(): BlogDashboardData | null {
+  const key = blogDashboardCacheKey();
+  if (
+    blogDashboardCache &&
+    blogDashboardCache.key === key &&
+    Date.now() - blogDashboardCache.at < BLOG_DASHBOARD_CACHE_TTL_MS
+  ) {
+    return blogDashboardCache.data;
+  }
+  return null;
+}
+
+export function useBlogDashboardData() {
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const [data, setData] = useState<BlogDashboardData | null>(() => getCachedBlogDashboard());
+  const [loading, setLoading] = useState(() => getCachedBlogDashboard() === null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const cached = getCachedBlogDashboard();
+    if (cached) {
+      setData(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+
+    fetchBlogDashboard()
+      .then((next) => {
+        if (!cancelled) setData(next);
+      })
+      .catch(() => {
+        if (!cancelled) setData(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorkspaceId]);
+
+  return { data, loading };
+}
+
+export { WORKSPACE_BLOG_METRICS as BLOG_DASHBOARD_METRICS };
+
+export function BlogWorkspaceSummary({
+  data,
+  loading,
+}: {
+  data: BlogDashboardData | null;
+  loading: boolean;
+}) {
+  if (loading && !data) {
+    return <Skeleton className="h-44 rounded-2xl" />;
+  }
+
+  const recentPosts = data?.recentPosts.slice(0, 3) ?? [];
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-[#e5e7eb] bg-white shadow-[0_1px_2px_rgba(15,23,42,0.04)]">
+      <div className="flex flex-col gap-3 border-b border-[#f3f4f6] bg-gradient-to-r from-[#f8fafc] to-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[#e0f2fe] text-[#0284c7]">
+            <BookOpen className="size-[18px]" strokeWidth={1.75} />
+          </span>
+          <div>
+            <p className="text-[14px] font-semibold text-[#111827]">Recent blog posts</p>
+            <p className="mt-0.5 text-[12px] text-[#6b7280]">Latest drafts and published articles</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button asChild variant="outline" size="sm" className="h-8 rounded-lg border-[#e5e7eb] bg-white text-[12.5px]">
+            <Link href="/blog">Open blog</Link>
+          </Button>
+          <Button asChild size="sm" className="h-8 rounded-lg bg-[#1a56db] text-[12.5px] hover:bg-[#1648c0]">
+            <Link href="/blog/posts/create">
+              <Plus className="mr-1 size-3.5" />
+              New post
+            </Link>
+          </Button>
+        </div>
+      </div>
+
+      <div className="px-5 py-4">
+        {recentPosts.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-[#e5e7eb] bg-[#fafafa] px-6 py-8 text-center">
+            <p className="text-[13px] text-[#6b7280]">No blog posts yet.</p>
+            <Button asChild size="sm" className="mt-3 h-8 rounded-lg bg-[#1a56db] hover:bg-[#1648c0]">
+              <Link href="/blog/posts/create">Create your first post</Link>
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {recentPosts.map((post) => (
+              <Link
+                key={post.id}
+                href={`/blog/posts/${post.id}`}
+                className="group flex items-center gap-3 rounded-xl border border-transparent px-3 py-2.5 transition-all hover:border-[#e5e7eb] hover:bg-[#f8fafc]"
+              >
+                <div className="flex size-11 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[#f1f5f9]">
+                  {post.image ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={post.image} alt="" className="size-full object-cover" />
+                  ) : (
+                    <FileText className="size-4 text-[#94a3b8]" strokeWidth={1.5} />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] font-medium text-[#111827] group-hover:text-[#1a56db]">{post.title}</p>
+                  <p className="mt-0.5 truncate text-[11.5px] text-[#9ca3af]">
+                    {post.author} · {formatBlogDate(post.updatedAt)}
+                  </p>
+                </div>
+                <Badge className={cn("shrink-0", BLOG_STATUS_COLORS[post.status])}>{BLOG_STATUS_LABELS[post.status]}</Badge>
+              </Link>
+            ))}
+            <div className="pt-1 text-right">
+              <Link href="/blog/posts" className="text-[12px] font-medium text-[#1a56db] hover:underline">
+                View all posts
+              </Link>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -155,37 +293,37 @@ export function BlogShell({ children }: { children: ReactNode }) {
 const STAT_CARDS = [
   {
     key: "totalBlogs" as const,
-    label: "Total blogs",
+    label: "Total posts",
     icon: BookOpen,
     href: "/blog/posts",
-    iconWrap: "bg-blue-500/10 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400",
-    hover: "hover:border-blue-200 hover:bg-blue-50/40 dark:hover:border-blue-800 dark:hover:bg-blue-950/20",
+    accent: "#1a56db",
+    bg: "#f0f4ff",
   },
   {
     key: "publishedBlogs" as const,
     label: "Published",
     icon: BadgeCheck,
     href: "/blog/posts?status=published",
-    iconWrap: "bg-emerald-500/10 text-emerald-600 dark:bg-emerald-500/15 dark:text-emerald-400",
-    hover: "hover:border-emerald-200 hover:bg-emerald-50/40 dark:hover:border-emerald-800 dark:hover:bg-emerald-950/20",
+    accent: "#047857",
+    bg: "#ecfdf5",
   },
   {
     key: "draftBlogs" as const,
     label: "Drafts",
     icon: FilePenLine,
     href: "/blog/posts?status=draft",
-    iconWrap: "bg-amber-500/10 text-amber-600 dark:bg-amber-500/15 dark:text-amber-400",
-    hover: "hover:border-amber-200 hover:bg-amber-50/40 dark:hover:border-amber-800 dark:hover:bg-amber-950/20",
+    accent: "#b45309",
+    bg: "#fffbeb",
   },
   {
     key: "totalClicks" as const,
-    label: "Clicked blogs",
+    label: "Total clicks",
     icon: MousePointerClick,
     href: "/blog/clicks",
-    iconWrap: "bg-violet-500/10 text-violet-600 dark:bg-violet-500/15 dark:text-violet-400",
-    hover: "hover:border-violet-200 hover:bg-violet-50/40 dark:hover:border-violet-800 dark:hover:bg-violet-950/20",
+    accent: "#7c3aed",
+    bg: "#f5f3ff",
   },
-];
+] as const;
 
 type BlogCardData = {
   id: string;
@@ -235,7 +373,7 @@ function BlogPostCard({
   return (
     <article className="group">
       <div className="relative">
-        <Link href={`/blog/posts/${post.id}`} className="block overflow-hidden rounded-2xl bg-slate-100 dark:bg-zinc-800">
+        <Link href={`/blog/posts/${post.id}`} className="block overflow-hidden rounded-xl bg-slate-100 dark:bg-zinc-800">
           {post.image ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -256,12 +394,12 @@ function BlogPostCard({
         ) : null}
       </div>
 
-      <Link href={`/blog/posts/${post.id}`} className="block pt-4">
-        <p className="text-sm text-slate-500 dark:text-slate-400">{post.categoryName || "Blog"}</p>
-        <h3 className="mt-2 line-clamp-2 text-lg font-semibold leading-snug tracking-tight text-slate-900 transition-colors group-hover:text-slate-600 dark:text-zinc-50 dark:group-hover:text-zinc-300">
+      <Link href={`/blog/posts/${post.id}`} className="block pt-3">
+        <p className="text-[12px] text-[#6b7280] dark:text-zinc-400">{post.categoryName || "Blog"}</p>
+        <h3 className="mt-1.5 line-clamp-2 text-base font-semibold leading-snug tracking-tight text-[#111827] transition-colors group-hover:text-[#1a56db] dark:text-zinc-50">
           {post.title}
         </h3>
-        <p className="mt-3 text-sm text-slate-500 dark:text-slate-400">{formatBlogDate(post.updatedAt)}</p>
+        <p className="mt-2 text-[12.5px] text-[#9ca3af]">{formatBlogDate(post.updatedAt)}</p>
       </Link>
     </article>
   );
@@ -279,7 +417,7 @@ export function BlogDashboard() {
   const [recentView, setRecentView] = useState<RecentPostsView>("card");
 
   const reload = () => {
-    fetchBlogDashboard()
+    fetchBlogDashboard({ force: true })
       .then(setData)
       .catch(() => setError("Unable to load blog dashboard."));
   };
@@ -287,6 +425,11 @@ export function BlogDashboard() {
   useEffect(() => {
     setLoading(true);
     setError(null);
+    const cached = getCachedBlogDashboard();
+    if (cached) {
+      setData(cached);
+      setLoading(false);
+    }
     fetchBlogDashboard()
       .then(setData)
       .catch(() => setError("Unable to load blog dashboard."))
@@ -337,34 +480,27 @@ export function BlogDashboard() {
 
   return (
     <div className="space-y-5">
-      <div className="grid gap-2.5 sm:grid-cols-2 xl:grid-cols-4">
-        {STAT_CARDS.map(({ key, label, icon: Icon, href, iconWrap, hover }) => (
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {STAT_CARDS.map(({ key, label, icon: Icon, href, accent, bg }) => (
           <Link
             key={key}
             href={href}
-            className="group block rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 focus-visible:ring-offset-2"
+            className="group block rounded-xl border border-[#e5e7eb] bg-white px-5 py-4 transition-shadow hover:shadow-sm dark:border-zinc-800 dark:bg-zinc-900/80"
+            aria-label={`Open ${label}`}
           >
-            <div
-              className={cn(
-                "flex items-center gap-3 rounded-xl border border-slate-200/80 bg-white px-3.5 py-3 shadow-sm transition-all duration-200",
-                "dark:border-zinc-800 dark:bg-zinc-900/80",
-                hover
-              )}
-            >
-              <span
-                className={cn(
-                  "flex size-9 shrink-0 items-center justify-center rounded-lg transition-transform duration-200 group-hover:scale-105",
-                  iconWrap
-                )}
-              >
-                <Icon className="size-[18px]" strokeWidth={2} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <p className="text-xl font-semibold tabular-nums leading-none tracking-tight text-slate-900 dark:text-zinc-50">
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-[12.5px] font-medium text-[#6b7280]">{label}</p>
+                <p className="mt-1.5 text-3xl font-semibold tabular-nums tracking-tight" style={{ color: accent }}>
                   {data.stats[key]}
                 </p>
-                <p className="mt-1 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400">{label}</p>
               </div>
+              <span
+                className="flex size-9 shrink-0 items-center justify-center rounded-lg"
+                style={{ background: bg }}
+              >
+                <Icon className="size-[17px]" strokeWidth={1.7} style={{ color: accent }} />
+              </span>
             </div>
           </Link>
         ))}
@@ -372,10 +508,10 @@ export function BlogDashboard() {
 
       <Card className={cn(BLOG_SURFACE, "p-5")}>
         <div className="mb-4 flex items-center justify-between gap-3">
-          <h2 className="text-base font-semibold">Recent posts</h2>
+          <h2 className="text-[13.5px] font-semibold text-[#111827] dark:text-zinc-50">Recent posts</h2>
           <div className="flex items-center gap-2">
             <div
-              className="flex items-center gap-1 rounded-xl border border-blue-100/80 bg-slate-50/50 p-1 dark:border-blue-950/50 dark:bg-zinc-800/40"
+              className="flex items-center gap-0.5 rounded-lg border border-[#e5e7eb] bg-[#fafafa] p-0.5 dark:border-zinc-700 dark:bg-zinc-800/60"
               role="group"
               aria-label="Recent posts view"
             >
@@ -385,10 +521,10 @@ export function BlogDashboard() {
                 aria-pressed={recentView === "card"}
                 aria-label="Card view"
                 className={cn(
-                  "inline-flex h-7 w-8 items-center justify-center rounded-lg transition",
+                  "inline-flex h-7 w-8 items-center justify-center rounded-md transition",
                   recentView === "card"
-                    ? "bg-blue-600 text-white shadow-sm dark:bg-blue-500"
-                    : "text-slate-500 hover:bg-white hover:text-slate-700 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+                    ? "bg-white text-[#1a56db] shadow-sm dark:bg-zinc-700 dark:text-blue-300"
+                    : "text-[#6b7280] hover:text-[#111827] dark:hover:text-zinc-200"
                 )}
               >
                 <LayoutGrid className="h-4 w-4" />
@@ -399,10 +535,10 @@ export function BlogDashboard() {
                 aria-pressed={recentView === "list"}
                 aria-label="List view"
                 className={cn(
-                  "inline-flex h-7 w-8 items-center justify-center rounded-lg transition",
+                  "inline-flex h-7 w-8 items-center justify-center rounded-md transition",
                   recentView === "list"
-                    ? "bg-blue-600 text-white shadow-sm dark:bg-blue-500"
-                    : "text-slate-500 hover:bg-white hover:text-slate-700 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+                    ? "bg-white text-[#1a56db] shadow-sm dark:bg-zinc-700 dark:text-blue-300"
+                    : "text-[#6b7280] hover:text-[#111827] dark:hover:text-zinc-200"
                 )}
               >
                 <List className="h-4 w-4" />
@@ -410,18 +546,21 @@ export function BlogDashboard() {
             </div>
             <Link
               href="/blog/posts"
-              className="inline-flex h-8 items-center rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 transition hover:border-blue-200 hover:bg-blue-50/40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:border-blue-800 dark:hover:bg-blue-950/30"
+              className="inline-flex h-8 items-center rounded-lg border border-[#e5e7eb] bg-white px-3 text-xs font-medium text-[#374151] transition hover:bg-[#fafafa] dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
             >
               View all
             </Link>
           </div>
         </div>
         {data.recentPosts.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border/80 bg-muted/20 px-6 py-8 text-center">
-            <p className="text-sm text-muted-foreground">No blog posts yet.</p>
+          <div className="rounded-lg border border-dashed border-[#e5e7eb] bg-[#fafafa] px-6 py-8 text-center dark:border-zinc-700 dark:bg-zinc-800/40">
+            <p className="text-sm text-[#6b7280]">No blog posts yet.</p>
+            <Button asChild size="sm" className="mt-3 h-8 rounded-lg bg-[#1a56db] hover:bg-[#1648c0]">
+              <Link href="/blog/posts/create">Create your first post</Link>
+            </Button>
           </div>
         ) : recentView === "card" ? (
-          <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3 lg:gap-10">
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {data.recentPosts.map((post) => (
               <BlogPostCard key={post.id} post={post} actions={postActions(post)} />
             ))}
@@ -546,35 +685,19 @@ export function BlogList() {
   };
 
   return (
-    <div className="space-y-8">
-      <div className="relative w-full">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search blogs..."
-          className="h-11 w-full rounded-full border-slate-200 bg-white pl-9 dark:border-zinc-700 dark:bg-zinc-900"
-        />
-      </div>
-
-      <div className="flex flex-col items-center gap-4 sm:flex-row sm:justify-between">
-        <div className="flex flex-wrap justify-center gap-2">
-          {STATUS_FILTERS.map((value) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setStatus(value)}
-              className={cn(
-                "rounded-full border px-5 py-2 text-sm font-medium transition-all duration-200",
-                status === value ? BLOG_PILL_ACTIVE : BLOG_PILL_INACTIVE
-              )}
-            >
-              {value === "all" ? "All blogs" : value === "published" ? "Published" : "Draft"}
-            </button>
-          ))}
+    <div className="space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="relative w-full sm:max-w-md">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9ca3af]" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search posts..."
+            className="h-9 w-full rounded-lg border-[#e5e7eb] bg-white pl-9 text-[13px] dark:border-zinc-700 dark:bg-zinc-900"
+          />
         </div>
         <div
-          className="flex items-center gap-1 rounded-full border border-slate-200 bg-white p-1 dark:border-zinc-700 dark:bg-zinc-900"
+          className="flex items-center gap-0.5 rounded-lg border border-[#e5e7eb] bg-[#fafafa] p-0.5 dark:border-zinc-700 dark:bg-zinc-800/60"
           role="group"
           aria-label="Blog list view"
         >
@@ -584,10 +707,10 @@ export function BlogList() {
             aria-pressed={listView === "card"}
             aria-label="Card view"
             className={cn(
-              "inline-flex h-8 w-9 items-center justify-center rounded-full transition",
+              "inline-flex h-7 w-8 items-center justify-center rounded-md transition",
               listView === "card"
-                ? "bg-slate-900 text-white dark:bg-zinc-100 dark:text-slate-900"
-                : "text-slate-500 hover:text-slate-800 dark:hover:text-zinc-200"
+                ? "bg-white text-[#1a56db] shadow-sm dark:bg-zinc-700 dark:text-blue-300"
+                : "text-[#6b7280] hover:text-[#111827] dark:hover:text-zinc-200"
             )}
           >
             <LayoutGrid className="h-4 w-4" />
@@ -598,10 +721,10 @@ export function BlogList() {
             aria-pressed={listView === "list"}
             aria-label="List view"
             className={cn(
-              "inline-flex h-8 w-9 items-center justify-center rounded-full transition",
+              "inline-flex h-7 w-8 items-center justify-center rounded-md transition",
               listView === "list"
-                ? "bg-slate-900 text-white dark:bg-zinc-100 dark:text-slate-900"
-                : "text-slate-500 hover:text-slate-800 dark:hover:text-zinc-200"
+                ? "bg-white text-[#1a56db] shadow-sm dark:bg-zinc-700 dark:text-blue-300"
+                : "text-[#6b7280] hover:text-[#111827] dark:hover:text-zinc-200"
             )}
           >
             <List className="h-4 w-4" />
@@ -609,18 +732,34 @@ export function BlogList() {
         </div>
       </div>
 
+      <div className="flex flex-wrap gap-2">
+        {STATUS_FILTERS.map((value) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setStatus(value)}
+            className={cn(
+              "rounded-full border px-4 py-1.5 text-[12.5px] font-medium transition-all duration-200",
+              status === value ? BLOG_PILL_ACTIVE : BLOG_PILL_INACTIVE
+            )}
+          >
+            {value === "all" ? "All posts" : value === "published" ? "Published" : "Drafts"}
+          </button>
+        ))}
+      </div>
+
       {loading ? (
-        <div className={cn(listView === "card" ? "grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3 lg:gap-10" : "space-y-3")}>
+        <div className={cn(listView === "card" ? "grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3" : "space-y-3")}>
           {Array.from({ length: listView === "card" ? 6 : 4 }).map((_, i) => (
-            <Skeleton key={i} className={cn(listView === "card" ? "aspect-[4/3] rounded-2xl" : "h-20 rounded-2xl")} />
+            <Skeleton key={i} className={cn(listView === "card" ? "aspect-[4/3] rounded-xl" : "h-20 rounded-xl")} />
           ))}
         </div>
       ) : filtered.length === 0 ? (
-        <Card className="rounded-2xl border-dashed p-10 text-center text-sm text-muted-foreground">
-          No blogs found. Create a new post to get started.
+        <Card className="rounded-xl border border-dashed border-[#e5e7eb] bg-[#fafafa] p-10 text-center text-sm text-[#6b7280] dark:border-zinc-700 dark:bg-zinc-800/40">
+          No posts found. Create a new post to get started.
         </Card>
       ) : listView === "card" ? (
-        <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3 lg:gap-10">
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((post) => (
             <BlogPostCard
               key={post.id}
@@ -950,32 +1089,32 @@ export function BlogClicked() {
     <div className="space-y-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <Button variant="ghost" size="sm" className="-ml-2 mb-2" asChild>
+          <Button variant="ghost" size="sm" className="-ml-2 mb-1 h-8 text-[#6b7280]" asChild>
             <Link href="/blog">
               <ArrowLeft className="h-4 w-4" />
-              Back to dashboard
+              Back to overview
             </Link>
           </Button>
-          <h2 className="text-lg font-semibold">Clicked blogs</h2>
-          <p className="text-sm text-muted-foreground">
-            {data.totalClicks.toLocaleString()} total clicks across {data.blogs.length} blog{data.blogs.length === 1 ? "" : "s"}
+          <h2 className="text-[13.5px] font-semibold text-[#111827] dark:text-zinc-50">Click analytics</h2>
+          <p className="mt-0.5 text-[12.5px] text-[#9ca3af]">
+            {data.totalClicks.toLocaleString()} total clicks across {data.blogs.length} post{data.blogs.length === 1 ? "" : "s"}
           </p>
         </div>
-        <div className="flex items-center gap-2 rounded-2xl border border-blue-100/90 bg-white px-4 py-3 shadow-sm ring-1 ring-blue-50/50 dark:border-blue-900/50 dark:bg-zinc-900/80 dark:ring-blue-950/30">
-          <span className="flex size-10 items-center justify-center rounded-xl bg-blue-600/10 text-blue-600 dark:bg-blue-500/15 dark:text-blue-400">
-            <MousePointerClick className="size-5" strokeWidth={1.75} />
+        <div className="flex items-center gap-3 rounded-xl border border-[#e5e7eb] bg-white px-4 py-3 dark:border-zinc-800 dark:bg-zinc-900/80">
+          <span className="flex size-9 items-center justify-center rounded-lg bg-[#f5f3ff] text-[#7c3aed]">
+            <MousePointerClick className="size-[17px]" strokeWidth={1.75} />
           </span>
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500 dark:text-slate-400">Total clicks</p>
-            <p className="text-2xl font-semibold tabular-nums tracking-tight text-slate-900 dark:text-zinc-50">{data.totalClicks.toLocaleString()}</p>
+            <p className="text-[11px] font-medium text-[#6b7280]">Total clicks</p>
+            <p className="text-2xl font-semibold tabular-nums tracking-tight text-[#111827] dark:text-zinc-50">{data.totalClicks.toLocaleString()}</p>
           </div>
         </div>
       </div>
 
       <Card className={cn(BLOG_SURFACE, "p-5")}>
         {data.blogs.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border/80 bg-muted/20 px-6 py-8 text-center">
-            <p className="text-sm text-muted-foreground">No blogs yet. Clicks will appear here once posts get traffic.</p>
+          <div className="rounded-lg border border-dashed border-[#e5e7eb] bg-[#fafafa] px-6 py-8 text-center dark:border-zinc-700 dark:bg-zinc-800/40">
+            <p className="text-sm text-[#6b7280]">No posts yet. Clicks will appear here once posts get traffic.</p>
           </div>
         ) : (
           <div className="overflow-x-auto">

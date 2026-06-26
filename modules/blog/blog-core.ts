@@ -270,9 +270,53 @@ function unwrap<T>(res: { data: { success?: boolean; data: T } }): T {
   return res.data.data;
 }
 
-export async function fetchBlogDashboard(): Promise<BlogDashboardData> {
-  const res = await blogClient.get<{ success: boolean; data: BlogDashboardData }>("/blog/dashboard");
-  return unwrap(res);
+const BLOG_DASHBOARD_CACHE_TTL_MS = 30_000;
+let blogDashboardInflight: Promise<BlogDashboardData> | null = null;
+let blogDashboardCache: { key: string; data: BlogDashboardData; at: number } | null = null;
+
+function blogDashboardCacheKey(): string {
+  const headers = getActiveWorkspaceRequestHeaders();
+  return headers["X-Flowpilot-Workspace-Setup-Id"] ?? "default";
+}
+
+export function invalidateBlogDashboardCache(): void {
+  blogDashboardCache = null;
+}
+
+export async function fetchBlogDashboard(options?: { force?: boolean }): Promise<BlogDashboardData> {
+  const key = blogDashboardCacheKey();
+  const now = Date.now();
+
+  if (
+    !options?.force &&
+    blogDashboardCache &&
+    blogDashboardCache.key === key &&
+    now - blogDashboardCache.at < BLOG_DASHBOARD_CACHE_TTL_MS
+  ) {
+    return blogDashboardCache.data;
+  }
+
+  if (blogDashboardInflight) {
+    return blogDashboardInflight;
+  }
+
+  blogDashboardInflight = blogClient
+    .get<{ success: boolean; data: BlogDashboardData }>("/blog/dashboard")
+    .then((res) => {
+      const data = unwrap(res);
+      blogDashboardCache = { key, data, at: Date.now() };
+      return data;
+    })
+    .finally(() => {
+      blogDashboardInflight = null;
+    });
+
+  return blogDashboardInflight;
+}
+
+/** Warm blog dashboard cache during app boot (runs in parallel with workspace fetch). */
+export function prefetchBlogDashboard(): void {
+  void fetchBlogDashboard().catch(() => undefined);
 }
 
 export async function fetchBlogPosts(
@@ -321,6 +365,7 @@ export async function updateBlogPost(id: string, input: BlogPostInput): Promise<
 
 export async function deleteBlogPost(id: string): Promise<void> {
   await blogClient.delete(`/api/blogs/${id}`);
+  invalidateBlogDashboardCache();
 }
 
 function mapBlogInput(input: BlogPostInput) {

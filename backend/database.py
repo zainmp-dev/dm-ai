@@ -50,14 +50,14 @@ else:
     # - connect_timeout=3: fail fast on DNS/TCP issues; avoids 8s-per-attempt cascades.
     # - pool_timeout=8: give up waiting for a pool slot after 8s (returns 500 instead of hanging).
     # - pool_pre_ping: detects stale connections before use so dead connections are recycled quickly.
-    # - pool_size=3/max_overflow=6: small pool prevents exhausting Supabase's connection limit.
+    # - pool_size=5/max_overflow=10: modest headroom for parallel dashboard requests.
     # - pool_recycle=180: refresh connections every 3 min to shed idle/stale state.
     # - options removed: SET SESSION vars are not permitted in transaction-mode pooler (port 6543).
     engine = create_engine(
         settings.database_url,
         pool_pre_ping=True,
-        pool_size=3,
-        max_overflow=6,
+        pool_size=5,
+        max_overflow=10,
         pool_recycle=180,
         pool_timeout=8,
         pool_use_lifo=True,

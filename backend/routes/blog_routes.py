@@ -91,29 +91,40 @@ def blog_dashboard(
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     ws = workspace_id
-    rows = db.execute(
+    stats_row = db.execute(
         text(
             """
-            select b.id, b.title, b.author, b.status, b.views, b.clicks,
+            select
+              count(*)::int as total_blogs,
+              count(*) filter (where b.status = 'published')::int as published_blogs,
+              count(*) filter (where b.status = 'draft')::int as draft_blogs,
+              count(*) filter (where b.status = 'scheduled')::int as scheduled_blogs,
+              count(*) filter (where b.status = 'archived')::int as archived_blogs,
+              coalesce(sum(b.clicks), 0)::int as total_clicks
+            from flowpilot_blogs b
+            where b.workspace_id = :workspace_id
+            """
+        ),
+        {"workspace_id": ws},
+    ).mappings().first()
+
+    recent_rows = db.execute(
+        text(
+            """
+            select b.id, b.title, b.author, b.status, b.views,
                    b.featured_image_url as image, c.name as category_name,
-                   b.created_at, b.updated_at, b.published_at
+                   b.updated_at
             from flowpilot_blogs b
             left join flowpilot_categories c on c.id = b.category_id
             where b.workspace_id = :workspace_id
-            order by b.updated_at desc
+            order by b.updated_at desc nulls last, b.created_at desc
+            limit 8
             """
         ),
         {"workspace_id": ws},
     ).mappings().all()
 
-    counts = {s: 0 for s in blog_svc.BLOG_STATUSES}
-    for row in rows:
-        status = str(row.get("status") or "draft")
-        if status in counts:
-            counts[status] += 1
-
-    total_clicks = sum(int(row.get("clicks") or 0) for row in rows)
-
+    stats = stats_row or {}
     recent = [
         {
             "id": str(r["id"]),
@@ -125,19 +136,19 @@ def blog_dashboard(
             "categoryName": r.get("category_name") or "",
             "updatedAt": r["updated_at"].isoformat() if r.get("updated_at") else None,
         }
-        for r in rows[:8]
+        for r in recent_rows
     ]
 
     return {
         "success": True,
         "data": {
             "stats": {
-                "totalBlogs": len(rows),
-                "publishedBlogs": counts["published"],
-                "draftBlogs": counts["draft"],
-                "scheduledBlogs": counts["scheduled"],
-                "archivedBlogs": counts["archived"],
-                "totalClicks": total_clicks,
+                "totalBlogs": int(stats.get("total_blogs") or 0),
+                "publishedBlogs": int(stats.get("published_blogs") or 0),
+                "draftBlogs": int(stats.get("draft_blogs") or 0),
+                "scheduledBlogs": int(stats.get("scheduled_blogs") or 0),
+                "archivedBlogs": int(stats.get("archived_blogs") or 0),
+                "totalClicks": int(stats.get("total_clicks") or 0),
             },
             "recentPosts": recent,
         },

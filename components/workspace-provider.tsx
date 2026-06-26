@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, type ReactNode } from "react";
+import { prefetchBlogDashboard } from "@/modules/blog/blog-core";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
@@ -16,10 +17,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     hydrateClientPreferences();
     loadWorkspaceSetups();
-    void (async () => {
-      await syncAuthSessionFromServer();
-      await refreshWorkspace({ soft: true });
-    })();
+    void Promise.all([
+      syncAuthSessionFromServer(),
+      refreshWorkspace({ soft: true }),
+      Promise.resolve().then(() => prefetchBlogDashboard()),
+    ]);
   }, [hydrateClientPreferences, loadWorkspaceSetups, refreshWorkspace, syncAuthSessionFromServer]);
 
   // Wait until the initial GET /workspace has populated `workspace` before syncing
