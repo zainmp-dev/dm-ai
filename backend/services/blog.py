@@ -233,13 +233,14 @@ def list_blogs(
 
     with _session() as db:
         params: dict[str, Any] = {"ws": workspace_id}
-        where = "where workspace_id = :ws"
+        conditions = ["b.workspace_id = :ws"]
         if status and status.lower() != "all":
-            where += " and status = :status"
+            conditions.append("b.status = :status")
             params["status"] = status.lower()
+        where = "where " + " and ".join(conditions)
 
         total = db.execute(
-            text(f"select count(*)::int as cnt from flowpilot_blogs {where}"),
+            text(f"select count(*)::int as cnt from flowpilot_blogs b {where}"),
             params,
         ).mappings().first()
         total_blogs = int((total or {}).get("cnt") or 0)
@@ -253,7 +254,7 @@ def list_blogs(
               c.name as category_name
             from flowpilot_blogs b
             left join flowpilot_categories c on c.id = b.category_id and c.workspace_id = b.workspace_id
-            """ + where.replace("workspace_id", "b.workspace_id").replace("status", "b.status") + """
+            """ + where + """
             order by b.updated_at desc
             limit :limit offset :offset
         """
