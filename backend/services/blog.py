@@ -43,6 +43,12 @@ BLOG_LIST_COLUMNS = """
     views, clicks, published_at, created_at, updated_at
 """
 
+BLOG_SUMMARY_COLUMNS = """
+    id, workspace_id, title, slug, author, keywords, category_id,
+    meta_description, featured_image_url, status,
+    views, clicks, published_at, created_at, updated_at
+"""
+
 DEFAULT_PAGE_SIZE = 10
 MAX_PAGE_SIZE = 100
 
@@ -149,9 +155,8 @@ def _normalize_keywords(raw: Any) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def row_to_post(row: dict[str, Any], category_name: str = "") -> dict[str, Any]:
+def _post_common_fields(row: dict[str, Any], category_name: str = "") -> dict[str, Any]:
     keywords = row.get("keywords") or []
-    content = row.get("content") or ""
     title = row.get("title") or ""
     stored_slug = str(row.get("slug") or "").strip()
     return {
@@ -159,8 +164,6 @@ def row_to_post(row: dict[str, Any], category_name: str = "") -> dict[str, Any]:
         "title": title,
         "slug": stored_slug if stored_slug else _slugify(title),
         "author": row.get("author") or "",
-        "content": content,
-        "description": _plain_text(content)[:150],
         "metaDescription": row.get("meta_description") or "",
         "image": row.get("featured_image_url") or "",
         "categoryId": str(row["category_id"]) if row.get("category_id") else "",
@@ -173,6 +176,24 @@ def row_to_post(row: dict[str, Any], category_name: str = "") -> dict[str, Any]:
         "clicks": int(row.get("clicks") or 0),
         "createdAt": row["created_at"].isoformat() if row.get("created_at") else None,
         "updatedAt": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
+def row_to_post(row: dict[str, Any], category_name: str = "") -> dict[str, Any]:
+    content = row.get("content") or ""
+    return {
+        **_post_common_fields(row, category_name),
+        "content": content,
+        "description": _plain_text(content)[:150],
+    }
+
+
+def row_to_post_summary(row: dict[str, Any], category_name: str = "") -> dict[str, Any]:
+    meta = str(row.get("meta_description") or "").strip()
+    return {
+        **_post_common_fields(row, category_name),
+        "content": "",
+        "description": meta[:150],
     }
 
 
@@ -225,7 +246,7 @@ def list_blogs(
         total_pages = max(1, (total_blogs + limit - 1) // limit) if total_blogs else 1
 
         query = f"""
-            select {BLOG_LIST_COLUMNS}
+            select {BLOG_SUMMARY_COLUMNS}
             from flowpilot_blogs
             {where}
             order by updated_at desc
@@ -236,7 +257,7 @@ def list_blogs(
             {**params, "limit": limit, "offset": offset},
         ).mappings().all()
         names = _category_name_map(db, workspace_id)
-        blogs = [row_to_post(dict(r), names.get(str(r.get("category_id") or ""), "")) for r in rows]
+        blogs = [row_to_post_summary(dict(r), names.get(str(r.get("category_id") or ""), "")) for r in rows]
 
     return {
         "blogs": blogs,

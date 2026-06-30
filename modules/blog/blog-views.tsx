@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   BadgeCheck,
@@ -163,6 +163,20 @@ export function useBlogDashboardData() {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const [data, setData] = useState<BlogDashboardData | null>(() => getCachedBlogDashboard());
   const [loading, setLoading] = useState(() => getCachedBlogDashboard() === null);
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = () =>
+    fetchBlogDashboard({ force: true })
+      .then((next) => {
+        setData(next);
+        setError(null);
+        return next;
+      })
+      .catch(() => {
+        setError("Unable to load blog dashboard.");
+        setData(null);
+        return null;
+      });
 
   useEffect(() => {
     let cancelled = false;
@@ -170,16 +184,23 @@ export function useBlogDashboardData() {
     if (cached) {
       setData(cached);
       setLoading(false);
+      setError(null);
     } else {
       setLoading(true);
     }
 
     fetchBlogDashboard()
       .then((next) => {
-        if (!cancelled) setData(next);
+        if (!cancelled) {
+          setData(next);
+          setError(null);
+        }
       })
       .catch(() => {
-        if (!cancelled) setData(null);
+        if (!cancelled) {
+          setData(null);
+          setError("Unable to load blog dashboard.");
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -190,7 +211,7 @@ export function useBlogDashboardData() {
     };
   }, [activeWorkspaceId]);
 
-  return { data, loading };
+  return { data, loading, error, reload };
 }
 
 export { WORKSPACE_BLOG_METRICS as BLOG_DASHBOARD_METRICS };
@@ -398,31 +419,8 @@ type RecentPostsView = "list" | "card";
 export function BlogDashboard() {
   const { push } = useToast();
   const confirm = useConfirm();
-  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const [data, setData] = useState<BlogDashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data, loading, error, reload } = useBlogDashboardData();
   const [recentView, setRecentView] = useState<RecentPostsView>("card");
-
-  const reload = () => {
-    fetchBlogDashboard({ force: true })
-      .then(setData)
-      .catch(() => setError("Unable to load blog dashboard."));
-  };
-
-  useEffect(() => {
-    setLoading(true);
-    setError(null);
-    const cached = getCachedBlogDashboard();
-    if (cached) {
-      setData(cached);
-      setLoading(false);
-    }
-    fetchBlogDashboard()
-      .then(setData)
-      .catch(() => setError("Unable to load blog dashboard."))
-      .finally(() => setLoading(false));
-  }, [activeWorkspaceId]);
 
   const handleDelete = async (post: BlogCardData) => {
     const ok = await confirm({
@@ -611,28 +609,46 @@ export function BlogList() {
   const [totalPages, setTotalPages] = useState(1);
   const [totalBlogs, setTotalBlogs] = useState(0);
   const [listView, setListView] = useState<RecentPostsView>("card");
+  const skipLoadUntilPageReset = useRef(false);
   const pageSize = 20;
 
-  const load = () => {
+  useEffect(() => {
+    skipLoadUntilPageReset.current = true;
+    setPage(1);
+  }, [status, activeWorkspaceId]);
+
+  useEffect(() => {
+    if (skipLoadUntilPageReset.current && page !== 1) {
+      return;
+    }
+    skipLoadUntilPageReset.current = false;
+
+    let cancelled = false;
     setLoading(true);
     const apiStatus = status === "all" ? undefined : status;
     fetchBlogPosts(apiStatus, page, pageSize)
       .then((result) => {
+        if (cancelled) return;
         setPosts(result.blogs ?? []);
         setTotalPages(result.totalPages);
         setTotalBlogs(result.totalBlogs);
       })
-      .catch(() => push("Failed to load blogs", { kind: "error" }))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (!cancelled) push("Failed to load blogs", { kind: "error" });
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [page, status, activeWorkspaceId, pageSize, push]);
+
+  const handleStatusChange = (value: StatusFilter) => {
+    if (value === status) return;
+    setStatus(value);
   };
-
-  useEffect(() => {
-    load();
-  }, [page, status, activeWorkspaceId]);
-
-  useEffect(() => {
-    setPage(1);
-  }, [status, activeWorkspaceId]);
 
   const filtered = useMemo(() => {
     return (posts ?? []).filter((post) => {
@@ -659,7 +675,7 @@ export function BlogList() {
       await deleteBlogPost(post.id);
       push("Blog deleted", { kind: "success" });
       const apiStatus = status === "all" ? undefined : status;
-      const result = await fetchBlogPosts(apiStatus, page, pageSize);
+      const result = await fetchBlogPosts(apiStatus, page, pageSize, { force: true });
       if (result.blogs.length === 0 && page > 1) {
         setPage((p) => p - 1);
       } else {
@@ -725,7 +741,7 @@ export function BlogList() {
           <button
             key={value}
             type="button"
-            onClick={() => setStatus(value)}
+            onClick={() => handleStatusChange(value)}
             className={cn(
               "rounded-full border px-4 py-1.5 text-[12.5px] font-medium transition-all duration-200",
               status === value ? BLOG_PILL_ACTIVE : BLOG_PILL_INACTIVE

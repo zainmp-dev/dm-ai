@@ -889,18 +889,30 @@ export function BlogEditor({ postId }: { postId?: string }) {
   useEffect(() => {
     const user = getAuthUser();
     if (user?.name) setAuthor(user.name);
-    fetchBlogCategories().then(setCategories).catch(() => {});
-    fetchBlogSettings()
-      .then((settings) => {
-        if (settings.content.defaultAuthor) setAuthor((prev) => prev || settings.content.defaultAuthor);
-        if (settings.content.defaultCategory) {
-          fetchBlogCategories().then((cats) => {
-            const match = cats.find((c) => c.name === settings.content.defaultCategory);
-            if (match) setCategoryId(match.id);
-          });
-        }
+
+    let cancelled = false;
+    void fetchBlogCategories()
+      .then((cats) => {
+        if (cancelled) return;
+        setCategories(cats);
+        return fetchBlogSettings()
+          .then((settings) => {
+            if (cancelled) return;
+            if (settings.content.defaultAuthor) {
+              setAuthor((prev) => prev || settings.content.defaultAuthor);
+            }
+            if (settings.content.defaultCategory) {
+              const match = cats.find((c) => c.name === settings.content.defaultCategory);
+              if (match) setCategoryId(match.id);
+            }
+          })
+          .catch(() => undefined);
       })
-      .catch(() => {});
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeWorkspaceId]);
 
   useEffect(() => {
@@ -948,7 +960,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
   );
 
   const refreshCategories = () => {
-    fetchBlogCategories().then(setCategories).catch(() => {});
+    fetchBlogCategories({ force: true }).then(setCategories).catch(() => {});
   };
 
   const handleCategoryCreated = (newCategoryId: string) => {

@@ -17,12 +17,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     hydrateClientPreferences();
     loadWorkspaceSetups();
-    void Promise.all([
-      syncAuthSessionFromServer(),
-      refreshWorkspace({ soft: true }),
-      Promise.resolve().then(() => prefetchBlogDashboard()),
-    ]);
+    void Promise.all([syncAuthSessionFromServer(), refreshWorkspace({ soft: true })]);
   }, [hydrateClientPreferences, loadWorkspaceSetups, refreshWorkspace, syncAuthSessionFromServer]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+    prefetchBlogDashboard();
+  }, [activeWorkspaceId]);
 
   // Wait until the initial GET /workspace has populated `workspace` before syncing
   // the active local setup. Otherwise `setActiveWorkspace` sees `workspace === null`,

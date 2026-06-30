@@ -271,16 +271,43 @@ function unwrap<T>(res: { data: { success?: boolean; data: T } }): T {
 }
 
 const BLOG_DASHBOARD_CACHE_TTL_MS = 30_000;
-let blogDashboardInflight: Promise<BlogDashboardData> | null = null;
+const BLOG_LIST_CACHE_TTL_MS = 30_000;
+const BLOG_CATEGORIES_CACHE_TTL_MS = 60_000;
+
+let blogDashboardInflight: { key: string; promise: Promise<BlogDashboardData> } | null = null;
 let blogDashboardCache: { key: string; data: BlogDashboardData; at: number } | null = null;
+
+let blogPostsInflight = new Map<string, Promise<BlogListPage>>();
+let blogPostsCache = new Map<string, { data: BlogListPage; at: number }>();
+
+let blogCategoriesInflight: { key: string; promise: Promise<BlogCategory[]> } | null = null;
+let blogCategoriesCache: { key: string; data: BlogCategory[]; at: number } | null = null;
 
 function blogDashboardCacheKey(): string {
   const headers = getActiveWorkspaceRequestHeaders();
   return headers["X-Flowpilot-Workspace-Setup-Id"] ?? "default";
 }
 
+function blogPostsCacheKey(status: string | undefined, page: number, limit: number): string {
+  return `${blogDashboardCacheKey()}|${status ?? "all"}|${page}|${limit}`;
+}
+
 export function invalidateBlogDashboardCache(): void {
   blogDashboardCache = null;
+}
+
+export function invalidateBlogPostsCache(): void {
+  blogPostsCache.clear();
+}
+
+export function invalidateBlogCategoriesCache(): void {
+  blogCategoriesCache = null;
+}
+
+export function invalidateBlogCaches(): void {
+  invalidateBlogDashboardCache();
+  invalidateBlogPostsCache();
+  invalidateBlogCategoriesCache();
 }
 
 export function getCachedBlogDashboard(): BlogDashboardData | null {
@@ -308,11 +335,11 @@ export async function fetchBlogDashboard(options?: { force?: boolean }): Promise
     return blogDashboardCache.data;
   }
 
-  if (blogDashboardInflight) {
-    return blogDashboardInflight;
+  if (blogDashboardInflight?.key === key) {
+    return blogDashboardInflight.promise;
   }
 
-  blogDashboardInflight = blogClient
+  const promise = blogClient
     .get<{ success: boolean; data: BlogDashboardData }>("/blog/dashboard")
     .then((res) => {
       const data = unwrap(res);
@@ -320,10 +347,13 @@ export async function fetchBlogDashboard(options?: { force?: boolean }): Promise
       return data;
     })
     .finally(() => {
-      blogDashboardInflight = null;
+      if (blogDashboardInflight?.key === key) {
+        blogDashboardInflight = null;
+      }
     });
 
-  return blogDashboardInflight;
+  blogDashboardInflight = { key, promise };
+  return promise;
 }
 
 /** Warm blog dashboard cache during app boot (runs in parallel with workspace fetch). */
@@ -335,29 +365,53 @@ export async function fetchBlogPosts(
   status?: string,
   page = 1,
   limit = 20,
+  options?: { force?: boolean },
 ): Promise<BlogListPage> {
-  const res = await blogClient.get<{ success: boolean; data: BlogListPage | BlogPost[] }>("/api/blogs", {
-    params: {
-      page,
-      limit,
-      ...(status ? { status } : {}),
-    },
-  });
-  const data = unwrap(res);
-  if (Array.isArray(data)) {
-    return {
-      blogs: data,
-      currentPage: 1,
-      totalPages: 1,
-      totalBlogs: data.length,
-    };
+  const key = blogPostsCacheKey(status, page, limit);
+  const now = Date.now();
+  const cached = blogPostsCache.get(key);
+
+  if (!options?.force && cached && now - cached.at < BLOG_LIST_CACHE_TTL_MS) {
+    return cached.data;
   }
-  return {
-    blogs: data?.blogs ?? [],
-    currentPage: data?.currentPage ?? 1,
-    totalPages: data?.totalPages ?? 1,
-    totalBlogs: data?.totalBlogs ?? 0,
-  };
+
+  const inflight = blogPostsInflight.get(key);
+  if (inflight) {
+    return inflight;
+  }
+
+  const promise = blogClient
+    .get<{ success: boolean; data: BlogListPage | BlogPost[] }>("/api/blogs", {
+      params: {
+        page,
+        limit,
+        ...(status ? { status } : {}),
+      },
+    })
+    .then((res) => {
+      const data = unwrap(res);
+      const normalized = Array.isArray(data)
+        ? {
+            blogs: data,
+            currentPage: 1,
+            totalPages: 1,
+            totalBlogs: data.length,
+          }
+        : {
+            blogs: data?.blogs ?? [],
+            currentPage: data?.currentPage ?? 1,
+            totalPages: data?.totalPages ?? 1,
+            totalBlogs: data?.totalBlogs ?? 0,
+          };
+      blogPostsCache.set(key, { data: normalized, at: Date.now() });
+      return normalized;
+    })
+    .finally(() => {
+      blogPostsInflight.delete(key);
+    });
+
+  blogPostsInflight.set(key, promise);
+  return promise;
 }
 
 export async function fetchBlogPost(id: string): Promise<BlogPost> {
@@ -367,17 +421,19 @@ export async function fetchBlogPost(id: string): Promise<BlogPost> {
 
 export async function createBlogPost(input: BlogPostInput): Promise<BlogPost> {
   const res = await blogClient.post<{ success: boolean; data: BlogPost }>("/api/blogs", mapBlogInput(input));
+  invalidateBlogCaches();
   return unwrap(res);
 }
 
 export async function updateBlogPost(id: string, input: BlogPostInput): Promise<BlogPost> {
   const res = await blogClient.put<{ success: boolean; data: BlogPost }>(`/api/blogs/${id}`, mapBlogInput(input));
+  invalidateBlogCaches();
   return unwrap(res);
 }
 
 export async function deleteBlogPost(id: string): Promise<void> {
   await blogClient.delete(`/api/blogs/${id}`);
-  invalidateBlogDashboardCache();
+  invalidateBlogCaches();
 }
 
 function mapBlogInput(input: BlogPostInput) {
@@ -406,9 +462,38 @@ export async function uploadBlogFeaturedImage(file: File): Promise<string> {
   return data.featuredImageUrl || data.url;
 }
 
-export async function fetchBlogCategories(): Promise<BlogCategory[]> {
-  const res = await blogClient.get<{ success: boolean; data: BlogCategory[] }>("/api/categories");
-  return unwrap(res);
+export async function fetchBlogCategories(options?: { force?: boolean }): Promise<BlogCategory[]> {
+  const key = blogDashboardCacheKey();
+  const now = Date.now();
+
+  if (
+    !options?.force &&
+    blogCategoriesCache &&
+    blogCategoriesCache.key === key &&
+    now - blogCategoriesCache.at < BLOG_CATEGORIES_CACHE_TTL_MS
+  ) {
+    return blogCategoriesCache.data;
+  }
+
+  if (blogCategoriesInflight?.key === key) {
+    return blogCategoriesInflight.promise;
+  }
+
+  const promise = blogClient
+    .get<{ success: boolean; data: BlogCategory[] }>("/api/categories")
+    .then((res) => {
+      const data = unwrap(res);
+      blogCategoriesCache = { key, data, at: Date.now() };
+      return data;
+    })
+    .finally(() => {
+      if (blogCategoriesInflight?.key === key) {
+        blogCategoriesInflight = null;
+      }
+    });
+
+  blogCategoriesInflight = { key, promise };
+  return promise;
 }
 
 export async function createBlogCategory(input: BlogCategoryInput): Promise<string> {
@@ -416,11 +501,13 @@ export async function createBlogCategory(input: BlogCategoryInput): Promise<stri
     name: input.name,
     description: input.description ?? "",
   });
+  invalidateBlogCategoriesCache();
   return unwrap(res).id;
 }
 
 export async function deleteBlogCategory(id: string): Promise<void> {
   await blogClient.delete(`/api/categories/${id}`);
+  invalidateBlogCategoriesCache();
 }
 
 const BLOG_AI_REQUEST_TIMEOUT_MS = 600_000;
