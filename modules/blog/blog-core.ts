@@ -283,6 +283,18 @@ export function invalidateBlogDashboardCache(): void {
   blogDashboardCache = null;
 }
 
+export function getCachedBlogDashboard(): BlogDashboardData | null {
+  const key = blogDashboardCacheKey();
+  if (
+    blogDashboardCache &&
+    blogDashboardCache.key === key &&
+    Date.now() - blogDashboardCache.at < BLOG_DASHBOARD_CACHE_TTL_MS
+  ) {
+    return blogDashboardCache.data;
+  }
+  return null;
+}
+
 export async function fetchBlogDashboard(options?: { force?: boolean }): Promise<BlogDashboardData> {
   const key = blogDashboardCacheKey();
   const now = Date.now();

@@ -159,18 +159,6 @@ const WORKSPACE_BLOG_METRICS = [
   },
 ] as const;
 
-export function getCachedBlogDashboard(): BlogDashboardData | null {
-  const key = blogDashboardCacheKey();
-  if (
-    blogDashboardCache &&
-    blogDashboardCache.key === key &&
-    Date.now() - blogDashboardCache.at < BLOG_DASHBOARD_CACHE_TTL_MS
-  ) {
-    return blogDashboardCache.data;
-  }
-  return null;
-}
-
 export function useBlogDashboardData() {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const [data, setData] = useState<BlogDashboardData | null>(() => getCachedBlogDashboard());
