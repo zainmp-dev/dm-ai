@@ -270,95 +270,204 @@ function unwrap<T>(res: { data: { success?: boolean; data: T } }): T {
   return res.data.data;
 }
 
-const BLOG_DASHBOARD_CACHE_TTL_MS = 30_000;
-const BLOG_LIST_CACHE_TTL_MS = 30_000;
+/** Short TTL for blog GET reads — cached hits return in ~1ms without a network round-trip. */
+const BLOG_GET_CACHE_TTL_MS = 30_000;
 const BLOG_CATEGORIES_CACHE_TTL_MS = 60_000;
 
-let blogDashboardInflight: { key: string; promise: Promise<BlogDashboardData> } | null = null;
-let blogDashboardCache: { key: string; data: BlogDashboardData; at: number } | null = null;
+type TimedCache<T> = { key: string; data: T; at: number };
 
-let blogPostsInflight = new Map<string, Promise<BlogListPage>>();
-let blogPostsCache = new Map<string, { data: BlogListPage; at: number }>();
+function isCacheFresh<T>(
+  entry: TimedCache<T> | null | undefined,
+  key: string,
+  ttlMs: number,
+  now = Date.now(),
+): entry is TimedCache<T> {
+  return Boolean(entry && entry.key === key && now - entry.at < ttlMs);
+}
 
-let blogCategoriesInflight: { key: string; promise: Promise<BlogCategory[]> } | null = null;
-let blogCategoriesCache: { key: string; data: BlogCategory[]; at: number } | null = null;
+function createScopedGetCache<T>(ttlMs: number) {
+  let cache: TimedCache<T> | null = null;
+  let inflight: { key: string; promise: Promise<T> } | null = null;
 
-function blogDashboardCacheKey(): string {
+  return {
+    get(key: string): T | null {
+      return isCacheFresh(cache, key, ttlMs) ? cache.data : null;
+    },
+    async load(key: string, fetcher: () => Promise<T>, options?: { force?: boolean }): Promise<T> {
+      const now = Date.now();
+      if (!options?.force && isCacheFresh(cache, key, ttlMs, now)) {
+        return cache.data;
+      }
+      if (inflight?.key === key) {
+        return inflight.promise;
+      }
+      const promise = fetcher()
+        .then((data) => {
+          cache = { key, data, at: Date.now() };
+          return data;
+        })
+        .finally(() => {
+          if (inflight?.key === key) {
+            inflight = null;
+          }
+        });
+      inflight = { key, promise };
+      return promise;
+    },
+    invalidate() {
+      cache = null;
+    },
+  };
+}
+
+function createKeyedGetCache<T>(ttlMs: number) {
+  const caches = new Map<string, TimedCache<T>>();
+  const inflight = new Map<string, Promise<T>>();
+
+  return {
+    get(key: string): T | null {
+      const entry = caches.get(key);
+      return isCacheFresh(entry, key, ttlMs) ? entry.data : null;
+    },
+    async load(key: string, fetcher: () => Promise<T>, options?: { force?: boolean }): Promise<T> {
+      const now = Date.now();
+      const cached = caches.get(key);
+      if (!options?.force && isCacheFresh(cached, key, ttlMs, now)) {
+        return cached.data;
+      }
+      const existing = inflight.get(key);
+      if (existing) {
+        return existing;
+      }
+      const promise = fetcher()
+        .then((data) => {
+          caches.set(key, { key, data, at: Date.now() });
+          return data;
+        })
+        .finally(() => {
+          inflight.delete(key);
+        });
+      inflight.set(key, promise);
+      return promise;
+    },
+    clear() {
+      caches.clear();
+    },
+  };
+}
+
+const blogDashboardCache = createScopedGetCache<BlogDashboardData>(BLOG_GET_CACHE_TTL_MS);
+const blogPostsCache = createKeyedGetCache<BlogListPage>(BLOG_GET_CACHE_TTL_MS);
+const blogPostCache = createKeyedGetCache<BlogPost>(BLOG_GET_CACHE_TTL_MS);
+const blogCategoriesCache = createScopedGetCache<BlogCategory[]>(BLOG_CATEGORIES_CACHE_TTL_MS);
+const blogClicksCache = createScopedGetCache<BlogClicksData>(BLOG_GET_CACHE_TTL_MS);
+const blogSettingsCache = createScopedGetCache<BlogSettings>(BLOG_GET_CACHE_TTL_MS);
+
+function blogWorkspaceCacheKey(): string {
   const headers = getActiveWorkspaceRequestHeaders();
   return headers["X-Flowpilot-Workspace-Setup-Id"] ?? "default";
 }
 
 function blogPostsCacheKey(status: string | undefined, page: number, limit: number): string {
-  return `${blogDashboardCacheKey()}|${status ?? "all"}|${page}|${limit}`;
+  return `${blogWorkspaceCacheKey()}|${status ?? "all"}|${page}|${limit}`;
+}
+
+function blogPostCacheKey(postId: string): string {
+  return `${blogWorkspaceCacheKey()}|${postId}`;
 }
 
 export function invalidateBlogDashboardCache(): void {
-  blogDashboardCache = null;
+  blogDashboardCache.invalidate();
 }
 
 export function invalidateBlogPostsCache(): void {
   blogPostsCache.clear();
+  blogPostCache.clear();
 }
 
 export function invalidateBlogCategoriesCache(): void {
-  blogCategoriesCache = null;
+  blogCategoriesCache.invalidate();
+}
+
+export function invalidateBlogClicksCache(): void {
+  blogClicksCache.invalidate();
+}
+
+export function invalidateBlogSettingsCache(): void {
+  blogSettingsCache.invalidate();
 }
 
 export function invalidateBlogCaches(): void {
   invalidateBlogDashboardCache();
   invalidateBlogPostsCache();
   invalidateBlogCategoriesCache();
+  invalidateBlogClicksCache();
+  invalidateBlogSettingsCache();
 }
 
 export function getCachedBlogDashboard(): BlogDashboardData | null {
-  const key = blogDashboardCacheKey();
-  if (
-    blogDashboardCache &&
-    blogDashboardCache.key === key &&
-    Date.now() - blogDashboardCache.at < BLOG_DASHBOARD_CACHE_TTL_MS
-  ) {
-    return blogDashboardCache.data;
-  }
-  return null;
+  return blogDashboardCache.get(blogWorkspaceCacheKey());
+}
+
+export function getCachedBlogPosts(status: string | undefined, page = 1, limit = 20): BlogListPage | null {
+  return blogPostsCache.get(blogPostsCacheKey(status, page, limit));
+}
+
+export function getCachedBlogPost(postId: string): BlogPost | null {
+  return blogPostCache.get(blogPostCacheKey(postId));
+}
+
+export function getCachedBlogCategories(): BlogCategory[] | null {
+  return blogCategoriesCache.get(blogWorkspaceCacheKey());
+}
+
+export function getCachedBlogClicks(): BlogClicksData | null {
+  return blogClicksCache.get(blogWorkspaceCacheKey());
+}
+
+export function getCachedBlogSettings(): BlogSettings | null {
+  return blogSettingsCache.get(blogWorkspaceCacheKey());
 }
 
 export async function fetchBlogDashboard(options?: { force?: boolean }): Promise<BlogDashboardData> {
-  const key = blogDashboardCacheKey();
-  const now = Date.now();
-
-  if (
-    !options?.force &&
-    blogDashboardCache &&
-    blogDashboardCache.key === key &&
-    now - blogDashboardCache.at < BLOG_DASHBOARD_CACHE_TTL_MS
-  ) {
-    return blogDashboardCache.data;
-  }
-
-  if (blogDashboardInflight?.key === key) {
-    return blogDashboardInflight.promise;
-  }
-
-  const promise = blogClient
-    .get<{ success: boolean; data: BlogDashboardData }>("/blog/dashboard")
-    .then((res) => {
-      const data = unwrap(res);
-      blogDashboardCache = { key, data, at: Date.now() };
-      return data;
-    })
-    .finally(() => {
-      if (blogDashboardInflight?.key === key) {
-        blogDashboardInflight = null;
-      }
-    });
-
-  blogDashboardInflight = { key, promise };
-  return promise;
+  const key = blogWorkspaceCacheKey();
+  return blogDashboardCache.load(
+    key,
+    () => blogClient.get<{ success: boolean; data: BlogDashboardData }>("/blog/dashboard").then((res) => unwrap(res)),
+    options,
+  );
 }
 
-/** Warm blog dashboard cache during app boot (runs in parallel with workspace fetch). */
+/** Warm common blog GET caches during app boot (parallel, deduped). */
+export function prefetchBlogReads(): void {
+  void Promise.all([
+    fetchBlogDashboard().catch(() => undefined),
+    fetchBlogCategories().catch(() => undefined),
+    fetchBlogSettings().catch(() => undefined),
+    fetchBlogPosts(undefined, 1, 20).catch(() => undefined),
+  ]);
+}
+
+/** @deprecated Use prefetchBlogReads */
 export function prefetchBlogDashboard(): void {
-  void fetchBlogDashboard().catch(() => undefined);
+  prefetchBlogReads();
+}
+
+function normalizeBlogListPage(data: BlogListPage | BlogPost[]): BlogListPage {
+  if (Array.isArray(data)) {
+    return {
+      blogs: data,
+      currentPage: 1,
+      totalPages: 1,
+      totalBlogs: data.length,
+    };
+  }
+  return {
+    blogs: data?.blogs ?? [],
+    currentPage: data?.currentPage ?? 1,
+    totalPages: data?.totalPages ?? 1,
+    totalBlogs: data?.totalBlogs ?? 0,
+  };
 }
 
 export async function fetchBlogPosts(
@@ -368,55 +477,29 @@ export async function fetchBlogPosts(
   options?: { force?: boolean },
 ): Promise<BlogListPage> {
   const key = blogPostsCacheKey(status, page, limit);
-  const now = Date.now();
-  const cached = blogPostsCache.get(key);
-
-  if (!options?.force && cached && now - cached.at < BLOG_LIST_CACHE_TTL_MS) {
-    return cached.data;
-  }
-
-  const inflight = blogPostsInflight.get(key);
-  if (inflight) {
-    return inflight;
-  }
-
-  const promise = blogClient
-    .get<{ success: boolean; data: BlogListPage | BlogPost[] }>("/api/blogs", {
-      params: {
-        page,
-        limit,
-        ...(status ? { status } : {}),
-      },
-    })
-    .then((res) => {
-      const data = unwrap(res);
-      const normalized = Array.isArray(data)
-        ? {
-            blogs: data,
-            currentPage: 1,
-            totalPages: 1,
-            totalBlogs: data.length,
-          }
-        : {
-            blogs: data?.blogs ?? [],
-            currentPage: data?.currentPage ?? 1,
-            totalPages: data?.totalPages ?? 1,
-            totalBlogs: data?.totalBlogs ?? 0,
-          };
-      blogPostsCache.set(key, { data: normalized, at: Date.now() });
-      return normalized;
-    })
-    .finally(() => {
-      blogPostsInflight.delete(key);
-    });
-
-  blogPostsInflight.set(key, promise);
-  return promise;
+  return blogPostsCache.load(
+    key,
+    () =>
+      blogClient
+        .get<{ success: boolean; data: BlogListPage | BlogPost[] }>("/api/blogs", {
+          params: {
+            page,
+            limit,
+            ...(status ? { status } : {}),
+          },
+        })
+        .then((res) => normalizeBlogListPage(unwrap(res))),
+    options,
+  );
 }
 
-export async function fetchBlogPost(id: string): Promise<BlogPost> {
-  const res = await blogClient.get<{ success: boolean; data: BlogPost }>(`/api/blogs/${id}`);
-  return unwrap(res);
+export async function fetchBlogPost(id: string, options?: { force?: boolean }): Promise<BlogPost> {
+  const key = blogPostCacheKey(id);
+  return blogPostCache.load(
+    key,
+    () => blogClient.get<{ success: boolean; data: BlogPost }>(`/api/blogs/${id}`).then((res) => unwrap(res)),
+    options,
+  );
 }
 
 export async function createBlogPost(input: BlogPostInput): Promise<BlogPost> {
@@ -463,37 +546,12 @@ export async function uploadBlogFeaturedImage(file: File): Promise<string> {
 }
 
 export async function fetchBlogCategories(options?: { force?: boolean }): Promise<BlogCategory[]> {
-  const key = blogDashboardCacheKey();
-  const now = Date.now();
-
-  if (
-    !options?.force &&
-    blogCategoriesCache &&
-    blogCategoriesCache.key === key &&
-    now - blogCategoriesCache.at < BLOG_CATEGORIES_CACHE_TTL_MS
-  ) {
-    return blogCategoriesCache.data;
-  }
-
-  if (blogCategoriesInflight?.key === key) {
-    return blogCategoriesInflight.promise;
-  }
-
-  const promise = blogClient
-    .get<{ success: boolean; data: BlogCategory[] }>("/api/categories")
-    .then((res) => {
-      const data = unwrap(res);
-      blogCategoriesCache = { key, data, at: Date.now() };
-      return data;
-    })
-    .finally(() => {
-      if (blogCategoriesInflight?.key === key) {
-        blogCategoriesInflight = null;
-      }
-    });
-
-  blogCategoriesInflight = { key, promise };
-  return promise;
+  const key = blogWorkspaceCacheKey();
+  return blogCategoriesCache.load(
+    key,
+    () => blogClient.get<{ success: boolean; data: BlogCategory[] }>("/api/categories").then((res) => unwrap(res)),
+    options,
+  );
 }
 
 export async function createBlogCategory(input: BlogCategoryInput): Promise<string> {
@@ -549,12 +607,20 @@ export async function optimizeBlogContentWithAI(input: {
   return unwrap(res);
 }
 
-export async function fetchBlogClicks(): Promise<BlogClicksData> {
-  const res = await blogClient.get<{ success: boolean; data: BlogClicksData }>("/blog/clicks");
-  return unwrap(res);
+export async function fetchBlogClicks(options?: { force?: boolean }): Promise<BlogClicksData> {
+  const key = blogWorkspaceCacheKey();
+  return blogClicksCache.load(
+    key,
+    () => blogClient.get<{ success: boolean; data: BlogClicksData }>("/blog/clicks").then((res) => unwrap(res)),
+    options,
+  );
 }
 
-export async function fetchBlogSettings(): Promise<BlogSettings> {
-  const res = await blogClient.get<{ success: boolean; data: BlogSettings }>("/blog/settings");
-  return unwrap(res);
+export async function fetchBlogSettings(options?: { force?: boolean }): Promise<BlogSettings> {
+  const key = blogWorkspaceCacheKey();
+  return blogSettingsCache.load(
+    key,
+    () => blogClient.get<{ success: boolean; data: BlogSettings }>("/blog/settings").then((res) => unwrap(res)),
+    options,
+  );
 }

@@ -49,6 +49,8 @@ import {
   fetchBlogCategories,
   fetchBlogPost,
   fetchBlogSettings,
+  getCachedBlogCategories,
+  getCachedBlogPost,
   generateBlogWithAI,
   slugify,
   updateBlogPost,
@@ -862,7 +864,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
   const isEdit = Boolean(postId);
   const [loading, setLoading] = useState(isEdit);
   const [saving, setSaving] = useState(false);
-  const [categories, setCategories] = useState<BlogCategory[]>([]);
+  const [categories, setCategories] = useState<BlogCategory[]>(() => getCachedBlogCategories() ?? []);
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
   const [content, setContent] = useState("");
@@ -891,22 +893,17 @@ export function BlogEditor({ postId }: { postId?: string }) {
     if (user?.name) setAuthor(user.name);
 
     let cancelled = false;
-    void fetchBlogCategories()
-      .then((cats) => {
+    void Promise.all([fetchBlogCategories(), fetchBlogSettings()])
+      .then(([cats, settings]) => {
         if (cancelled) return;
         setCategories(cats);
-        return fetchBlogSettings()
-          .then((settings) => {
-            if (cancelled) return;
-            if (settings.content.defaultAuthor) {
-              setAuthor((prev) => prev || settings.content.defaultAuthor);
-            }
-            if (settings.content.defaultCategory) {
-              const match = cats.find((c) => c.name === settings.content.defaultCategory);
-              if (match) setCategoryId(match.id);
-            }
-          })
-          .catch(() => undefined);
+        if (settings.content.defaultAuthor) {
+          setAuthor((prev) => prev || settings.content.defaultAuthor);
+        }
+        if (settings.content.defaultCategory) {
+          const match = cats.find((c) => c.name === settings.content.defaultCategory);
+          if (match) setCategoryId(match.id);
+        }
       })
       .catch(() => undefined);
 
@@ -917,9 +914,28 @@ export function BlogEditor({ postId }: { postId?: string }) {
 
   useEffect(() => {
     if (!postId) return;
-    setLoading(true);
+    let cancelled = false;
+    const cached = getCachedBlogPost(postId);
+    if (cached) {
+      setTitle(cached.title);
+      setAuthor(cached.author);
+      setContent(cached.content);
+      setMetaDescription(cached.metaDescription);
+      setImage(cached.image);
+      setCategoryId(cached.categoryId);
+      setTags(cached.tags.join(", "));
+      setPermalink(cached.slug);
+      permalinkTouched.current = true;
+      setStatus(normalizeEditorStatus(cached.status));
+      if (editorRef.current) editorRef.current.setContents(cached.content);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+
     fetchBlogPost(postId)
       .then((post) => {
+        if (cancelled) return;
         setTitle(post.title);
         setAuthor(post.author);
         setContent(post.content);
@@ -932,8 +948,16 @@ export function BlogEditor({ postId }: { postId?: string }) {
         setStatus(normalizeEditorStatus(post.status));
         if (editorRef.current) editorRef.current.setContents(post.content);
       })
-      .catch(() => push("Failed to load blog", { kind: "error" }))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (!cancelled) push("Failed to load blog", { kind: "error" });
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [postId, activeWorkspaceId, push]);
 
   const handleTitleChange = (value: string) => {

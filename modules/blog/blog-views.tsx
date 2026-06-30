@@ -38,7 +38,10 @@ import {
   fetchBlogDashboard,
   fetchBlogPost,
   fetchBlogPosts,
+  getCachedBlogClicks,
   getCachedBlogDashboard,
+  getCachedBlogPost,
+  getCachedBlogPosts,
   BLOG_PRIMARY_BUTTON,
   BLOG_STATUS_COLORS,
   BLOG_STATUS_LABELS,
@@ -601,16 +604,18 @@ export function BlogList() {
   const { push } = useToast();
   const confirm = useConfirm();
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const [posts, setPosts] = useState<BlogPost[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
   const [status, setStatus] = useState<StatusFilter>(parseStatusFilter(searchParams.get("status")));
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [totalBlogs, setTotalBlogs] = useState(0);
+  const pageSize = 20;
+  const apiStatus = status === "all" ? undefined : status;
+  const initialListCache = getCachedBlogPosts(apiStatus, page, pageSize);
+  const [posts, setPosts] = useState<BlogPost[]>(() => initialListCache?.blogs ?? []);
+  const [loading, setLoading] = useState(() => initialListCache === null);
+  const [search, setSearch] = useState("");
+  const [totalPages, setTotalPages] = useState(() => initialListCache?.totalPages ?? 1);
+  const [totalBlogs, setTotalBlogs] = useState(() => initialListCache?.totalBlogs ?? 0);
   const [listView, setListView] = useState<RecentPostsView>("card");
   const skipLoadUntilPageReset = useRef(false);
-  const pageSize = 20;
 
   useEffect(() => {
     skipLoadUntilPageReset.current = true;
@@ -624,8 +629,16 @@ export function BlogList() {
     skipLoadUntilPageReset.current = false;
 
     let cancelled = false;
-    setLoading(true);
-    const apiStatus = status === "all" ? undefined : status;
+    const cached = getCachedBlogPosts(apiStatus, page, pageSize);
+    if (cached) {
+      setPosts(cached.blogs ?? []);
+      setTotalPages(cached.totalPages);
+      setTotalBlogs(cached.totalBlogs);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+
     fetchBlogPosts(apiStatus, page, pageSize)
       .then((result) => {
         if (cancelled) return;
@@ -898,17 +911,42 @@ function BlogPostNav({
 
 export function BlogPostView({ postId }: { postId: string }) {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const [post, setPost] = useState<BlogPost | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [post, setPost] = useState<BlogPost | null>(() => getCachedBlogPost(postId));
+  const [loading, setLoading] = useState(() => getCachedBlogPost(postId) === null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true);
-    setError(null);
+    let cancelled = false;
+    const cached = getCachedBlogPost(postId);
+    if (cached) {
+      setPost(cached);
+      setLoading(false);
+      setError(null);
+    } else {
+      setLoading(true);
+      setError(null);
+    }
+
     fetchBlogPost(postId)
-      .then(setPost)
-      .catch(() => setError("Unable to load this blog post."))
-      .finally(() => setLoading(false));
+      .then((next) => {
+        if (!cancelled) {
+          setPost(next);
+          setError(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPost(null);
+          setError("Unable to load this blog post.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [postId, activeWorkspaceId]);
 
   if (loading) {
@@ -1059,17 +1097,42 @@ export function BlogPostView({ postId }: { postId: string }) {
 
 export function BlogClicked() {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const [data, setData] = useState<BlogClicksData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<BlogClicksData | null>(() => getCachedBlogClicks());
+  const [loading, setLoading] = useState(() => getCachedBlogClicks() === null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true);
-    setError(null);
+    let cancelled = false;
+    const cached = getCachedBlogClicks();
+    if (cached) {
+      setData(cached);
+      setLoading(false);
+      setError(null);
+    } else {
+      setLoading(true);
+      setError(null);
+    }
+
     fetchBlogClicks()
-      .then(setData)
-      .catch(() => setError("Unable to load click analytics."))
-      .finally(() => setLoading(false));
+      .then((next) => {
+        if (!cancelled) {
+          setData(next);
+          setError(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setData(null);
+          setError("Unable to load click analytics.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeWorkspaceId]);
 
   if (loading) {

@@ -245,19 +245,26 @@ def list_blogs(
         total_blogs = int((total or {}).get("cnt") or 0)
         total_pages = max(1, (total_blogs + limit - 1) // limit) if total_blogs else 1
 
-        query = f"""
-            select {BLOG_SUMMARY_COLUMNS}
-            from flowpilot_blogs
-            {where}
-            order by updated_at desc
+        query = """
+            select
+              b.id, b.workspace_id, b.title, b.slug, b.author, b.keywords, b.category_id,
+              b.meta_description, b.featured_image_url, b.status,
+              b.views, b.clicks, b.published_at, b.created_at, b.updated_at,
+              c.name as category_name
+            from flowpilot_blogs b
+            left join flowpilot_categories c on c.id = b.category_id and c.workspace_id = b.workspace_id
+            """ + where.replace("workspace_id", "b.workspace_id").replace("status", "b.status") + """
+            order by b.updated_at desc
             limit :limit offset :offset
         """
         rows = db.execute(
             text(query),
             {**params, "limit": limit, "offset": offset},
         ).mappings().all()
-        names = _category_name_map(db, workspace_id)
-        blogs = [row_to_post_summary(dict(r), names.get(str(r.get("category_id") or ""), "")) for r in rows]
+        blogs = [
+            row_to_post_summary(dict(r), str(r.get("category_name") or ""))
+            for r in rows
+        ]
 
     return {
         "blogs": blogs,
@@ -328,25 +335,22 @@ def get_blog(workspace_id: str, blog_id: str) -> dict[str, Any] | None:
     with _session() as db:
         row = db.execute(
             text(
-                f"""
-                select {BLOG_LIST_COLUMNS}
-                from flowpilot_blogs
-                where workspace_id = :ws and id = :id
+                """
+                select
+                  b.id, b.workspace_id, b.title, b.slug, b.author, b.keywords, b.category_id,
+                  b.meta_description, b.content, b.featured_image_url, b.status,
+                  b.views, b.clicks, b.published_at, b.created_at, b.updated_at,
+                  c.name as category_name
+                from flowpilot_blogs b
+                left join flowpilot_categories c on c.id = b.category_id and c.workspace_id = b.workspace_id
+                where b.workspace_id = :ws and b.id = :id
                 """
             ),
             {"ws": workspace_id, "id": blog_id},
         ).mappings().first()
         if not row:
             return None
-        category_name = ""
-        if row.get("category_id"):
-            cat = db.execute(
-                text("select name from flowpilot_categories where id = :id and workspace_id = :ws"),
-                {"id": str(row["category_id"]), "ws": workspace_id},
-            ).mappings().first()
-            if cat:
-                category_name = str(cat.get("name") or "")
-        return row_to_post(dict(row), category_name)
+        return row_to_post(dict(row), str(row.get("category_name") or ""))
 
 
 def create_blog(workspace_id: str, payload: dict[str, Any]) -> dict[str, Any]:
