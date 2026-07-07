@@ -22,9 +22,11 @@ def resolve_workspace_scope_id(user: dict[str, Any], setup_id: str | None) -> st
     raw = (setup_id or "").strip()
     if not raw or raw == user_id:
         return user_id
-    if not _SETUP_ID_RE.match(raw):
+    # `ws-local-*` is a device-local preset id (stored in localStorage). It must never become the
+    # canonical workspace_id for persisted data; otherwise cross-device logins "lose" history.
+    if _SETUP_ID_RE.match(raw):
         return user_id
-    return raw
+    return user_id
 
 
 def ensure_workspace_exists(
@@ -71,6 +73,34 @@ def resolve_tenant_workspace(
     company_name: str | None = None,
     company_website: str | None = None,
 ) -> str:
+    raw_setup = (setup_id or "").strip()
+    website = (company_website or "").strip()
+
+    # Cross-device recovery: `ws-local-*` ids live only in localStorage, so logging in on a new
+    # device produces a different id and would "lose" all workspace-scoped data (blogs, etc.).
+    # If the client provides a website, try to recover the canonical workspace id by matching:
+    # - same user email (flowpilot_profile.email)
+    # - same company website (flowpilot_workspace.company_website)
+    #
+    # This allows new devices (or cleared storage) to see old data without knowing the old ws-local id.
+    if raw_setup and _SETUP_ID_RE.match(raw_setup) and website:
+        row = db.execute(
+            text(
+                """
+                select w.workspace_id
+                from flowpilot_workspace w
+                join flowpilot_profile p on p.workspace_id = w.workspace_id
+                where lower(trim(p.email)) = lower(trim(:email))
+                  and lower(trim(w.company_website)) = lower(trim(:website))
+                order by w.updated_at desc
+                limit 1
+                """
+            ),
+            {"email": str(user.get("email") or ""), "website": website},
+        ).mappings().first()
+        if row and row.get("workspace_id"):
+            return str(row["workspace_id"])
+
     workspace_id = resolve_workspace_scope_id(user, setup_id)
     if workspace_id != str(user["id"]):
         ensure_workspace_exists(
