@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   outputFileTracingRoot: process.cwd(),
-  allowedDevOrigins: ["10.25.25.50"],
+  allowedDevOrigins: ["10.25.25.50", "10.25.25.22", "127.0.0.1"],
   // Local media uploads POST base64 JSON; an 8MB file is ~11MB+ in the body. Default ~10MB buffer truncates
   // the request and breaks parsing upstream. See Next.js `experimental.proxyClientMaxBodySize`.
   experimental: {
@@ -22,7 +22,9 @@ const nextConfig: NextConfig = {
   async headers() {
     const isDev = process.env.NODE_ENV !== "production";
     const scriptSrc = isDev ? "script-src 'self' 'unsafe-inline' 'unsafe-eval';" : "script-src 'self' 'unsafe-inline';";
-    const connectSrc = isDev ? "connect-src 'self' https: ws: wss:;" : "connect-src 'self' https:;";
+    const connectSrc = isDev
+      ? "connect-src 'self' http://127.0.0.1:8011 http://localhost:8011 https: ws: wss:;"
+      : "connect-src 'self' https:;";
     const csp = `default-src 'self'; img-src 'self' https: data: blob:; media-src 'self' https: blob:; style-src 'self' 'unsafe-inline'; ${scriptSrc} ${connectSrc} frame-ancestors 'none';`;
 
     return [

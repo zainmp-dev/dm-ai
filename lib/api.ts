@@ -4,6 +4,7 @@ import { formatApiErrorMessage, flowSuccessMessages } from "@/lib/api-errors";
 import { notifyApiRequestEnd, notifyApiRequestStart, type FlowApiLoadingKind } from "@/lib/api-loading-store";
 import { clearAuthSession, getAuthToken } from "@/lib/auth";
 import { normalizePrimaryRegionCode } from "@/lib/primary-region";
+import { getApiPrefix } from "@/lib/api-prefix";
 import type {
   ActivityItem,
   Campaign,
@@ -26,7 +27,7 @@ import type {
   WorkspaceSnapshot,
 } from "@/lib/types";
 
-const API_PREFIX = (process.env.NEXT_PUBLIC_API_PREFIX || "/api/backend").replace(/\/+$/, "");
+const API_PREFIX = getApiPrefix();
 
 /** Default cap so hung proxies do not block the UI forever; AI routes override below. */
 const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;

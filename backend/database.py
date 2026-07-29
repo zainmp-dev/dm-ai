@@ -88,8 +88,24 @@ def init_db() -> None:
         _init_workspace_tables(connection)
 
 
+def _has_supabase_auth_schema(connection: object) -> bool:
+    """Supabase RLS policies use auth.uid(); plain Postgres (local) has no auth schema."""
+    row = connection.execute(  # type: ignore[union-attr]
+        text("select exists(select 1 from pg_namespace where nspname = 'auth')")
+    ).scalar()
+    return bool(row)
+
+
+def _is_supabase_rls_policy_statement(statement: str) -> bool:
+    normalized = " ".join(statement.lower().split())
+    return "auth.uid()" in normalized or normalized.startswith("create policy ") or (
+        normalized.startswith("drop policy ") and "owner_policy" in normalized
+    )
+
+
 def _init_workspace_tables(connection: object) -> None:
     """FlowPilot: every flowpilot_* table is keyed by workspace_id — no shared strategy across businesses."""
+    supabase_auth = _has_supabase_auth_schema(connection)
     statements = [
         """
         create table if not exists flowpilot_users (
@@ -586,6 +602,8 @@ def _init_workspace_tables(connection: object) -> None:
         "create index if not exists idx_flowpilot_blogs_workspace_slug on flowpilot_blogs(workspace_id, slug)",
     ]
     for statement in statements:
+        if not supabase_auth and _is_supabase_rls_policy_statement(statement):
+            continue
         connection.execute(text(statement))
 
 

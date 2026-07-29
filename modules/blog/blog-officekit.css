@@ -1,0 +1,152 @@
+/**
+ * OfficeKit blog typography + CSS variables (scoped to .officekit-blog).
+ * Tokens mirror https://www.officekithr.com/resources/blogs
+ */
+.officekit-blog {
+  --ok-primary: #0055ff;
+  --ok-primary-hover: #0044cc;
+  --ok-foreground: #21232c;
+  --ok-muted: #515e70;
+  --ok-muted-bg: #f3f5f7;
+  --ok-border: #e2e4e9;
+  --ok-page-bg: #f4f7fa;
+  --ok-primary-light: #e5eeff;
+  --ok-body: #333333;
+
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: var(--ok-foreground);
+}
+
+.officekit-blog :where(h1, h2, h3, h4, p, span, time, a, button, input) {
+  font-family: inherit;
+}
+
+/* Single-post article body */
+.officekit-blog .blog-article-prose {
+  font-size: 1.0625rem;
+  line-height: 1.75;
+  color: var(--ok-body);
+}
+
+.officekit-blog .blog-article-prose > *:first-child {
+  margin-top: 0;
+}
+
+.officekit-blog .blog-article-prose p {
+  margin-bottom: 1.5rem;
+}
+
+.officekit-blog .blog-article-prose h2 {
+  margin-top: 2.5rem;
+  margin-bottom: 1rem;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--ok-foreground);
+}
+
+.officekit-blog .blog-article-prose h3 {
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ok-foreground);
+}
+
+.officekit-blog .blog-article-prose h4 {
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+  font-size: 1.0625rem;
+  font-weight: 600;
+  color: var(--ok-foreground);
+}
+
+.officekit-blog .blog-article-prose ul,
+.officekit-blog .blog-article-prose ol {
+  margin-bottom: 1.5rem;
+  padding-left: 1.5rem;
+}
+
+.officekit-blog .blog-article-prose ul {
+  list-style-type: disc;
+}
+
+.officekit-blog .blog-article-prose ol {
+  list-style-type: decimal;
+}
+
+.officekit-blog .blog-article-prose li {
+  margin-bottom: 0.5rem;
+}
+
+.officekit-blog .blog-article-prose li::marker {
+  color: var(--ok-muted);
+}
+
+.officekit-blog .blog-article-prose strong {
+  font-weight: 600;
+  color: var(--ok-foreground);
+}
+
+.officekit-blog .blog-article-prose em {
+  font-style: italic;
+}
+
+.officekit-blog .blog-article-prose a {
+  color: var(--ok-primary);
+  font-weight: 500;
+  text-decoration: none;
+  text-underline-offset: 2px;
+  transition: color 0.15s ease;
+}
+
+.officekit-blog .blog-article-prose a:hover {
+  color: var(--ok-primary-hover);
+  text-decoration: underline;
+}
+
+.officekit-blog .blog-article-prose img {
+  display: block;
+  width: 100%;
+  margin: 2rem 0;
+  border-radius: 0.5rem;
+}
+
+.officekit-blog .blog-article-prose blockquote {
+  margin: 1.5rem 0;
+  padding-left: 1rem;
+  border-left: 3px solid var(--ok-border);
+  color: var(--ok-muted);
+  font-style: italic;
+}
+
+.officekit-blog .blog-article-prose hr {
+  margin: 2rem 0;
+  border: 0;
+  border-top: 1px solid var(--ok-border);
+}
+
+.officekit-blog .blog-article-prose table {
+  width: 100%;
+  margin: 1.5rem 0;
+  border-collapse: collapse;
+  font-size: 0.9375rem;
+}
+
+.officekit-blog .blog-article-prose th,
+.officekit-blog .blog-article-prose td {
+  border: 1px solid var(--ok-border);
+  padding: 0.625rem 0.75rem;
+  text-align: left;
+}
+
+.officekit-blog .blog-article-prose th {
+  background: var(--ok-muted-bg);
+  font-weight: 600;
+  color: var(--ok-foreground);
+}

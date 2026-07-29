@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import {
   Bell,
   BookOpen,
@@ -197,12 +197,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const setupRequired = visibleWorkspace ? !visibleWorkspace.workspaceConfigured : true;
   const firstRunOnboardingFocused = useWorkspaceStore((s) => s.firstRunOnboardingFocused);
   const settingsWorkspaceSection = pathname === "/settings" && settingsSectionQ === "workspace";
-  const workspaceSetupMinimal =
+  const workspaceSetupFocus =
     settingsWorkspaceSection && (setupRequired || firstRunOnboardingFocused);
-  const showSetupOnly = workspaceSetupMinimal;
-  const headerTitle = showSetupOnly ? "Set up workspace" : title;
-  const setupRedirectExempt =
-    pathname === "/settings" || pathname === "/pipeline" || pathname === "/publishing" || pathname === "/campaigns";
+  const headerTitle = workspaceSetupFocus ? "Set up workspace" : title;
 
   const marketGapsCount = useMemo(() => {
     const gaps = visibleWorkspace?.strategy?.marketGaps ?? [];
@@ -213,20 +210,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     () => SIDEBAR_NAV.filter((item) => !item.requiresStrategy || Boolean(visibleWorkspace?.strategy)),
     [visibleWorkspace?.strategy],
   );
-
-  useEffect(() => {
-    const staffExempt = hasAdminConsoleAccess(getAuthUser());
-    const onWorkspaceSettings = pathname === "/settings" && settingsSectionQ === "workspace";
-    if (setupRequired && !onWorkspaceSettings && !setupRedirectExempt && !staffExempt) {
-      router.replace("/settings?section=workspace");
-    }
-  }, [pathname, router, settingsSectionQ, setupRequired, setupRedirectExempt, authSessionRevision]);
+  const isBlogPreviewPage = pathname === "/blog/posts/preview";
 
   return (
     <div className="flex h-[100dvh] min-h-0 overflow-hidden bg-[#f5f7fa] dark:bg-[#0a0a0b]">
-      {/* Sidebar */}
-      {!showSetupOnly && (
-        <aside
+      {/* Sidebar — always visible so Blog / Workflow stay reachable during workspace setup */}
+      <aside
           className={cn(
             "flex h-full shrink-0 flex-col border-r border-[#e5e7eb] bg-white transition-[width] duration-200 ease-out dark:border-zinc-800 dark:bg-[#161618]",
             collapsed ? "w-[3.75rem]" : "w-[15.5rem]",
@@ -303,29 +292,26 @@ export function AppShell({ children }: { children: ReactNode }) {
                 })}
           </nav>
         </aside>
-      )}
 
       {/* Main area */}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* Top header */}
         <header className="z-20 flex h-[3.75rem] shrink-0 items-center gap-3 border-b border-[#e5e7eb] bg-white px-5 dark:border-zinc-800 dark:bg-[#161618]">
           {/* Sidebar toggle */}
-          {!showSetupOnly && (
-            <button
-              type="button"
-              onClick={() => setSidebarCollapsed(!collapsed)}
-              className="flex size-8 shrink-0 items-center justify-center rounded-lg text-[#9ca3af] transition-colors hover:bg-[#f5f7fa] hover:text-[#374151]"
-              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            >
-              {collapsed ? <Menu className="size-4" strokeWidth={1.75} /> : <X className="size-4" strokeWidth={1.75} />}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed(!collapsed)}
+            className="flex size-8 shrink-0 items-center justify-center rounded-lg text-[#9ca3af] transition-colors hover:bg-[#f5f7fa] hover:text-[#374151]"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {collapsed ? <Menu className="size-4" strokeWidth={1.75} /> : <X className="size-4" strokeWidth={1.75} />}
+          </button>
 
           {/* Page title */}
           <h1 className="min-w-0 flex-shrink-0 text-[15px] font-semibold text-[#111827] dark:text-zinc-100">{headerTitle}</h1>
 
           {/* Workspace switcher */}
-          {!showSetupOnly && !error && (
+          {!error && (
             <div className="hidden items-center gap-1 sm:flex">
               <span className="text-[#e5e7eb]">·</span>
               <DropdownMenu>
@@ -400,10 +386,8 @@ export function AppShell({ children }: { children: ReactNode }) {
 
           {/* Right controls */}
           <div className="flex items-center gap-1.5">
-            {!showSetupOnly && (
-              <>
-                {/* New Campaign — navigates to /campaigns?new=1 which auto-opens the create dialog */}
-                <Link
+            {/* New Campaign — navigates to /campaigns?new=1 which auto-opens the create dialog */}
+            <Link
                   href="/campaigns?new=1"
                   className="flex h-8 items-center gap-1.5 rounded-lg bg-[#1a56db] px-3 text-[12.5px] font-semibold text-white transition-colors hover:bg-[#1648c0] active:bg-[#1340ad]"
                 >
@@ -515,8 +499,6 @@ export function AppShell({ children }: { children: ReactNode }) {
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
-              </>
-            )}
 
             {/* Theme */}
             <HeaderThemeControl />
@@ -589,11 +571,18 @@ export function AppShell({ children }: { children: ReactNode }) {
         </header>
 
         {/* Page content */}
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5 md:px-7 md:py-6">
+        <main
+          className={cn(
+            "min-h-0 min-w-0 flex-1 overflow-y-auto",
+            isBlogPreviewPage
+              ? "bg-[#ffffff] px-0 py-0"
+              : "px-4 py-4 sm:px-6 sm:py-5 md:px-7 md:py-6",
+          )}
+        >
           {children}
         </main>
       </div>
-      {!showSetupOnly && <VoiceCommandOverlay />}
+      <VoiceCommandOverlay />
     </div>
   );
 }

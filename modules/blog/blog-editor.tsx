@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import axios from "axios";
 import {
   ArrowLeft,
@@ -52,6 +52,7 @@ import {
   getCachedBlogCategories,
   getCachedBlogPost,
   generateBlogWithAI,
+  isBlogEditorReadyForPreview,
   slugify,
   updateBlogPost,
   uploadBlogFeaturedImage,
@@ -65,6 +66,12 @@ import {
   type BlogStatus,
 } from "./blog-core";
 import { BlogContentAnalysisPanel } from "./blog-content-analysis-panel";
+import { BlogEditorPreviewMenu } from "./blog-preview-panel";
+import {
+  clearBlogEditorPreview,
+  loadBlogEditorPreviewForPath,
+  type BlogEditorPreviewSnapshot,
+} from "./blog-preview";
 
 const SunEditor = dynamic(() => import("suneditor-react"), {
   ssr: false,
@@ -859,6 +866,7 @@ const fieldClass =
 
 export function BlogEditor({ postId }: { postId?: string }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { push } = useToast();
   const editorRef = useRef<SunEditorCore | null>(null);
   const isEdit = Boolean(postId);
@@ -887,22 +895,70 @@ export function BlogEditor({ postId }: { postId?: string }) {
   const setSelectedAiModel = useWorkspaceStore((s) => s.setSelectedAiModel);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const ai = useBlogAIAssistant();
+  const restoredFromPreviewRef = useRef(false);
+  const pendingEditorHtmlRef = useRef<string | null>(null);
+
+  const applyPreviewSnapshot = useCallback((snapshot: BlogEditorPreviewSnapshot) => {
+    setTitle(snapshot.title);
+    setAuthor(snapshot.author);
+    setContent(snapshot.content);
+    setMetaDescription(snapshot.metaDescription);
+    setImage(snapshot.image);
+    setCategoryId(snapshot.categoryId);
+    setTags(snapshot.tags.join(", "));
+    setPermalink(snapshot.slug);
+    permalinkTouched.current = true;
+    pendingEditorHtmlRef.current = snapshot.content;
+    restoredFromPreviewRef.current = true;
+  }, []);
 
   useEffect(() => {
+    const snapshot = loadBlogEditorPreviewForPath(activeWorkspaceId, pathname);
+    if (!snapshot) return;
+    applyPreviewSnapshot(snapshot);
+    if (postId) setLoading(false);
+  }, [activeWorkspaceId, pathname, postId, applyPreviewSnapshot]);
+
+  useEffect(() => {
+    const html = pendingEditorHtmlRef.current;
+    if (!html) return;
+
+    const syncEditor = () => {
+      if (!editorRef.current) return false;
+      editorRef.current.setContents(html);
+      pendingEditorHtmlRef.current = null;
+      restoredFromPreviewRef.current = false;
+      return true;
+    };
+
+    if (syncEditor()) return;
+
+    const intervalId = window.setInterval(() => {
+      if (syncEditor()) window.clearInterval(intervalId);
+    }, 50);
+
+    return () => window.clearInterval(intervalId);
+  }, [loading, content, pathname]);
+
+  useEffect(() => {
+    const hasPreviewDraft = Boolean(loadBlogEditorPreviewForPath(activeWorkspaceId, pathname));
+
     const user = getAuthUser();
-    if (user?.name) setAuthor(user.name);
+    if (!hasPreviewDraft && user?.name) setAuthor(user.name);
 
     let cancelled = false;
     void Promise.all([fetchBlogCategories(), fetchBlogSettings()])
       .then(([cats, settings]) => {
         if (cancelled) return;
         setCategories(cats);
-        if (settings.content.defaultAuthor) {
-          setAuthor((prev) => prev || settings.content.defaultAuthor);
-        }
-        if (settings.content.defaultCategory) {
-          const match = cats.find((c) => c.name === settings.content.defaultCategory);
-          if (match) setCategoryId(match.id);
+        if (!hasPreviewDraft) {
+          if (settings.content.defaultAuthor) {
+            setAuthor((prev) => prev || settings.content.defaultAuthor);
+          }
+          if (settings.content.defaultCategory) {
+            const match = cats.find((c) => c.name === settings.content.defaultCategory);
+            if (match) setCategoryId(match.id);
+          }
         }
       })
       .catch(() => undefined);
@@ -910,10 +966,15 @@ export function BlogEditor({ postId }: { postId?: string }) {
     return () => {
       cancelled = true;
     };
-  }, [activeWorkspaceId]);
+  }, [activeWorkspaceId, pathname]);
 
   useEffect(() => {
     if (!postId) return;
+    if (loadBlogEditorPreviewForPath(activeWorkspaceId, pathname)) {
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
     const cached = getCachedBlogPost(postId);
     if (cached) {
@@ -958,7 +1019,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
     return () => {
       cancelled = true;
     };
-  }, [postId, activeWorkspaceId, push]);
+  }, [postId, activeWorkspaceId, pathname, push]);
 
   const handleTitleChange = (value: string) => {
     setTitle(value);
@@ -1113,6 +1174,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
         push(saveStatus === "draft" ? "Blog saved as draft" : "Blog published", { kind: "success" });
       }
       setStatus(saveStatus);
+      clearBlogEditorPreview(activeWorkspaceId);
       router.push("/blog/posts");
     } catch {
       push("Failed to save blog", { kind: "error" });
@@ -1125,6 +1187,30 @@ export function BlogEditor({ postId }: { postId?: string }) {
     e.preventDefault();
     void handleSave("published");
   };
+
+  const buildPreviewSnapshot = () => {
+    const editorHtml = editorRef.current?.getContents(true) ?? content;
+    return {
+      title,
+      author,
+      content: editorHtml,
+      metaDescription,
+      image,
+      categoryId,
+      categoryName: selectedCategory?.name || "",
+      tags: keywordList,
+      slug: permalink.trim() || slugify(title),
+      returnPath: pathname,
+      savedAt: new Date().toISOString(),
+    };
+  };
+
+  const canPreview = isBlogEditorReadyForPreview({
+    title,
+    author,
+    content,
+    categoryId,
+  });
 
   if (loading) {
     return (
@@ -1159,6 +1245,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
                 Regenerate
               </button>
             )}
+            <BlogEditorPreviewMenu buildSnapshot={buildPreviewSnapshot} canPreview={canPreview} />
             <button
               type="button"
               onClick={(event) => openModelPicker(event, "full")}

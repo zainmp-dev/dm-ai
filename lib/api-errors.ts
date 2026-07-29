@@ -94,6 +94,9 @@ export function formatApiErrorMessage(error: unknown): string {
     return "Request timed out—the API or database took too long, or the server is still starting. Wait a moment and try again.";
   }
   if (code === "ERR_NETWORK" || !error.response) {
+    if (typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname)) {
+      return "Cannot reach the API. Ensure npm run dev:all is running (FastAPI on 8011), then hard-refresh (Cmd+Shift+R). If the page looks broken, stop the server, run rm -rf .next, and start dev:all again.";
+    }
     return "Cannot reach the server. Check that the API is running and your network connection.";
   }
 
@@ -103,7 +106,12 @@ export function formatApiErrorMessage(error: unknown): string {
   const fromDetail = normalizeFastApiDetail(data);
   if (fromDetail) {
     const scrubServerErrors = typeof status === "number" && status >= 500;
-    if (!scrubServerErrors && !looksLikeSensitiveLeak(fromDetail)) {
+    // Dev proxy 502s include actionable "Cannot reach FastAPI… Start: npm run backend:dev".
+    const isActionableBackendDown =
+      typeof status === "number" &&
+      (status === 502 || status === 503) &&
+      /cannot reach fastapi|start:\s*npm run backend/i.test(fromDetail);
+    if ((!scrubServerErrors || isActionableBackendDown) && !looksLikeSensitiveLeak(fromDetail)) {
       return fromDetail;
     }
   }

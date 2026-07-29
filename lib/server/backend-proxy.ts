@@ -157,14 +157,16 @@ export async function proxyToFastapi(request: NextRequest, pathSegments: string[
       ...init,
       signal: AbortSignal.timeout(upstreamTimeoutMs(segments)),
     });
+    const body = await res.arrayBuffer();
     const outHeaders = new Headers();
     res.headers.forEach((value, key) => {
-      if (key.toLowerCase() === "transfer-encoding") {
+      const lower = key.toLowerCase();
+      if (lower === "transfer-encoding" || lower === "content-length" || lower === "content-encoding") {
         return;
       }
       outHeaders.set(key, value);
     });
-    return new NextResponse(res.body, {
+    return new NextResponse(body, {
       status: res.status,
       statusText: res.statusText,
       headers: outHeaders,

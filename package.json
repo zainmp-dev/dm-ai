@@ -3,9 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --webpack",
-    "dev:all": "npm run backend:free-port && concurrently -k -n api,web -c magenta,cyan \"npm run backend:dev\" \"npx --yes wait-on -t 120000 -i 200 http-get://127.0.0.1:8011/health && npm run dev\"",
-    "dev:all:stable": "npm run backend:free-port && concurrently -k -n api,web -c magenta,cyan \"npm run backend:dev:stable\" \"npx --yes wait-on -t 120000 -i 200 http-get://127.0.0.1:8011/health && npm run dev\"",
+    "dev": "node scripts/ensure-api-dev.mjs",
+    "dev:web": "next dev --webpack",
+    "dev:all": "node scripts/dev-all.mjs",
+    "dev:all:stable": "npm run backend:free-port && concurrently -k -n api,web -c magenta,cyan \"npm run backend:dev:stable\" \"npx --yes wait-on -t 120000 -i 200 http-get://127.0.0.1:8011/health && npm run dev:web\"",
     "backend:free-port": "node scripts/backend-free-port.mjs",
     "backend:deps": "node scripts/venv-exec.mjs -m pip install -r backend/requirements.txt",
     "build": "next build --webpack",

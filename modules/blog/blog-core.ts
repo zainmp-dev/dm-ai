@@ -1,5 +1,6 @@
 import axios from "axios";
 
+import { getApiPrefix } from "@/lib/api-prefix";
 import { getAuthToken } from "@/lib/auth";
 import { getActiveWorkspaceRequestHeaders } from "@/lib/workspace-store";
 
@@ -80,6 +81,9 @@ export type BlogDashboardData = {
     image: string;
     categoryName: string;
     updatedAt: string | null;
+    publishedAt: string | null;
+    metaDescription: string;
+    content: string;
   }>;
 };
 
@@ -238,15 +242,55 @@ export function formatBlogDate(value: string | null | undefined): string {
   }
 }
 
-/** Primary CTA styling — matches FlowPilot accent blue. */
-export const BLOG_PRIMARY_BUTTON =
-  "bg-[#1a56db] text-white shadow-sm hover:bg-[#1648c0] dark:bg-[#3b82f6] dark:hover:bg-[#2563eb]";
+/** Strip HTML for excerpts and reading-time estimates. */
+export function stripBlogHtml(html: string): string {
+  return html
+    .replace(/<style[\s>][\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s>][\s\S]*?<\/script>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-const API_PREFIX = (
-  process.env.NEXT_PUBLIC_API_PREFIX ||
-  process.env.VITE_API_BASE_URL ||
-  "/api/backend"
-).replace(/\/+$/, "");
+/** Required fields for preview: title, author, category, and non-empty content. */
+export function isBlogEditorReadyForPreview(input: {
+  title: string;
+  author: string;
+  content: string;
+  categoryId: string;
+}): boolean {
+  return Boolean(
+    input.title.trim() &&
+      input.author.trim() &&
+      input.categoryId &&
+      stripBlogHtml(input.content || ""),
+  );
+}
+
+export function estimateBlogReadingMinutes(content?: string, metaDescription?: string): number {
+  const text = stripBlogHtml(content || "") || metaDescription?.trim() || "";
+  const words = text.split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.ceil(words / 200));
+}
+
+export function getBlogExcerpt(
+  post: { metaDescription?: string; description?: string; content?: string },
+  maxLen = 140,
+): string {
+  const raw =
+    post.metaDescription?.trim() ||
+    post.description?.trim() ||
+    stripBlogHtml(post.content || "");
+  if (!raw) return "";
+  if (raw.length <= maxLen) return raw;
+  return `${raw.slice(0, maxLen).trimEnd()}…`;
+}
+
+/** Primary CTA — OfficeKit blue (#0055FF). */
+export const BLOG_PRIMARY_BUTTON =
+  "bg-[#0055FF] text-white shadow-sm hover:bg-[#0044CC] dark:bg-[#0055FF] dark:hover:bg-[#0044CC]";
+
+const API_PREFIX = getApiPrefix();
 
 const blogClient = axios.create({
   baseURL: API_PREFIX,

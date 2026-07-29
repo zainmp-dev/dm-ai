@@ -113,7 +113,7 @@ def blog_dashboard(
             """
             select b.id, b.title, b.author, b.status, b.views,
                    b.featured_image_url as image, c.name as category_name,
-                   b.updated_at
+                   b.updated_at, b.published_at, b.meta_description, b.content
             from flowpilot_blogs b
             left join flowpilot_categories c on c.id = b.category_id
             where b.workspace_id = :workspace_id
@@ -135,6 +135,9 @@ def blog_dashboard(
             "image": r.get("image") or "",
             "categoryName": r.get("category_name") or "",
             "updatedAt": r["updated_at"].isoformat() if r.get("updated_at") else None,
+            "publishedAt": r["published_at"].isoformat() if r.get("published_at") else None,
+            "metaDescription": r.get("meta_description") or "",
+            "content": r.get("content") or "",
         }
         for r in recent_rows
     ]
