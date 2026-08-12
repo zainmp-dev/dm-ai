@@ -4,31 +4,42 @@ import json
 import logging
 import re
 import time
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from threading import Event, Lock, Semaphore
+from threading import Lock, Semaphore
 from typing import Any, Callable, Iterable
 
 import requests
 
 from config import settings
+from services.ai.errors import (
+    ClassifiedError,
+    ErrorType,
+    ProviderHealth,
+    ProviderOutcome,
+    classify_provider_error,
+    public_failure_payload,
+)
+from services.ai.gemini_config import resolve_gemini_model
 from services.ai.model_router import RouterModels, detect_task_type, select_best_model
 from services.ai.prompt_builder import build_system_prompt
+from services.ai.response_parse import extract_chat_completion_text, extract_gemini_text, log_invalid_payload
 from utils.token_estimate import estimate_total_request_tokens, log_usage_vs_estimate
 
 
-# Free OpenRouter models queue deeply; use a longer read timeout when that tier is active.
 _FREE_MODEL_TIMEOUT_SECONDS = 360
+_DEFAULT_FREE_MODELS = (
+    "mistralai/mistral-small-24b-instruct-2501:free",
+    "google/gemma-3-27b-it:free",
+)
 
 
 def _free_model_fallbacks() -> tuple[str, ...]:
-    """Free-tier OpenRouter models used after HTTP 402 / budget exhaustion.
+    """Free-tier OpenRouter models used after paid OpenRouter is unavailable.
 
     - Set ``OPENROUTER_FREE_FALLBACKS`` to a comma-separated list to override.
-    - Set to ``none`` to disable all free-tier fallbacks (paid keys only).
-    - When unset / empty and an OpenRouter API key is configured, defaults to
-      ``openrouter/free`` (OpenRouter's free-model router) so agent runs can finish
-      without a topped-up wallet when direct Groq/Gemini keys are not set.
+    - Set to ``none`` to disable all free-tier fallbacks.
+    - When unset, uses known chat-completion free models (not ``openrouter/free``,
+      which often returns a non-chat payload).
     """
     raw = (getattr(settings, "openrouter_free_fallbacks", "") or "").strip()
     if raw.lower() in ("none", "false", "0"):
@@ -38,7 +49,7 @@ def _free_model_fallbacks() -> tuple[str, ...]:
         return tuple(parts)
     or_key = (getattr(settings, "openrouter_api_key", "") or "").strip()
     if or_key:
-        return ("openrouter/free",)
+        return _DEFAULT_FREE_MODELS
     return ()
 
 
@@ -50,9 +61,35 @@ logger = logging.getLogger(__name__)
 
 
 class AIServiceError(RuntimeError):
-    def __init__(self, message: str, status_code: int | None = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        *,
+        error_type: ErrorType | None = None,
+        retryable: bool = False,
+        provider: str | None = None,
+        model: str | None = None,
+        public_payload: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
+        self.error_type = error_type
+        self.retryable = retryable
+        self.provider = provider
+        self.model = model
+        self.public_payload = public_payload
+
+
+def _raise_classified(classified: ClassifiedError) -> None:
+    raise AIServiceError(
+        classified.message,
+        classified.status_code,
+        error_type=classified.error_type,
+        retryable=classified.retryable,
+        provider=classified.provider,
+        model=classified.model,
+    )
 
 
 @dataclass(frozen=True)
@@ -92,7 +129,7 @@ class AIService:
     def _headers(self) -> dict[str, str]:
         key = settings.openrouter_api_key.strip()
         if not key:
-            raise AIServiceError("OPENROUTER_API_KEY is not configured")
+            raise AIServiceError("OPENROUTER_API_KEY is not configured", error_type=ErrorType.AUTH_ERROR, provider="openrouter")
         return {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
@@ -136,185 +173,189 @@ class AIService:
         *,
         response_format: dict[str, Any] | None,
     ) -> bool:
-        """Reject empty or structurally invalid AI output before declaring a race winner."""
-        cleaned = text.strip()
+        cleaned = self._strip_json_fences(text)
         if not cleaned:
             return False
         if not isinstance(response_format, dict) or response_format.get("type") != "json_object":
             return True
+        blob = cleaned
+        if not blob.startswith("{"):
+            start = blob.find("{")
+            end = blob.rfind("}")
+            if start >= 0 and end > start:
+                blob = blob[start : end + 1]
         try:
-            payload = json.loads(self._strip_json_fences(cleaned))
+            payload = json.loads(blob)
         except json.JSONDecodeError:
             return False
         if not isinstance(payload, dict) or not payload:
             return False
-
         content_html = str(payload.get("contentHtml") or "").strip()
         title = str(payload.get("title") or "").strip()
-
         if set(payload.keys()) <= {"contentHtml"}:
             return len(content_html) > 20
         if title:
             return True
         return False
 
-    def _race_providers(
+    def _log_generation_failed(self, classified: ClassifiedError) -> None:
+        logger.error(
+            "AI_GENERATION_FAILED provider=%s model=%s errorType=%s status=%s retryable=%s message=%s",
+            classified.provider,
+            classified.model,
+            classified.error_type.value if classified.error_type else "UNKNOWN",
+            classified.status_code,
+            classified.retryable,
+            (classified.message or "")[:400],
+        )
+
+    def _try_provider(
+        self,
+        attempt: _ProviderAttempt,
+        *,
+        response_format: dict[str, Any] | None,
+        request_health: dict[str, ProviderHealth],
+    ) -> AIResult:
+        max_tries = 1 + max(0, min(self.retry_count, 2))
+        last_error: AIServiceError | None = None
+        for attempt_idx in range(max_tries):
+            started = time.time()
+            try:
+                result = attempt.runner()
+            except AIServiceError as exc:
+                classified = classify_provider_error(
+                    provider=exc.provider or attempt.provider_id,
+                    status_code=exc.status_code,
+                    message=str(exc),
+                    model=exc.model or attempt.model_label,
+                )
+                if exc.error_type:
+                    classified.error_type = exc.error_type
+                    classified.retryable = exc.retryable
+                self._log_generation_failed(classified)
+                request_health[attempt.provider_id.split(":")[0]] = classified.health()
+                last_error = AIServiceError(
+                    classified.message,
+                    classified.status_code,
+                    error_type=classified.error_type,
+                    retryable=classified.retryable,
+                    provider=classified.provider,
+                    model=classified.model,
+                )
+                if not classified.retryable:
+                    raise last_error from exc
+                if attempt_idx + 1 >= max_tries:
+                    raise last_error from exc
+                delay = 0.4 * (2**attempt_idx)
+                logger.info(
+                    "AI provider retry provider=%s model=%s wait_s=%.1f try=%s/%s",
+                    attempt.provider_id,
+                    attempt.model_label,
+                    delay,
+                    attempt_idx + 2,
+                    max_tries,
+                )
+                time.sleep(delay)
+                continue
+
+            duration_ms = int((time.time() - started) * 1000)
+            if not self._validate_response_text(result.text, response_format=response_format):
+                log_invalid_payload(
+                    provider=attempt.provider_id,
+                    model=result.model_used,
+                    raw=result.text,
+                    parsed=None,
+                )
+                classified = ClassifiedError(
+                    ErrorType.INVALID_RESPONSE,
+                    False,
+                    f"{attempt.provider_id}: invalid response payload",
+                    attempt.provider_id,
+                    attempt.model_label,
+                    None,
+                )
+                self._log_generation_failed(classified)
+                raise AIServiceError(
+                    classified.message,
+                    error_type=ErrorType.INVALID_RESPONSE,
+                    retryable=False,
+                    provider=attempt.provider_id,
+                    model=attempt.model_label,
+                )
+            logger.info(
+                "AI provider success provider=%s model=%s duration_ms=%s latency_ms=%s",
+                attempt.provider_id,
+                result.model_used,
+                duration_ms,
+                result.latency_ms,
+            )
+            return result
+
+        if last_error:
+            raise last_error
+        raise AIServiceError(f"Provider {attempt.provider_id} failed", provider=attempt.provider_id)
+
+    def _sequential_fallback(
         self,
         *,
         attempts: list[_ProviderAttempt],
         routed_task: str,
         response_format: dict[str, Any] | None,
+        context: dict[str, Any] | None = None,
     ) -> AIResult:
-        """Run eligible providers concurrently; first valid response wins, others are ignored."""
         if not attempts:
-            raise AIServiceError("No AI providers are configured")
+            raise AIServiceError("No AI providers are configured", status_code=503)
 
-        if len(attempts) == 1:
-            only = attempts[0]
-            started = time.time()
-            logger.info("AI provider start provider=%s task=%s (single provider)", only.provider_id, routed_task)
+        outcomes: list[ProviderOutcome] = []
+        request_health: dict[str, ProviderHealth] = {}
+        ctx = context or {}
+        logger.info(
+            "AI sequential fallback start task=%s providers=%s category=%s title=%s mode=%s",
+            routed_task,
+            [a.provider_id for a in attempts],
+            ctx.get("category") or "",
+            (ctx.get("title") or "")[:80],
+            ctx.get("mode") or "",
+        )
+
+        for attempt in attempts:
+            family = attempt.provider_id.split(":")[0]
+            health = request_health.get(family)
+            if health and health != ProviderHealth.AVAILABLE:
+                logger.info("AI skip provider=%s health=%s (same request)", attempt.provider_id, health.value)
+                continue
             try:
-                result = only.runner()
+                return self._try_provider(attempt, response_format=response_format, request_health=request_health)
             except AIServiceError as exc:
-                duration_ms = int((time.time() - started) * 1000)
-                logger.warning(
-                    "AI provider failed provider=%s task=%s duration_ms=%s reason=%s",
-                    only.provider_id,
-                    routed_task,
-                    duration_ms,
-                    str(exc)[:300],
+                classified = classify_provider_error(
+                    provider=exc.provider or attempt.provider_id,
+                    status_code=exc.status_code,
+                    message=str(exc),
+                    model=exc.model or attempt.model_label,
                 )
-                raise
-            duration_ms = int((time.time() - started) * 1000)
-            if not self._validate_response_text(result.text, response_format=response_format):
-                raise AIServiceError(f"Provider {only.provider_id} returned an invalid response")
-            logger.info(
-                "AI provider winner provider=%s model=%s task=%s duration_ms=%s latency_ms=%s",
-                only.provider_id,
-                result.model_used,
-                routed_task,
-                duration_ms,
-                result.latency_ms,
-            )
-            return result
-
-        settled = Event()
-        winner_lock = Lock()
-        winner: AIResult | None = None
-        winner_provider: str | None = None
-        failures: list[str] = []
-
-        def _run_attempt(attempt: _ProviderAttempt) -> AIResult | None:
-            if settled.is_set():
-                return None
-            started = time.time()
-            logger.info(
-                "AI provider race start provider=%s model=%s task=%s",
-                attempt.provider_id,
-                attempt.model_label,
-                routed_task,
-            )
-            try:
-                result = attempt.runner()
-            except AIServiceError as exc:
-                duration_ms = int((time.time() - started) * 1000)
-                reason = str(exc)[:300]
-                with winner_lock:
-                    failures.append(f"{attempt.provider_id}: {reason}")
-                logger.warning(
-                    "AI provider race failed provider=%s model=%s task=%s duration_ms=%s reason=%s",
-                    attempt.provider_id,
-                    attempt.model_label,
-                    routed_task,
-                    duration_ms,
-                    reason,
-                )
-                return None
-
-            duration_ms = int((time.time() - started) * 1000)
-            if settled.is_set():
-                logger.info(
-                    "AI provider race ignored (late) provider=%s model=%s task=%s duration_ms=%s",
-                    attempt.provider_id,
-                    attempt.model_label,
-                    routed_task,
-                    duration_ms,
-                )
-                return None
-
-            if not self._validate_response_text(result.text, response_format=response_format):
-                with winner_lock:
-                    failures.append(f"{attempt.provider_id}: invalid response payload")
-                logger.warning(
-                    "AI provider race rejected provider=%s model=%s task=%s duration_ms=%s reason=invalid payload",
-                    attempt.provider_id,
-                    attempt.model_label,
-                    routed_task,
-                    duration_ms,
-                )
-                return None
-
-            with winner_lock:
-                if settled.is_set():
-                    logger.info(
-                        "AI provider race ignored (late valid) provider=%s model=%s task=%s duration_ms=%s",
-                        attempt.provider_id,
-                        attempt.model_label,
-                        routed_task,
-                        duration_ms,
+                if exc.error_type:
+                    classified.error_type = exc.error_type
+                    classified.retryable = exc.retryable
+                outcomes.append(
+                    ProviderOutcome(
+                        provider=attempt.provider_id,
+                        model=attempt.model_label,
+                        error=classified,
+                        status=classified.user_status,
                     )
-                    return None
-                nonlocal winner, winner_provider
-                winner = result
-                winner_provider = attempt.provider_id
-                settled.set()
-            logger.info(
-                "AI provider race winner provider=%s model=%s task=%s duration_ms=%s latency_ms=%s",
-                attempt.provider_id,
-                result.model_used,
-                routed_task,
-                duration_ms,
-                result.latency_ms,
-            )
-            return result
+                )
+                continue
 
-        race_started = time.time()
-        max_workers = max(1, min(len(attempts), int(getattr(settings, "openrouter_concurrency_limit", 6))))
-        executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ai-race")
-        pending: set[Future[AIResult | None]] = set()
-        try:
-            for attempt in attempts:
-                pending.add(executor.submit(_run_attempt, attempt))
+        payload = public_failure_payload(outcomes)
+        raise AIServiceError(
+            payload["message"],
+            503,
+            error_type=ErrorType.PROVIDER_ERROR,
+            retryable=False,
+            public_payload=payload,
+        )
 
-            while pending and not settled.is_set():
-                done, pending = wait(pending, return_when=FIRST_COMPLETED)
-                for future in done:
-                    try:
-                        if future.result() is not None and settled.is_set():
-                            break
-                    except Exception as exc:  # pragma: no cover - defensive
-                        with winner_lock:
-                            failures.append(f"unexpected: {exc}")
-        finally:
-            # Do not block on slower providers once a winner is selected.
-            executor.shutdown(wait=not settled.is_set(), cancel_futures=True)
-
-        if winner is not None:
-            race_ms = int((time.time() - race_started) * 1000)
-            logger.info(
-                "AI provider race settled winner=%s model=%s task=%s race_ms=%s failures=%s",
-                winner_provider,
-                winner.model_used,
-                routed_task,
-                race_ms,
-                len(failures),
-            )
-            return winner
-
-        summary = "; ".join(failures[:6]) if failures else "no providers returned valid output"
-        raise AIServiceError(f"All parallel AI providers failed. {summary}")
-
-    def _build_parallel_provider_attempts(
+    def _build_provider_attempts(
         self,
         *,
         prompt: str,
@@ -326,11 +367,12 @@ class AIService:
         prefer_groq_first: bool,
         prefer_gemini: bool,
     ) -> list[_ProviderAttempt]:
-        """Collect every configured provider for a concurrent race (Groq, Gemini, OpenRouter paid/free)."""
         attempts: list[_ProviderAttempt] = []
+        gemini_model = resolve_gemini_model()
+        groq_model = (getattr(settings, "groq_model", "") or "llama-3.3-70b-versatile").strip()
 
         if prefer_groq_first and (getattr(settings, "groq_api_key", "") or "").strip():
-            groq_label = "groq/" + (getattr(settings, "groq_model", "") or "llama-3.3-70b-versatile").strip()
+            groq_label = "groq/" + groq_model
 
             def _groq_runner() -> AIResult:
                 started = time.time()
@@ -345,7 +387,12 @@ class AIService:
                 latency = int((time.time() - started) * 1000)
                 text = groq_result.get("text", "").strip()
                 if not text:
-                    raise AIServiceError("Groq returned empty content")
+                    raise AIServiceError(
+                        "Groq returned empty content",
+                        error_type=ErrorType.INVALID_RESPONSE,
+                        provider="groq",
+                        model=groq_label,
+                    )
                 return AIResult(
                     text=text,
                     model_used=groq_label,
@@ -357,7 +404,7 @@ class AIService:
             attempts.append(_ProviderAttempt("groq", groq_label, _groq_runner))
 
         if prefer_gemini and (getattr(settings, "google_ai_api_key", "") or "").strip():
-            gemini_label = f"google/{(getattr(settings, 'gemini_model', '') or 'gemini-2.0-flash').strip()}"
+            gemini_label = f"google/{gemini_model}"
 
             def _gemini_runner() -> AIResult:
                 started = time.time()
@@ -372,7 +419,12 @@ class AIService:
                 latency = int((time.time() - started) * 1000)
                 text = gemini_result.get("text", "").strip()
                 if not text:
-                    raise AIServiceError("Gemini returned empty content")
+                    raise AIServiceError(
+                        "Gemini returned empty content",
+                        error_type=ErrorType.INVALID_RESPONSE,
+                        provider="gemini",
+                        model=gemini_label,
+                    )
                 return AIResult(
                     text=text,
                     model_used=gemini_label,
@@ -400,7 +452,12 @@ class AIService:
                 latency = int((time.time() - started) * 1000)
                 text = paid_result.get("text", "").strip()
                 if not text:
-                    raise AIServiceError("OpenRouter returned empty content")
+                    raise AIServiceError(
+                        "OpenRouter returned empty content",
+                        error_type=ErrorType.INVALID_RESPONSE,
+                        provider="openrouter_paid",
+                        model=paid,
+                    )
                 return AIResult(
                     text=text,
                     model_used=paid,
@@ -427,7 +484,12 @@ class AIService:
                     latency = int((time.time() - started) * 1000)
                     text = free_result.get("text", "").strip()
                     if not text:
-                        raise AIServiceError("OpenRouter free tier returned empty content")
+                        raise AIServiceError(
+                            "OpenRouter free tier returned empty content",
+                            error_type=ErrorType.INVALID_RESPONSE,
+                            provider="openrouter_free",
+                            model=free,
+                        )
                     return AIResult(
                         text=text,
                         model_used=free,
@@ -453,19 +515,16 @@ class AIService:
     ) -> dict[str, Any]:
         key = (getattr(settings, "google_ai_api_key", "") or "").strip()
         if not key:
-            raise AIServiceError("GOOGLE_AI_API_KEY is not configured", status_code=401)
-        model = (getattr(settings, "gemini_model", "") or "gemini-2.0-flash").strip()
+            raise AIServiceError("GOOGLE_AI_API_KEY is not configured", status_code=401, error_type=ErrorType.AUTH_ERROR, provider="gemini")
+        model = resolve_gemini_model()
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         system_prompt = build_system_prompt(task_type)
         generation_config: dict[str, Any] = {
             "temperature": temperature,
             "maxOutputTokens": min(max_tokens or self.max_tokens, 8192),
         }
-        # Translate OpenAI-style JSON mode into Gemini's responseMimeType so
-        # callers like the carousel agent get parseable JSON back from Gemini.
         if isinstance(response_format, dict) and response_format.get("type") == "json_object":
             generation_config["responseMimeType"] = "application/json"
-        # Gemini uses a single user turn; prepend system instructions inline.
         payload: dict[str, Any] = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -479,17 +538,26 @@ class AIService:
                 timeout=self.timeout_seconds,
             )
         except requests.Timeout as exc:
-            raise AIServiceError(f"Gemini timed out after {self.timeout_seconds}s", status_code=408) from exc
+            raise AIServiceError(
+                f"Gemini timed out after {self.timeout_seconds}s",
+                status_code=408,
+                error_type=ErrorType.TIMEOUT,
+                retryable=True,
+                provider="gemini",
+                model=model,
+            ) from exc
         except requests.RequestException as exc:
             detail = exc.response.text[:600] if getattr(exc, "response", None) is not None else str(exc)
-            raise AIServiceError(f"Gemini request failed: {detail}") from exc
+            classified = classify_provider_error(provider="gemini", status_code=None, body=detail, model=model)
+            _raise_classified(classified)
 
         raw = response.text or ""
         if response.status_code >= 400:
-            raise AIServiceError(f"Gemini HTTP {response.status_code}: {raw[:600]}", status_code=response.status_code)
+            classified = classify_provider_error(provider="gemini", status_code=response.status_code, body=raw, model=model)
+            _raise_classified(classified)
         try:
             data = response.json()
-            text = str(data["candidates"][0]["content"]["parts"][0]["text"]).strip()
+            text = extract_gemini_text(data)
             meta = data.get("usageMetadata") or {}
             usage = {
                 "prompt_tokens": meta.get("promptTokenCount", 0),
@@ -498,7 +566,13 @@ class AIService:
             }
             return {"text": text, "usage": usage}
         except Exception as exc:
-            raise AIServiceError("Gemini returned invalid response shape") from exc
+            log_invalid_payload(provider="gemini", model=model, raw=raw)
+            raise AIServiceError(
+                "Gemini returned invalid response shape",
+                error_type=ErrorType.INVALID_RESPONSE,
+                provider="gemini",
+                model=model,
+            ) from exc
 
     def _call_groq(
         self,
@@ -511,11 +585,10 @@ class AIService:
     ) -> dict[str, Any]:
         key = (getattr(settings, "groq_api_key", "") or "").strip()
         if not key:
-            raise AIServiceError("GROQ_API_KEY is not configured", status_code=401)
+            raise AIServiceError("GROQ_API_KEY is not configured", status_code=401, error_type=ErrorType.AUTH_ERROR, provider="groq")
         base_raw = getattr(settings, "groq_base_url", "") or "https://api.groq.com/openai/v1"
         base = str(base_raw).rstrip("/")
-        model_raw = getattr(settings, "groq_model", "") or "llama-3.3-70b-versatile"
-        model = str(model_raw).strip() or "llama-3.3-70b-versatile"
+        model = (getattr(settings, "groq_model", "") or "llama-3.3-70b-versatile").strip() or "llama-3.3-70b-versatile"
         system_prompt = build_system_prompt(task_type)
         payload: dict[str, Any] = {
             "model": model,
@@ -536,23 +609,39 @@ class AIService:
                 timeout=self.timeout_seconds,
             )
         except requests.Timeout as exc:
-            raise AIServiceError(f"Groq timed out after {self.timeout_seconds}s", status_code=408) from exc
+            raise AIServiceError(
+                f"Groq timed out after {self.timeout_seconds}s",
+                status_code=408,
+                error_type=ErrorType.TIMEOUT,
+                retryable=True,
+                provider="groq",
+                model=model,
+            ) from exc
         except requests.RequestException as exc:
             detail = exc.response.text[:600] if getattr(exc, "response", None) is not None else str(exc)
-            raise AIServiceError(f"Groq request failed: {detail}") from exc
+            classified = classify_provider_error(provider="groq", status_code=None, body=detail, model=model)
+            _raise_classified(classified)
 
         raw = response.text or ""
         if response.status_code >= 400:
-            raise AIServiceError(f"Groq HTTP {response.status_code}: {raw[:600]}", status_code=response.status_code)
+            classified = classify_provider_error(provider="groq", status_code=response.status_code, body=raw, model=model)
+            _raise_classified(classified)
+        data: Any = None
         try:
             data = response.json()
-            text = str(data["choices"][0]["message"]["content"]).strip()
+            text = extract_chat_completion_text(data, provider="groq")
             usage = data.get("usage") if isinstance(data, dict) else {}
             if not isinstance(usage, dict):
                 usage = {}
             return {"text": text, "usage": usage}
         except Exception as exc:
-            raise AIServiceError("Groq returned invalid response shape") from exc
+            log_invalid_payload(provider="groq", model=model, raw=raw, parsed=data)
+            raise AIServiceError(
+                "Groq returned invalid response shape",
+                error_type=ErrorType.INVALID_RESPONSE,
+                provider="groq",
+                model=model,
+            ) from exc
 
     def gemini_request(
         self,
@@ -563,10 +652,9 @@ class AIService:
         temperature: float = 0.7,
         response_format: dict[str, Any] | None = None,
     ) -> AIResult:
-        """Call Gemini directly. Raises AIServiceError if key is missing or Gemini fails (no OpenRouter fallback)."""
         gemini_key = (getattr(settings, "google_ai_api_key", "") or "").strip()
         if not gemini_key:
-            raise AIServiceError("GOOGLE_AI_API_KEY is not configured", status_code=401)
+            raise AIServiceError("GOOGLE_AI_API_KEY is not configured", status_code=401, error_type=ErrorType.AUTH_ERROR, provider="gemini")
         routed_task = detect_task_type(prompt=prompt, explicit=task_type)
         gemini_started = time.time()
         with self._gate:
@@ -579,9 +667,9 @@ class AIService:
             )
         gemini_text = gemini_result.get("text", "").strip()
         if not gemini_text:
-            raise AIServiceError("Gemini returned empty content")
+            raise AIServiceError("Gemini returned empty content", error_type=ErrorType.INVALID_RESPONSE, provider="gemini")
         gemini_latency = int((time.time() - gemini_started) * 1000)
-        gemini_model_name = f"google/{(getattr(settings, 'gemini_model', '') or 'gemini-2.0-flash').strip()}"
+        gemini_model_name = f"google/{resolve_gemini_model()}"
         logger.info(
             "AI success provider=gemini model=%s task=%s latency_ms=%s usage=%s",
             gemini_model_name,
@@ -606,7 +694,6 @@ class AIService:
         temperature: float = 0.7,
         response_format: dict[str, Any] | None = None,
     ) -> AIResult | None:
-        """One Groq completion when GROQ_API_KEY is set; returns None so callers can try Gemini/OpenRouter."""
         key = (getattr(settings, "groq_api_key", "") or "").strip()
         if not key:
             return None
@@ -640,8 +727,47 @@ class AIService:
                 retries=0,
             )
         except AIServiceError as exc:
-            logger.warning("Groq-only preflight failed (status=%s): %s", exc.status_code, str(exc)[:300])
+            classified = classify_provider_error(
+                provider="groq",
+                status_code=exc.status_code,
+                message=str(exc),
+                model=exc.model or "",
+            )
+            self._log_generation_failed(classified)
             return None
+
+    def generate_text(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str | None = None,
+        max_tokens: int | None = None,
+        temperature: float = 0.7,
+        category: str | None = None,
+        title: str | None = None,
+        mode: str | None = None,
+        preferred_model: str | None = None,
+        task_type: str | None = None,
+        response_format: dict[str, Any] | None = None,
+        prefer_groq_first: bool = True,
+        prefer_gemini: bool = True,
+    ) -> AIResult:
+        """Normalized generation entry point. Same prompt/context is sent to every fallback provider."""
+        routed_task = detect_task_type(prompt=prompt, explicit=task_type)
+        user_prompt = prompt
+        if system_prompt:
+            user_prompt = f"{system_prompt.strip()}\n\n{prompt}"
+        return self.retry_request(
+            prompt=user_prompt,
+            preferred_model=preferred_model,
+            task_type=routed_task,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            prefer_groq_first=prefer_groq_first,
+            prefer_gemini=prefer_gemini,
+            context={"category": category or "", "title": title or "", "mode": mode or ""},
+        )
 
     def retry_request(
         self,
@@ -654,6 +780,7 @@ class AIService:
         response_format: dict[str, Any] | None = None,
         prefer_groq_first: bool = True,
         prefer_gemini: bool = True,
+        context: dict[str, Any] | None = None,
     ) -> AIResult:
         routed_task = detect_task_type(prompt=prompt, explicit=task_type)
         model = (preferred_model or "").strip() or select_best_model(routed_task, self.models)
@@ -663,9 +790,7 @@ class AIService:
         if cached:
             return cached
 
-        # Concurrent provider race: Groq, Gemini, OpenRouter paid, and OpenRouter free
-        # are launched together; the first valid response wins (no sequential wait on 429/402).
-        attempts = self._build_parallel_provider_attempts(
+        attempts = self._build_provider_attempts(
             prompt=prompt,
             routed_task=routed_task,
             model=model,
@@ -679,23 +804,21 @@ class AIService:
             system_prompt=build_system_prompt(routed_task),
             user_prompt=prompt,
             max_tokens=max_tokens or self.max_tokens,
-            provider_count=len(attempts),
+            provider_count=1,
         )
         logger.info(
-            "AI provider race start task=%s providers=%s prompt_tokens_est=%s completion_cap=%s "
-            "total_per_provider_est=%s total_race_est=%s prompt_chars=%s",
+            "AI fallback chain task=%s providers=%s prompt_tokens_est=%s completion_cap=%s prompt_chars=%s",
             routed_task,
             len(attempts),
             token_estimate["prompt_tokens_est"],
             token_estimate["completion_cap"],
-            token_estimate["total_per_provider_est"],
-            token_estimate["total_race_est"],
             len(prompt),
         )
-        final = self._race_providers(
+        final = self._sequential_fallback(
             attempts=attempts,
             routed_task=routed_task,
             response_format=response_format,
+            context=context,
         )
         self._write_cache(cache_key, final)
         log_usage_vs_estimate(
@@ -727,7 +850,9 @@ class AIService:
         response_format: dict[str, Any] | None,
         timeout_override: int | None = None,
     ) -> dict[str, Any]:
+        provider = "openrouter_free" if _is_free_model(model) else "openrouter_paid"
         effective_timeout = timeout_override if timeout_override is not None else self.timeout_seconds
+        requested = max(1, min(max_tokens or self.max_tokens, 32768))
         payload: dict[str, Any] = {
             "model": model,
             "messages": [
@@ -735,7 +860,7 @@ class AIService:
                 {"role": "user", "content": prompt},
             ],
             "temperature": temperature,
-            "max_tokens": max(1, min(max_tokens or self.max_tokens, 32768)),
+            "max_tokens": requested,
         }
         if response_format:
             payload["response_format"] = response_format
@@ -747,23 +872,39 @@ class AIService:
                 timeout=effective_timeout,
             )
         except requests.Timeout as exc:
-            raise AIServiceError(f"OpenRouter timed out after {effective_timeout}s", status_code=408) from exc
+            raise AIServiceError(
+                f"OpenRouter timed out after {effective_timeout}s",
+                status_code=408,
+                error_type=ErrorType.TIMEOUT,
+                retryable=True,
+                provider=provider,
+                model=model,
+            ) from exc
         except requests.RequestException as exc:
             detail = exc.response.text[:600] if getattr(exc, "response", None) is not None else str(exc)
-            raise AIServiceError(f"OpenRouter request failed: {detail}") from exc
+            classified = classify_provider_error(provider=provider, status_code=None, body=detail, model=model)
+            _raise_classified(classified)
 
         raw = response.text or ""
         if response.status_code >= 400:
-            raise AIServiceError(f"OpenRouter HTTP {response.status_code}: {raw[:600]}", status_code=response.status_code)
+            classified = classify_provider_error(provider=provider, status_code=response.status_code, body=raw, model=model)
+            _raise_classified(classified)
+        data: Any = None
         try:
             data = response.json()
-            text = str(data["choices"][0]["message"]["content"]).strip()
+            text = extract_chat_completion_text(data, provider=provider)
             usage = data.get("usage") if isinstance(data, dict) else {}
             if not isinstance(usage, dict):
                 usage = {}
             return {"text": text, "usage": usage}
         except Exception as exc:
-            raise AIServiceError("OpenRouter returned invalid response shape") from exc
+            log_invalid_payload(provider=provider, model=model, raw=raw, parsed=data)
+            raise AIServiceError(
+                f"{provider}: invalid response payload",
+                error_type=ErrorType.INVALID_RESPONSE,
+                provider=provider,
+                model=model,
+            ) from exc
 
     def stream_chat(
         self,
@@ -791,7 +932,13 @@ class AIService:
             stream=True,
         ) as response:
             if response.status_code >= 400:
-                raise AIServiceError(f"Streaming failed HTTP {response.status_code}: {(response.text or '')[:400]}")
+                classified = classify_provider_error(
+                    provider="openrouter_paid",
+                    status_code=response.status_code,
+                    body=(response.text or "")[:400],
+                    model=model,
+                )
+                _raise_classified(classified)
             for line in response.iter_lines(decode_unicode=True):
                 if not line:
                     continue

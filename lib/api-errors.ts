@@ -38,7 +38,38 @@ export function normalizeFastApiDetail(responseData: unknown): string | null {
     return m || null;
   }
 
+  if (raw && typeof raw === "object" && "message" in (raw as object)) {
+    return formatProviderFailureDetail(raw as Record<string, unknown>);
+  }
+
   return null;
+}
+
+function formatProviderFailureDetail(raw: Record<string, unknown>): string | null {
+  const message = typeof raw.message === "string" ? raw.message.trim() : "";
+  const action = typeof raw.action === "string" ? raw.action.trim() : "";
+  const providers = Array.isArray(raw.providers) ? raw.providers : [];
+  if (!message && providers.length === 0) return null;
+
+  const lines = [message || "AI generation is temporarily unavailable."];
+  if (providers.length > 0) {
+    lines.push("", "Provider status:");
+    for (const item of providers) {
+      if (!item || typeof item !== "object") continue;
+      const row = item as Record<string, unknown>;
+      const name = typeof row.name === "string" ? row.name.trim() : "";
+      const status = typeof row.status === "string" ? row.status.trim() : "";
+      if (!name && !status) continue;
+      if (name) lines.push(name);
+      if (status) lines.push(status);
+      lines.push("");
+    }
+    if (lines[lines.length - 1] === "") lines.pop();
+  }
+  if (action) {
+    lines.push("", action);
+  }
+  return lines.join("\n");
 }
 
 /** Next.js / generic JSON error shapes `{ error: string }` (e.g. pipeline route). */
@@ -110,7 +141,7 @@ export function formatApiErrorMessage(error: unknown): string {
     const isActionableBackendDown =
       typeof status === "number" &&
       (status === 502 || status === 503) &&
-      /cannot reach fastapi|start:\s*npm run backend/i.test(fromDetail);
+      /cannot reach fastapi|start:\s*npm run backend|ai generation is temporarily unavailable/i.test(fromDetail);
     if ((!scrubServerErrors || isActionableBackendDown) && !looksLikeSensitiveLeak(fromDetail)) {
       return fromDetail;
     }

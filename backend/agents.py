@@ -419,8 +419,8 @@ def call_gemini_with_openrouter_fallback(
         "anthropic/claude-sonnet-4",
         "openai/gpt-4o-mini",
         "openai/gpt-5-mini",
-        # Last resort: OpenRouter free-model router (works with a valid API key even at $0 paid balance).
-        "openrouter/free",
+        # Last resort: OpenRouter free chat model (not openrouter/free — that slug is not chat-completions).
+        "mistralai/mistral-small-24b-instruct-2501:free",
     ])
     seen: set[str] = set()
     deduped_chain: list[str] = []

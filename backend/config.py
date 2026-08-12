@@ -179,8 +179,9 @@ class Settings:
     openrouter_max_tokens_suggest: int = field(default_factory=lambda: _int_env("OPENROUTER_MAX_TOKENS_SUGGEST", 1536))
     # Comma-separated OpenRouter model ids tried after the requested model and OPENROUTER_MODEL (quota/model errors only).
     openrouter_model_fallbacks: str = field(default_factory=lambda: _str_env("OPENROUTER_MODEL_FALLBACKS"))
-    # Comma-separated free OpenRouter model ids (HTTP 402 last resort). Set to ``none`` to disable. When unset
-    # and OPENROUTER_API_KEY is set, the stack defaults to ``openrouter/free`` (see ai_service._free_model_fallbacks).
+    # Comma-separated free OpenRouter chat-completion model ids (after paid OpenRouter fails).
+    # Set to ``none`` to disable. When unset and OPENROUTER_API_KEY is set, defaults to mistral/gemma free models
+    # (not ``openrouter/free``, which is not a chat-completions model).
     openrouter_free_fallbacks: str = field(default_factory=lambda: _str_env("OPENROUTER_FREE_FALLBACKS"))
 
     meta_graph_api_version: str = field(
@@ -231,8 +232,9 @@ class Settings:
     )
     oauth_state_secret: str = field(default_factory=lambda: _str_env("OAUTH_STATE_SECRET"))
     token_encryption_keys: str = field(default_factory=lambda: _str_env("TOKEN_ENCRYPTION_KEYS"))
-    google_ai_api_key: str = field(default_factory=lambda: _str_env("GOOGLE_AI_API_KEY"))
-    gemini_model: str = field(default_factory=lambda: _str_env("GEMINI_MODEL", "gemini-2.0-flash") or "gemini-2.0-flash")
+    google_ai_api_key: str = field(default_factory=lambda: _str_env_first("GOOGLE_AI_API_KEY", "GEMINI_API_KEY"))
+    gemini_model: str = field(default_factory=lambda: _str_env("GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash")
+    blog_generation_max_tokens: int = field(default_factory=lambda: _int_env("BLOG_GENERATION_MAX_TOKENS", 4096))
     # Groq (OpenAI-compatible). Used ahead of Gemini/OpenRouter when keys are present.
     groq_api_key: str = field(default_factory=lambda: _str_env("GROQ_API_KEY"))
     groq_base_url: str = field(

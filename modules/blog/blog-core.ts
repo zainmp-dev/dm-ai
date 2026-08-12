@@ -146,10 +146,10 @@ export type BlogAIFullGenerateParams = {
 };
 
 export const BLOG_AI_DEFAULT_FULL_PARAMS: BlogAIFullGenerateParams = {
-  topic: "Practical insights and best practices for our audience",
-  industry: "Business",
-  audience: "Professionals and decision-makers",
-  tone: "Professional",
+  topic: "Select a high-value HRMS, payroll, attendance, or Indian HR compliance topic",
+  industry: "HRMS / Human Resource Management",
+  audience: "HR managers, business owners, and payroll professionals",
+  tone: "Clear, practical, expert, and non-promotional",
   wordCount: 1500,
 };
 
@@ -252,19 +252,14 @@ export function stripBlogHtml(html: string): string {
     .trim();
 }
 
-/** Required fields for preview: title, author, category, and non-empty content. */
+/** Required fields for preview: title and non-empty content. Author/category are optional. */
 export function isBlogEditorReadyForPreview(input: {
   title: string;
-  author: string;
+  author?: string;
   content: string;
-  categoryId: string;
+  categoryId?: string;
 }): boolean {
-  return Boolean(
-    input.title.trim() &&
-      input.author.trim() &&
-      input.categoryId &&
-      stripBlogHtml(input.content || ""),
-  );
+  return Boolean(input.title.trim() && stripBlogHtml(input.content || ""));
 }
 
 export function estimateBlogReadingMinutes(content?: string, metaDescription?: string): number {
@@ -625,6 +620,7 @@ export async function generateBlogWithAI(input: {
   title?: string;
   excludePostId?: string;
   author?: string;
+  categoryName?: string;
 }): Promise<BlogAIGeneratedContent> {
   const res = await blogClient.post<{ success: boolean; data: BlogAIGeneratedContent }>("/api/blogs/generate", input, {
     timeout: BLOG_AI_REQUEST_TIMEOUT_MS,

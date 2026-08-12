@@ -1,6 +1,19 @@
 import { prioritizeChecksForRecommendations } from "./blog-content-analysis-presentation";
+import { extractArticle, plainText as toPlainText, type ArticleFeatures } from "./content-analysis/extract";
+import { scoreArticle, type CanonicalIssue, type DimensionKey, type DimensionReport, type PublishingBand, type SubScore } from "./content-analysis/engine";
 
-export type ContentAnalysisCategory = "seo" | "geo" | "llm" | "readability";
+export { plainText } from "./content-analysis/extract";
+
+/** Body shorter than this is treated as empty/thin for GEO/LLM/Quality/Readability. */
+export const MIN_ANALYZABLE_WORDS = 40;
+
+export const SCORE_PRODUCT_NAME = "Officekit Content Quality Score";
+
+export type ContentAnalysisStatus = "analyzable" | "not_analyzable";
+export type IssueSeverity = "critical" | "high" | "medium" | "low";
+export type CheckOutcome = "passed" | "failed" | "warning";
+
+export type ContentAnalysisCategory = "seo" | "geo" | "llm" | "content_quality" | "readability";
 
 export type ContentAnalysisInput = {
   title: string;
@@ -10,659 +23,299 @@ export type ContentAnalysisInput = {
   permalink?: string;
   author?: string;
   featuredImageUrl?: string;
+  seoTitle?: string;
+  canonicalUrl?: string;
+  ogTitle?: string;
+  ogDescription?: string;
+  updatedAt?: string;
+  categoryName?: string;
+  subcategory?: string;
 };
 
 export type ContentAnalysisCheck = {
   id: string;
   label: string;
+  outcome: CheckOutcome;
   passed: boolean;
   message: string;
+  evidence: string;
+  recommendation: string;
+  severity: IssueSeverity;
   category: ContentAnalysisCategory;
-  /** Points toward category score (weights should sum to 100 per category). */
   weight: number;
   suggestionLabel: string;
 };
 
+export type CategoryBreakdown = {
+  score: number;
+  maximum: number;
+  percentage: number;
+  passed: number;
+  failed: number;
+  warnings: number;
+};
+
 export type ContentAnalysisSuggestion = {
   label: string;
-  impacts: Partial<Record<"seo" | "geo" | "llm" | "readability", number>>;
+  impacts: Partial<Record<ContentAnalysisCategory, number>>;
   totalImpact: number;
 };
 
+export type SearchIntentType = "informational" | "commercial" | "transactional" | "navigational" | "unknown";
+
+export type DimensionView = {
+  score: number;
+  max: number;
+  reason: string;
+  strengths: string[];
+  weaknesses: string[];
+};
+
+export type PublishingRecommendation = {
+  band: PublishingBand;
+  label: string;
+};
+
 export type ContentAnalysisResult = {
+  status: ContentAnalysisStatus;
+  statusMessage: string;
+  scoreName: string;
   seoScore: number;
   geoScore: number;
   llmScore: number;
+  contentQualityScore: number;
   readabilityScore: number;
+  /** @deprecated Folded into SEO/Quality; kept for compatibility. */
+  searchIntentScore: number;
+  /** @deprecated Folded into Quality; kept for compatibility. */
+  topicalCoverageScore: number;
+  /** @deprecated Folded into LLM/Quality evidence; kept for compatibility. */
+  eeatScore: number;
+  /** @deprecated Folded into SEO; kept for compatibility. */
+  technicalScore: number;
   overallScore: number;
+  primaryIntent: SearchIntentType;
   checks: ContentAnalysisCheck[];
   seoChecks: ContentAnalysisCheck[];
   geoChecks: ContentAnalysisCheck[];
   llmChecks: ContentAnalysisCheck[];
+  contentQualityChecks: ContentAnalysisCheck[];
   readabilityChecks: ContentAnalysisCheck[];
+  searchIntentChecks: ContentAnalysisCheck[];
+  topicalCoverageChecks: ContentAnalysisCheck[];
+  eeatChecks: ContentAnalysisCheck[];
+  technicalChecks: ContentAnalysisCheck[];
+  categories: Record<ContentAnalysisCategory, CategoryBreakdown>;
+  dimensions: Record<"seo" | "geo" | "llm" | "quality" | "readability", DimensionView>;
+  criticalIssues: ContentAnalysisCheck[];
+  highPriorityIssues: ContentAnalysisCheck[];
+  mediumIssues: ContentAnalysisCheck[];
+  lowPriorityIssues: ContentAnalysisCheck[];
+  passedChecks: ContentAnalysisCheck[];
+  recommendedActions: string[];
+  scoreExplanation: string;
+  internalLinksFound: number;
+  externalLinksFound: number;
   suggestions: ContentAnalysisSuggestion[];
   hasInput: boolean;
+  publishing: PublishingRecommendation;
+  categoryRelevance: { score: number; category: string };
+  searchIntent: { score: number; intent: SearchIntentType };
+  confidence: number;
+  capsApplied: string[];
+  severityCounts: { critical: number; high: number; medium: number; low: number };
 };
 
+function emptyBreakdown(): CategoryBreakdown {
+  return { score: 0, maximum: 0, percentage: 0, passed: 0, failed: 0, warnings: 0 };
+}
+
+function emptyDimension(reason: string): DimensionView {
+  return { score: 0, max: 100, reason, strengths: [], weaknesses: [] };
+}
+
 export const EMPTY_CONTENT_ANALYSIS: ContentAnalysisResult = {
+  status: "not_analyzable",
+  statusMessage: "Add blog content to begin analysis.",
+  scoreName: SCORE_PRODUCT_NAME,
   seoScore: 0,
   geoScore: 0,
   llmScore: 0,
+  contentQualityScore: 0,
   readabilityScore: 0,
+  searchIntentScore: 0,
+  topicalCoverageScore: 0,
+  eeatScore: 0,
+  technicalScore: 0,
   overallScore: 0,
+  primaryIntent: "unknown",
   checks: [],
   seoChecks: [],
   geoChecks: [],
   llmChecks: [],
+  contentQualityChecks: [],
   readabilityChecks: [],
+  searchIntentChecks: [],
+  topicalCoverageChecks: [],
+  eeatChecks: [],
+  technicalChecks: [],
+  categories: {
+    seo: emptyBreakdown(),
+    geo: emptyBreakdown(),
+    llm: emptyBreakdown(),
+    content_quality: emptyBreakdown(),
+    readability: emptyBreakdown(),
+  },
+  dimensions: {
+    seo: emptyDimension("Add blog content to begin analysis."),
+    geo: emptyDimension("Add blog content to begin analysis."),
+    llm: emptyDimension("Add blog content to begin analysis."),
+    quality: emptyDimension("Add blog content to begin analysis."),
+    readability: emptyDimension("Add blog content to begin analysis."),
+  },
+  criticalIssues: [],
+  highPriorityIssues: [],
+  mediumIssues: [],
+  lowPriorityIssues: [],
+  passedChecks: [],
+  recommendedActions: ["Add blog content to begin analysis."],
+  scoreExplanation: "Officekit Content Quality Score is 0 because there is no article to evaluate.",
+  internalLinksFound: 0,
+  externalLinksFound: 0,
   suggestions: [],
   hasInput: false,
+  publishing: { band: "do_not_publish", label: "DO NOT PUBLISH" },
+  categoryRelevance: { score: 0, category: "" },
+  searchIntent: { score: 0, intent: "unknown" },
+  confidence: 0,
+  capsApplied: [],
+  severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
 };
-
-const ENTITY_PATTERN = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/g;
-
-export function plainText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function matchAll(html: string, pattern: RegExp): RegExpMatchArray[] {
-  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
-  return Array.from(html.matchAll(new RegExp(pattern.source, flags)));
-}
-
-function countKeywordOccurrences(text: string, keyword: string): number {
-  if (!keyword.trim()) return 0;
-  const escaped = keyword.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return (text.match(new RegExp(`\\b${escaped}\\b`, "gi")) || []).length;
-}
-
-function keywordInText(text: string, keyword: string): boolean {
-  return keyword.trim().length > 0 && text.toLowerCase().includes(keyword.trim().toLowerCase());
-}
-
-function clampScore(value: number): number {
-  return Math.max(0, Math.min(100, Math.round(value)));
-}
-
-function categoryScore(checks: ContentAnalysisCheck[]): number {
-  if (checks.length === 0) return 0;
-  const max = checks.reduce((sum, c) => sum + c.weight, 0);
-  const earned = checks.filter((c) => c.passed).reduce((sum, c) => sum + c.weight, 0);
-  return clampScore((earned / max) * 100);
-}
 
 export function hasAnalysisInput(input: ContentAnalysisInput): boolean {
   return Boolean(
     input.title.trim() ||
       input.metaDescription.trim() ||
       input.keywords.some((k) => k.trim()) ||
-      plainText(input.contentHtml).length > 0 ||
+      toPlainText(input.contentHtml).length > 0 ||
       input.permalink?.trim() ||
       input.author?.trim() ||
       input.featuredImageUrl?.trim(),
   );
 }
 
-type AnalysisContext = {
-  input: ContentAnalysisInput;
-  html: string;
-  text: string;
-  primaryKeyword: string;
-  allKeywords: string[];
-};
+function dimCategory(key: DimensionKey): ContentAnalysisCategory {
+  if (key === "quality") return "content_quality";
+  return key;
+}
 
-function ctx(input: ContentAnalysisInput): AnalysisContext {
-  const html = input.contentHtml || "";
+function outcomeFromRatio(ratio: number): CheckOutcome {
+  if (ratio >= 0.85) return "passed";
+  if (ratio >= 0.55) return "warning";
+  return "failed";
+}
+
+function severityFromRatio(ratio: number): IssueSeverity {
+  if (ratio < 0.28) return "high";
+  if (ratio < 0.5) return "medium";
+  return "low";
+}
+
+function checkFromSub(s: SubScore): ContentAnalysisCheck {
+  const ratio = s.max ? s.points / s.max : 0;
+  const outcome = outcomeFromRatio(ratio);
   return {
-    input,
-    html,
-    text: plainText(html),
-    primaryKeyword: input.keywords[0]?.trim() ?? "",
-    allKeywords: input.keywords.map((k) => k.trim()).filter(Boolean),
+    id: s.id,
+    label: s.label,
+    outcome,
+    passed: outcome === "passed",
+    message: s.reason,
+    evidence: s.reason,
+    recommendation: s.suggestion,
+    severity: outcome === "passed" ? "low" : severityFromRatio(ratio),
+    category: dimCategory(s.dimension),
+    weight: Math.round(s.max),
+    suggestionLabel: s.suggestion,
   };
 }
 
-function hasFaq(html: string, text: string): boolean {
-  return (
-    /<h[2-4][^>]*>[^<]*\?/i.test(html) ||
-    /\bfaq\b/i.test(html) ||
-    /\b(frequently asked|common questions)\b/i.test(text)
-  );
-}
-
-function linkCounts(html: string) {
-  const links = matchAll(html, /<a\b[^>]*href=["']([^"']+)["'][^>]*>/gi);
-  const internal = links.filter((m) => {
-    const href = (m[1] || "").trim();
-    return href.startsWith("/") || href.startsWith("#");
-  }).length;
-  return { internal, external: links.length - internal, total: links.length };
-}
-
-function imageStats(html: string) {
-  const images = matchAll(html, /<img\b[^>]*>/gi);
-  const withAlt = images.filter((m) => /\balt=["'][^"']+["']/i.test(m[0])).length;
-  return { total: images.length, withAlt };
-}
-
-function headingStats(html: string) {
+function checkFromIssue(issue: CanonicalIssue): ContentAnalysisCheck {
   return {
-    h1: matchAll(html, /<h1\b[^>]*>/gi).length,
-    h2: matchAll(html, /<h2\b[^>]*>/gi).length,
-    h3: matchAll(html, /<h3\b[^>]*>/gi).length,
+    id: issue.id,
+    label: issue.title,
+    outcome: "failed",
+    passed: false,
+    message: issue.evidence,
+    evidence: issue.evidence,
+    recommendation: issue.recommendation,
+    severity: issue.severity,
+    category: dimCategory(issue.dimension),
+    weight: Math.round(Math.abs(issue.impact)),
+    suggestionLabel: issue.recommendation,
   };
 }
 
-function sentenceStats(text: string) {
-  const sentences = text.split(/[.!?]+/).map((s) => s.trim()).filter(Boolean);
-  const words = text.split(/\s+/).filter(Boolean);
-  const avgSentenceLength = sentences.length ? words.length / sentences.length : words.length;
-  const avgWordLength = words.length
-    ? words.reduce((sum, word) => sum + word.replace(/[^a-z0-9]/gi, "").length, 0) / words.length
-    : 0;
-  return { sentences, words, avgSentenceLength, avgWordLength };
+function breakdown(checks: ContentAnalysisCheck[]): CategoryBreakdown {
+  if (!checks.length) return emptyBreakdown();
+  const maximum = checks.reduce((s, c) => s + c.weight, 0);
+  const earned = checks.reduce((s, c) => {
+    if (c.outcome === "passed") return s + c.weight;
+    if (c.outcome === "warning") return s + c.weight * 0.5;
+    return s;
+  }, 0);
+  return {
+    score: Math.round(earned),
+    maximum,
+    percentage: maximum ? Math.round((earned / maximum) * 100) : 0,
+    passed: checks.filter((c) => c.outcome === "passed").length,
+    failed: checks.filter((c) => c.outcome === "failed").length,
+    warnings: checks.filter((c) => c.outcome === "warning").length,
+  };
 }
 
-function buildSeoChecks(c: AnalysisContext): ContentAnalysisCheck[] {
-  const { input, html, text, primaryKeyword } = c;
-  const metaLen = input.metaDescription.trim().length;
-  const headings = headingStats(html);
-  const links = linkCounts(html);
-  const images = imageStats(html);
-  const faq = hasFaq(html, text);
-  const keywordInContent = c.allKeywords.some((kw) => countKeywordOccurrences(text, kw) > 0);
-  const hasFeatured = Boolean(input.featuredImageUrl?.trim()) || images.total > 0;
-
-  const defs: Array<Omit<ContentAnalysisCheck, "category"> & { category: "seo" }> = [
-    {
-      id: "seo-keyword-title",
-      label: "Keyword in title",
-      suggestionLabel: "Add keyword to title",
-      weight: 10,
-      passed: Boolean(primaryKeyword) && keywordInText(input.title, primaryKeyword),
-      message: primaryKeyword
-        ? keywordInText(input.title, primaryKeyword)
-          ? `Primary keyword “${primaryKeyword}” is in the title.`
-          : `Include “${primaryKeyword}” in the title.`
-        : "Add keywords to evaluate title targeting.",
-      category: "seo",
-    },
-    {
-      id: "seo-keyword-content",
-      label: "Keyword in content",
-      suggestionLabel: "Use keywords in body content",
-      weight: 10,
-      passed: keywordInContent,
-      message: keywordInContent
-        ? "Target keywords appear in the body."
-        : "Weave primary keywords naturally into the content.",
-      category: "seo",
-    },
-    {
-      id: "seo-keyword-permalink",
-      label: "Keyword in permalink",
-      suggestionLabel: "Add keyword to permalink",
-      weight: 5,
-      passed: Boolean(primaryKeyword) && keywordInText(input.permalink || "", primaryKeyword),
-      message: primaryKeyword
-        ? keywordInText(input.permalink || "", primaryKeyword)
-          ? "Permalink includes the primary keyword."
-          : "Add the primary keyword to the permalink slug."
-        : "Set keywords to check permalink targeting.",
-      category: "seo",
-    },
-    {
-      id: "seo-meta-exists",
-      label: "Meta description exists",
-      suggestionLabel: "Add meta description",
-      weight: 5,
-      passed: metaLen > 0,
-      message: metaLen > 0 ? "Meta description is present." : "Write a meta description for search snippets.",
-      category: "seo",
-    },
-    {
-      id: "seo-meta-length",
-      label: "Meta description length",
-      suggestionLabel: "Optimize meta description length",
-      weight: 10,
-      passed: metaLen >= 120 && metaLen <= 160,
-      message:
-        metaLen === 0
-          ? "Meta description missing."
-          : metaLen < 120
-            ? `Meta description is short (${metaLen}/160).`
-            : metaLen > 160
-              ? "Meta description exceeds 160 characters."
-              : `Meta length is optimal (${metaLen} chars).`,
-      category: "seo",
-    },
-    {
-      id: "seo-h1",
-      label: "H1 present",
-      suggestionLabel: "Add H1 heading",
-      weight: 5,
-      passed: headings.h1 >= 1 || Boolean(input.title.trim()),
-      message:
-        headings.h1 >= 1
-          ? "H1 heading detected in content."
-          : input.title.trim()
-            ? "Title serves as H1 — add H2/H3 sections in content."
-            : "Add a clear H1 or title.",
-      category: "seo",
-    },
-    {
-      id: "seo-headings",
-      label: "H2/H3 structure",
-      suggestionLabel: "Improve heading structure",
-      weight: 10,
-      passed: headings.h2 >= 2 && headings.h3 >= 1,
-      message:
-        headings.h2 >= 2 && headings.h3 >= 1
-          ? "Strong H2/H3 hierarchy detected."
-          : "Use multiple H2 sections and at least one H3.",
-      category: "seo",
-    },
-    {
-      id: "seo-featured-image",
-      label: "Featured image added",
-      suggestionLabel: "Add featured image",
-      weight: 5,
-      passed: hasFeatured,
-      message: hasFeatured ? "Featured or inline image detected." : "Add a featured image.",
-      category: "seo",
-    },
-    {
-      id: "seo-internal-links",
-      label: "Internal links",
-      suggestionLabel: "Add internal links",
-      weight: 10,
-      passed: links.internal >= 1,
-      message: links.internal >= 1 ? "Internal links present." : "Link to related on-site pages.",
-      category: "seo",
-    },
-    {
-      id: "seo-external-links",
-      label: "External links",
-      suggestionLabel: "Add external links",
-      weight: 10,
-      passed: links.external >= 1,
-      message: links.external >= 1 ? "External references present." : "Add authoritative outbound links.",
-      category: "seo",
-    },
-    {
-      id: "seo-faq",
-      label: "FAQ section",
-      suggestionLabel: "Add FAQ section",
-      weight: 10,
-      passed: faq,
-      message: faq ? "FAQ or question section detected." : "Add an FAQ block with common questions.",
-      category: "seo",
-    },
-    {
-      id: "seo-alt-text",
-      label: "Image alt text",
-      suggestionLabel: "Add image alt text",
-      weight: 10,
-      passed: images.total === 0 || images.withAlt === images.total,
-      message:
-        images.total === 0
-          ? "No inline images — alt text not required yet."
-          : images.withAlt === images.total
-            ? "All images have alt text."
-            : `${images.total - images.withAlt} image(s) missing alt text.`,
-      category: "seo",
-    },
-  ];
-  return defs;
+function viewOf(d: DimensionReport): DimensionView {
+  return {
+    score: Math.round(d.score),
+    max: 100,
+    reason: d.reason,
+    strengths: d.strengths,
+    weaknesses: d.weaknesses,
+  };
 }
-
-function buildGeoChecks(c: AnalysisContext): ContentAnalysisCheck[] {
-  const { html, text } = c;
-  const faq = hasFaq(html, text);
-  const intro = text.slice(0, 400);
-  const hasDirectAnswer =
-    intro.length >= 40 &&
-    (/\b(is|are|means|refers to|helps|enables|allows)\b/i.test(intro) || intro.split(/[.!?]/).length >= 2);
-  const hasSummary = /\b(in summary|to summarize|key points|at a glance|overview)\b/i.test(text);
-  const bulletLists = matchAll(html, /<ul\b[^>]*>/gi).length;
-  const numberedLists = matchAll(html, /<ol\b[^>]*>/gi).length;
-  const hasTable = /<table\b/i.test(html);
-  const hasStats = /\b\d+(\.\d+)?%|\b\d{1,3}(,\d{3})+\b|\b\d+\s*(users|customers|companies|percent)\b/i.test(text);
-  const hasSources =
-    /\b(according to|source:|study|research|report|survey)\b/i.test(text) ||
-    linkCounts(html).external >= 1;
-  const wordCount = text.split(/\s+/).filter(Boolean).length;
-  const topicCoverage = wordCount >= 200 && headingStats(html).h2 >= 2;
-  const hasTakeaways = /\b(key takeaway|takeaways|bottom line|in conclusion|final thoughts)\b/i.test(text);
-
-  return [
-    {
-      id: "geo-direct-answer",
-      label: "Direct answer in introduction",
-      suggestionLabel: "Add direct answer in intro",
-      weight: 10,
-      passed: hasDirectAnswer,
-      message: hasDirectAnswer
-        ? "Introduction answers the topic directly."
-        : "Open with a clear, direct answer in the first paragraph.",
-      category: "geo",
-    },
-    {
-      id: "geo-summary",
-      label: "Summary section",
-      suggestionLabel: "Add summary section",
-      weight: 10,
-      passed: hasSummary,
-      message: hasSummary ? "Summary or overview section found." : "Add an “In summary” or key points section.",
-      category: "geo",
-    },
-    {
-      id: "geo-faq",
-      label: "FAQ section",
-      suggestionLabel: "Add FAQ section",
-      weight: 10,
-      passed: faq,
-      message: faq ? "FAQ section detected." : "Add FAQ content for generative search.",
-      category: "geo",
-    },
-    {
-      id: "geo-bullets",
-      label: "Bullet lists",
-      suggestionLabel: "Add bullet lists",
-      weight: 10,
-      passed: bulletLists >= 1,
-      message: bulletLists >= 1 ? "Bullet lists present." : "Use bullet lists for scannable facts.",
-      category: "geo",
-    },
-    {
-      id: "geo-numbered",
-      label: "Numbered lists",
-      suggestionLabel: "Add numbered lists",
-      weight: 8,
-      passed: numberedLists >= 1,
-      message: numberedLists >= 1 ? "Numbered lists present." : "Add step-by-step numbered lists.",
-      category: "geo",
-    },
-    {
-      id: "geo-table",
-      label: "Comparison table",
-      suggestionLabel: "Add comparison table",
-      weight: 10,
-      passed: hasTable,
-      message: hasTable ? "Table structure detected." : "Add a comparison or data table.",
-      category: "geo",
-    },
-    {
-      id: "geo-statistics",
-      label: "Statistics detected",
-      suggestionLabel: "Add statistics",
-      weight: 10,
-      passed: hasStats,
-      message: hasStats ? "Statistics or metrics found." : "Include data points or percentages.",
-      category: "geo",
-    },
-    {
-      id: "geo-sources",
-      label: "Sources / references",
-      suggestionLabel: "Add sources or references",
-      weight: 10,
-      passed: hasSources,
-      message: hasSources ? "Sources or references cited." : "Cite studies, reports, or authoritative sources.",
-      category: "geo",
-    },
-    {
-      id: "geo-coverage",
-      label: "Topic coverage",
-      suggestionLabel: "Expand topic coverage",
-      weight: 12,
-      passed: topicCoverage,
-      message: topicCoverage
-        ? "Topic is covered in sufficient depth."
-        : "Expand content (~200+ words) with multiple sections.",
-      category: "geo",
-    },
-    {
-      id: "geo-takeaways",
-      label: "Key takeaways section",
-      suggestionLabel: "Add key takeaways",
-      weight: 10,
-      passed: hasTakeaways,
-      message: hasTakeaways ? "Key takeaways section found." : "End with key takeaways or a conclusion.",
-      category: "geo",
-    },
-  ];
-}
-
-function buildLlmChecks(c: AnalysisContext): ContentAnalysisCheck[] {
-  const { input, html, text } = c;
-  const headings = headingStats(html);
-  const entities = new Set((text.match(ENTITY_PATTERN) || []).map((e) => e.trim()));
-  const hasDefinitions = /\b(is defined as|refers to|means that|in other words)\b/i.test(text);
-  const semanticHits = c.allKeywords.filter((kw) => countKeywordOccurrences(text, kw) > 0).length;
-  const trustSignals =
-    /\b(certified|trusted|proven|award|years of experience|expert|leading)\b/i.test(text) ||
-    Boolean(input.author?.trim());
-  const terms = c.allKeywords.map((k) => k.toLowerCase());
-  const termConsistency =
-    terms.length === 0 ||
-    terms.every((term) => !text.toLowerCase().includes(term) || countKeywordOccurrences(text, term) >= 2);
-  const hasExamples = /\b(for example|e\.g\.|such as|instance)\b/i.test(text);
-  const hasCaseStudy = /\b(case study|client story|customer story|success story)\b/i.test(text);
-  const hasCitations =
-    /\b(according to|citation|reference|source:)\b/i.test(text) || linkCounts(html).external >= 2;
-
-  return [
-    {
-      id: "llm-entities",
-      label: "Entity coverage",
-      suggestionLabel: "Add named entities",
-      weight: 10,
-      passed: entities.size >= 3,
-      message: entities.size >= 3 ? `${entities.size} named entities detected.` : "Mention brands, products, or organizations.",
-      category: "llm",
-    },
-    {
-      id: "llm-author",
-      label: "Author present",
-      suggestionLabel: "Add author name",
-      weight: 8,
-      passed: Boolean(input.author?.trim()),
-      message: input.author?.trim() ? "Author is specified." : "Set an author for trust signals.",
-      category: "llm",
-    },
-    {
-      id: "llm-headings",
-      label: "Clear heading hierarchy",
-      suggestionLabel: "Improve heading hierarchy",
-      weight: 10,
-      passed: headings.h2 >= 2 && headings.h3 >= 1,
-      message:
-        headings.h2 >= 2 && headings.h3 >= 1
-          ? "Clear H2/H3 hierarchy for LLM parsing."
-          : "Structure content with H2 and H3 headings.",
-      category: "llm",
-    },
-    {
-      id: "llm-definitions",
-      label: "Definitions included",
-      suggestionLabel: "Add definitions",
-      weight: 10,
-      passed: hasDefinitions,
-      message: hasDefinitions ? "Definitions or explanations included." : "Define key terms clearly.",
-      category: "llm",
-    },
-    {
-      id: "llm-semantic",
-      label: "Semantic keyword coverage",
-      suggestionLabel: "Expand semantic keywords",
-      weight: 10,
-      passed: c.allKeywords.length === 0 ? false : semanticHits >= Math.min(2, c.allKeywords.length),
-      message:
-        semanticHits >= 2
-          ? "Multiple target keywords used in content."
-          : "Use related keywords throughout the article.",
-      category: "llm",
-    },
-    {
-      id: "llm-trust",
-      label: "Trust signals",
-      suggestionLabel: "Add trust signals",
-      weight: 10,
-      passed: trustSignals,
-      message: trustSignals ? "Trust or authority signals present." : "Add credentials, expertise, or social proof.",
-      category: "llm",
-    },
-    {
-      id: "llm-terminology",
-      label: "Consistent terminology",
-      suggestionLabel: "Use consistent terminology",
-      weight: 8,
-      passed: termConsistency && c.allKeywords.length > 0,
-      message:
-        c.allKeywords.length === 0
-          ? "Add keywords to check terminology consistency."
-          : termConsistency
-            ? "Terminology is used consistently."
-            : "Repeat key terms consistently across sections.",
-      category: "llm",
-    },
-    {
-      id: "llm-examples",
-      label: "Examples present",
-      suggestionLabel: "Add examples",
-      weight: 12,
-      passed: hasExamples,
-      message: hasExamples ? "Examples illustrate key points." : "Add concrete examples (e.g., “for example…”).",
-      category: "llm",
-    },
-    {
-      id: "llm-case-study",
-      label: "Case study present",
-      suggestionLabel: "Add case study",
-      weight: 10,
-      passed: hasCaseStudy,
-      message: hasCaseStudy ? "Case study or success story found." : "Include a brief case study or customer story.",
-      category: "llm",
-    },
-    {
-      id: "llm-citations",
-      label: "Citations / references",
-      suggestionLabel: "Add citations",
-      weight: 12,
-      passed: hasCitations,
-      message: hasCitations ? "Citations or references included." : "Add citations to support claims.",
-      category: "llm",
-    },
-  ];
-}
-
-function buildReadabilityChecks(c: AnalysisContext): ContentAnalysisCheck[] {
-  const { text } = c;
-  const { sentences, words, avgSentenceLength, avgWordLength } = sentenceStats(text);
-  const paragraphs =
-    matchAll(c.html, /<p\b[^>]*>[\s\S]*?<\/p>/gi).filter((m) => plainText(m[0]).length > 20).length ||
-  text.split(/\n{2,}/).filter((p) => p.trim().length > 20).length;
-
-  return [
-    {
-      id: "read-sentence-length",
-      label: "Sentence length",
-      suggestionLabel: "Shorten sentences",
-      weight: 25,
-      passed: words.length < 15 || (avgSentenceLength >= 12 && avgSentenceLength <= 22),
-      message:
-        words.length < 15
-          ? "Add more content to assess sentence length."
-          : avgSentenceLength > 22
-            ? `Sentences average ${avgSentenceLength.toFixed(0)} words — shorten.`
-            : avgSentenceLength < 12
-              ? "Sentences are very short."
-              : `Comfortable sentence length (${avgSentenceLength.toFixed(0)} words avg).`,
-      category: "readability",
-    },
-    {
-      id: "read-word-complexity",
-      label: "Word complexity",
-      suggestionLabel: "Simplify vocabulary",
-      weight: 25,
-      passed: words.length < 15 || avgWordLength <= 5.5,
-      message:
-        words.length < 15
-          ? "Add content to assess complexity."
-          : avgWordLength <= 5.5
-            ? "Vocabulary is accessible."
-            : "Simplify long or complex words.",
-      category: "readability",
-    },
-    {
-      id: "read-paragraphs",
-      label: "Paragraph structure",
-      suggestionLabel: "Add paragraph breaks",
-      weight: 25,
-      passed: paragraphs >= 2,
-      message: paragraphs >= 2 ? `${paragraphs} readable paragraphs detected.` : "Split into multiple short paragraphs.",
-      category: "readability",
-    },
-    {
-      id: "read-flow",
-      label: "Reading flow",
-      suggestionLabel: "Expand content depth",
-      weight: 25,
-      passed: sentences.length >= 3 && words.length >= 60,
-      message:
-        sentences.length >= 3 && words.length >= 60
-          ? "Enough depth for smooth reading."
-          : "Add more content for better reading flow.",
-      category: "readability",
-    },
-  ];
-}
-
-const CATEGORY_LABEL: Record<ContentAnalysisCategory, "seo" | "geo" | "llm" | "readability"> = {
-  seo: "seo",
-  geo: "geo",
-  llm: "llm",
-  readability: "readability",
-};
 
 function buildRecommendations(checks: ContentAnalysisCheck[]): ContentAnalysisSuggestion[] {
   return prioritizeChecksForRecommendations(checks)
     .slice(0, 5)
-    .map((c) => {
-      const cat = CATEGORY_LABEL[c.category];
-      const impacts: ContentAnalysisSuggestion["impacts"] = { [cat]: c.weight };
-      return {
-        label: c.suggestionLabel,
-        impacts,
-        totalImpact: c.weight,
-      };
-    });
+    .map((c) => ({
+      label: c.suggestionLabel,
+      impacts: { [c.category]: c.weight },
+      totalImpact: c.weight,
+    }));
 }
 
 export function formatSuggestionImpact(s: ContentAnalysisSuggestion): string {
-  const parts: string[] = [];
-  if (s.impacts.seo) parts.push(`+${s.impacts.seo} SEO`);
-  if (s.impacts.geo) parts.push(`+${s.impacts.geo} GEO`);
-  if (s.impacts.llm) parts.push(`+${s.impacts.llm} LLM`);
-  if (s.impacts.readability) parts.push(`+${s.impacts.readability} Read`);
-  return parts.join(", ");
+  const labels: Record<ContentAnalysisCategory, string> = {
+    seo: "SEO",
+    geo: "GEO",
+    llm: "LLM",
+    content_quality: "Quality",
+    readability: "Read",
+  };
+  return (Object.entries(s.impacts) as Array<[ContentAnalysisCategory, number]>)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `+${v} ${labels[k]}`)
+    .join(", ");
 }
 
-const CATEGORY_SHORT: Record<ContentAnalysisCategory, string> = {
-  seo: "SEO",
-  geo: "GEO",
-  llm: "LLM",
-  readability: "Read",
-};
-
 export function formatCheckImpact(check: ContentAnalysisCheck): string {
-  return `+${check.weight} ${CATEGORY_SHORT[check.category]}`;
+  const labels: Record<ContentAnalysisCategory, string> = {
+    seo: "SEO",
+    geo: "GEO",
+    llm: "LLM",
+    content_quality: "Quality",
+    readability: "Read",
+  };
+  return `+${check.weight} ${labels[check.category]}`;
 }
 
 export type ChecklistSummary = {
@@ -676,43 +329,142 @@ export function summarizeChecks(checks: ContentAnalysisCheck[]): ChecklistSummar
   return { passed, total: checks.length, remaining: checks.length - passed };
 }
 
-export function analyzeBlogContent(input: ContentAnalysisInput): ContentAnalysisResult {
-  if (!hasAnalysisInput(input)) {
-    return EMPTY_CONTENT_ANALYSIS;
-  }
-
-  const c = ctx(input);
-  const seoChecks = buildSeoChecks(c);
-  const geoChecks = buildGeoChecks(c);
-  const llmChecks = buildLlmChecks(c);
-  const readabilityChecks = buildReadabilityChecks(c);
-  const checks = [...seoChecks, ...geoChecks, ...llmChecks, ...readabilityChecks];
-
-  const seoScore = categoryScore(seoChecks);
-  const geoScore = categoryScore(geoChecks);
-  const llmScore = categoryScore(llmChecks);
-  const readabilityScore = categoryScore(readabilityChecks);
-  const overallScore = clampScore((seoScore + geoScore + llmScore + readabilityScore) / 4);
-
-  return {
-    seoScore,
-    geoScore,
-    llmScore,
-    readabilityScore,
-    overallScore,
-    checks,
-    seoChecks,
-    geoChecks,
-    llmChecks,
-    readabilityChecks,
-    suggestions: buildRecommendations(checks),
-    hasInput: true,
-  };
-}
-
 export function scoreColor(score: number): string {
   if (score >= 80) return "#059669";
   if (score >= 60) return "#1a56db";
   if (score >= 40) return "#d97706";
   return "#dc2626";
+}
+
+function scoreBandLabel(score: number): string {
+  if (score <= 39) return "Poor";
+  if (score <= 59) return "Needs major revision";
+  if (score <= 69) return "Needs improvement";
+  if (score <= 79) return "Good";
+  if (score <= 89) return "Strong";
+  if (score <= 94) return "Excellent";
+  return "Exceptional / publication-ready";
+}
+
+export function analyzeBlogContent(input: ContentAnalysisInput): ContentAnalysisResult {
+  if (!hasAnalysisInput(input)) {
+    return EMPTY_CONTENT_ANALYSIS;
+  }
+
+  const features: ArticleFeatures = extractArticle(input);
+  const engine = scoreArticle(features);
+
+  const checks = [
+    ...engine.seo.subs,
+    ...engine.geo.subs,
+    ...engine.llm.subs,
+    ...engine.quality.subs,
+    ...engine.readability.subs,
+  ].map(checkFromSub);
+
+  const issueChecks = engine.issues.map(checkFromIssue);
+  const seoChecks = checks.filter((c) => c.category === "seo");
+  const geoChecks = checks.filter((c) => c.category === "geo");
+  const llmChecks = checks.filter((c) => c.category === "llm");
+  const contentQualityChecks = checks.filter((c) => c.category === "content_quality");
+  const readabilityChecks = checks.filter((c) => c.category === "readability");
+
+  const criticalIssues = issueChecks.filter((c) => c.severity === "critical");
+  const highPriorityIssues = issueChecks.filter((c) => c.severity === "high");
+  const mediumIssues = issueChecks.filter((c) => c.severity === "medium");
+  const lowPriorityIssues = issueChecks.filter((c) => c.severity === "low");
+  const passedChecks = checks.filter((c) => c.passed);
+  const open = checks.filter((c) => !c.passed);
+
+  const suggestions = buildRecommendations(issueChecks.length ? [...issueChecks, ...open] : open);
+  const seo = Math.round(engine.seo.score);
+  const geo = Math.round(engine.geo.score);
+  const llm = Math.round(engine.llm.score);
+  const quality = Math.round(engine.quality.score);
+  const readability = Math.round(engine.readability.score);
+
+  const scoreExplanation = [
+    `${SCORE_PRODUCT_NAME}: ${engine.overallScore}/100 (${scoreBandLabel(engine.overallScore)}).`,
+    `Weighted ${SCORE_PRODUCT_NAME} = SEO×0.25 + GEO×0.20 + LLM×0.20 + Quality×0.20 + Readability×0.15, then unique issue penalties (−${engine.penaltiesApplied.toFixed(0)}) and caps.`,
+    `SEO ${seo}/100: ${engine.seo.reason}`,
+    `GEO ${geo}/100: ${engine.geo.reason}`,
+    `LLM ${llm}/100: ${engine.llm.reason}`,
+    `Quality ${quality}/100: ${engine.quality.reason}`,
+    `Readability ${readability}/100: ${engine.readability.reason}`,
+    engine.capsApplied.length ? `Caps: ${engine.capsApplied.join(" ")}` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  const statusMessage = engine.emptyBody
+    ? features.words === 0
+      ? "Add blog content to begin analysis."
+      : "Body is too short for a full quality evaluation. GEO, LLM, Quality, and Readability stay at 0."
+    : `${engine.publishing.label}. ${scoreBandLabel(engine.overallScore)}.`;
+
+  return {
+    status: "analyzable",
+    statusMessage,
+    scoreName: SCORE_PRODUCT_NAME,
+    seoScore: seo,
+    geoScore: geo,
+    llmScore: llm,
+    contentQualityScore: quality,
+    readabilityScore: readability,
+    searchIntentScore: Math.round((engine.seo.subs.find((s) => s.id === "seo-intent")?.points || 0) / 16 * 100),
+    topicalCoverageScore: Math.round(features.coverageRatio * 100),
+    eeatScore: Math.round(engine.evidence.score * 100),
+    technicalScore: Math.round((engine.seo.subs.find((s) => s.id === "seo-complete")?.points || 0) / 16 * 100),
+    overallScore: engine.overallScore,
+    primaryIntent: engine.intent,
+    checks,
+    seoChecks,
+    geoChecks,
+    llmChecks,
+    contentQualityChecks,
+    readabilityChecks,
+    searchIntentChecks: seoChecks.filter((c) => c.id === "seo-intent"),
+    topicalCoverageChecks: contentQualityChecks.filter((c) => c.id === "quality-depth"),
+    eeatChecks: llmChecks.filter((c) => c.id === "llm-evidence"),
+    technicalChecks: seoChecks.filter((c) => c.id === "seo-complete" || c.id === "seo-url" || c.id === "seo-media"),
+    categories: {
+      seo: { ...breakdown(seoChecks), percentage: seo },
+      geo: { ...breakdown(geoChecks), percentage: geo },
+      llm: { ...breakdown(llmChecks), percentage: llm },
+      content_quality: { ...breakdown(contentQualityChecks), percentage: quality },
+      readability: { ...breakdown(readabilityChecks), percentage: readability },
+    },
+    dimensions: {
+      seo: viewOf(engine.seo),
+      geo: viewOf(engine.geo),
+      llm: viewOf(engine.llm),
+      quality: viewOf(engine.quality),
+      readability: viewOf(engine.readability),
+    },
+    criticalIssues,
+    highPriorityIssues,
+    mediumIssues,
+    lowPriorityIssues,
+    passedChecks,
+    recommendedActions: suggestions.map((s) => s.label),
+    scoreExplanation,
+    internalLinksFound: features.links.filter((l) => l.internal).length,
+    externalLinksFound: features.links.filter((l) => !l.internal).length,
+    suggestions,
+    hasInput: true,
+    publishing: engine.publishing,
+    categoryRelevance: { score: Math.round(engine.categoryRelevance), category: features.categoryName || "Uncategorized" },
+    searchIntent: {
+      score: Math.round((engine.seo.subs.find((s) => s.id === "seo-intent")?.points || 0) / 16 * 100),
+      intent: engine.intent,
+    },
+    confidence: engine.confidence,
+    capsApplied: engine.capsApplied,
+    severityCounts: {
+      critical: engine.issues.filter((i) => i.severity === "critical").length,
+      high: engine.issues.filter((i) => i.severity === "high").length,
+      medium: engine.issues.filter((i) => i.severity === "medium").length,
+      low: engine.issues.filter((i) => i.severity === "low").length,
+    },
+  };
 }

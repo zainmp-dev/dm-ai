@@ -12,8 +12,8 @@ export const GLOBAL_AI_FALLBACK_MODEL_CHAIN = [
   "google/gemini-2.5-flash",
   "deepseek/deepseek-v4-flash",
   "openai/gpt-5-mini",
-  // OpenRouter selects a free-variant model; completes runs when paid credits are empty.
-  "openrouter/free",
+  // Free OpenRouter chat-completions model (not openrouter/free — invalid chat payload).
+  "mistralai/mistral-small-24b-instruct-2501:free",
 ] as const;
 
 /** Deduped preference list for multi-model retries */

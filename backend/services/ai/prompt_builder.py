@@ -18,6 +18,10 @@ def build_system_prompt(task_type: str) -> str:
         return "You are a social media strategist. Write concise, platform-aware captions with high clarity."
     if t == "carousel":
         return "You create social carousel content. Return strict JSON only."
+    if t == "blog":
+        from services.blog_prompts import blog_system_prompt
+
+        return blog_system_prompt()
     return "You are a helpful assistant. Return clear, accurate responses without filler."
 
 

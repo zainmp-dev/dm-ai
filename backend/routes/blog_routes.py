@@ -261,6 +261,8 @@ class BlogGenerateInput(BaseModel):
     title: str | None = None
     excludePostId: str | None = None
     author: str | None = None
+    categoryName: str | None = None
+    category: str | None = None
 
 
 class FailedCheckInput(BaseModel):

@@ -50,6 +50,7 @@ function toAnalysisInput(
     permalink,
     author,
     featuredImageUrl: image,
+    categoryName: content.categoryName,
   };
 }
 
@@ -130,7 +131,6 @@ function shortenSentencesInHtml(html: string): string {
 function simplifyComplexWords(html: string): string {
   const replacements: Array<[RegExp, string]> = [
     [/\butilize\b/gi, "use"],
-    [/\bimplementation\b/gi, "setup"],
     [/\bcomprehensive\b/gi, "full"],
     [/\boptimization\b/gi, "improvement"],
     [/\bstrategic\b/gi, "planned"],
@@ -143,16 +143,9 @@ function simplifyComplexWords(html: string): string {
     [/\bdemonstrates\b/gi, "shows"],
     [/\bopportunities\b/gi, "chances"],
     [/\bunderstanding\b/gi, "grasp"],
-    [/\bprofessional\b/gi, "skilled"],
     [/\bbusinesses\b/gi, "companies"],
-    [/\bstrategies\b/gi, "plans"],
     [/\beffectiveness\b/gi, "success"],
-    [/\bengagement\b/gi, "involvement"],
     [/\binitiatives\b/gi, "plans"],
-    [/\bcapabilities\b/gi, "skills"],
-    [/\bperformance\b/gi, "results"],
-    [/\borganizations\b/gi, "groups"],
-    [/\borganisations\b/gi, "groups"],
     [/\bapproximately\b/gi, "about"],
     [/\bconsequently\b/gi, "so"],
     [/\bfurthermore\b/gi, "also"],
@@ -213,8 +206,8 @@ function ensureTakeaways(html: string): string {
 function ensureExternalLink(html: string): string {
   if (/href=["']https?:\/\//i.test(html)) return html;
   const block =
-    '<p>According to <a href="https://hbr.org" rel="noopener noreferrer">Harvard Business Review</a>, ' +
-    "teams that use clear practices see stronger outcomes.</p>";
+    '<p>According to the <a href="https://www.epfindia.gov.in/" rel="noopener noreferrer">Employees\' Provident Fund Organisation</a>, ' +
+    "employers should verify current PF contribution rules before processing payroll.</p>";
   return insertAfterFirstParagraph(html, block);
 }
 
@@ -222,7 +215,7 @@ function ensureTrustSignals(html: string): string {
   const text = plainText(html);
   if (/\b(certified|trusted|proven|award|years of experience|expert|leading)\b/i.test(text)) return html;
   const block =
-    "<p>Our expert team has years of experience helping leaders apply trusted, proven methods.</p>";
+    "<p>HR managers and payroll experts should confirm current statutory rules with the relevant authority before changing policy.</p>";
   return insertAfterFirstParagraph(html, block);
 }
 
@@ -253,10 +246,13 @@ function ensureSummarySection(html: string, title: string): string {
 
 function ensureCaseStudy(html: string): string {
   const text = plainText(html);
-  if (/\b(case study|client story|customer story|success story)\b/i.test(text)) return html;
+  if (/\b(case study|client story|customer story|success story|illustrative scenario|worked example)\b/i.test(text)) {
+    return html;
+  }
   const block =
-    "<h2>Customer Success Story</h2><p>In a recent customer story, one team applied these steps " +
-    "and saw clear gains within one quarter.</p>";
+    "<h2>Illustrative Scenario</h2><p>In a worked example, an HR team maps the current process, " +
+    "removes one manual step, then reviews the result after a full payroll cycle. " +
+    "This is an illustrative scenario, not a customer case study.</p>";
   return insertBeforeFaq(html, block);
 }
 
@@ -303,7 +299,9 @@ function ensureTable(html: string): string {
 function ensureStatistics(html: string): string {
   const text = plainText(html);
   if (/\b\d+(\.\d+)?%|\b\d+\s*(users|customers|companies|percent)\b/i.test(text)) return html;
-  const block = "<p>A recent survey reports that 72% of teams see gains when they use simple, repeatable steps.</p>";
+  const block =
+    "<p>For example, employee Provident Fund contribution is commonly calculated at 12% of basic pay " +
+    "(plus dearness allowance where applicable). Confirm the current rate with EPFO before you run payroll.</p>";
   return insertAfterFirstParagraph(html, block);
 }
 
@@ -323,7 +321,7 @@ function ensureEntities(html: string): string {
   const entityCount = (text.match(/\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b/g) || []).length;
   if (entityCount >= 3) return html;
   const block =
-    "<p>Leaders at Google, Microsoft, and Harvard Business Review often cite these proven methods.</p>";
+    "<p>OfficeKit HR, EPFO, and ESI are named entities HR and payroll teams in India work with often.</p>";
   return insertAfterFirstParagraph(html, block);
 }
 
@@ -332,7 +330,7 @@ function ensureSecondExternalLink(html: string): string {
   if (external >= 2) return html;
   let next = external === 0 ? ensureExternalLink(html) : html;
   const block =
-    '<p>See also <a href="https://www.mckinsey.com" rel="noopener noreferrer">McKinsey research</a> on growth.</p>';
+    '<p>See also the <a href="https://www.esic.gov.in/" rel="noopener noreferrer">Employees\' State Insurance Corporation</a> for current ESI guidance.</p>';
   return insertBeforeFaq(next, block);
 }
 

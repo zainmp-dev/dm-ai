@@ -12,6 +12,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
+    "calibrate:content-analysis": "npx tsx scripts/calibrate-content-analysis.ts",
     "backend:dev": "node scripts/venv-exec.mjs -m uvicorn main:app --app-dir backend --host 127.0.0.1 --reload --reload-dir backend --reload-delay 2 --port 8011",
     "backend:dev:stable": "node scripts/venv-exec.mjs -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8011 --http h11"
   },

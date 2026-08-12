@@ -4,13 +4,23 @@ import { AlertTriangle, Check } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
-import { summarizeChecks, type ChecklistSummary, type ContentAnalysisCheck } from "./blog-content-analysis";
-import { ISSUE_SECTION_LABELS, type PrioritizedIssueGroups } from "./blog-content-analysis-presentation";
+import {
+  summarizeChecks,
+  type ChecklistSummary,
+  type ContentAnalysisCheck,
+  type IssueSeverity,
+} from "./blog-content-analysis";
+import {
+  ISSUE_SECTION_LABELS,
+  SEVERITY_LABELS,
+  type PrioritizedIssueGroups,
+} from "./blog-content-analysis-presentation";
 
 type AnalysisSummaryProps = {
   seo: ContentAnalysisCheck[];
   geo: ContentAnalysisCheck[];
   llm: ContentAnalysisCheck[];
+  contentQuality: ContentAnalysisCheck[];
   readability: ContentAnalysisCheck[];
   className?: string;
 };
@@ -26,8 +36,15 @@ function CategoryPill({ label, summary }: { label: string; summary: ChecklistSum
   );
 }
 
-export function AnalysisSummary({ seo, geo, llm, readability, className }: AnalysisSummaryProps) {
-  const all = [...seo, ...geo, ...llm, ...readability];
+export function AnalysisSummary({
+  seo,
+  geo,
+  llm,
+  contentQuality,
+  readability,
+  className,
+}: AnalysisSummaryProps) {
+  const all = [...seo, ...geo, ...llm, ...contentQuality, ...readability];
   const overall = summarizeChecks(all);
 
   return (
@@ -39,19 +56,60 @@ export function AnalysisSummary({ seo, geo, llm, readability, className }: Analy
     >
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
         <span className="font-medium text-foreground">
-          Completed: <span className="tabular-nums text-emerald-600 dark:text-emerald-400">{overall.passed}</span>
+          Criteria met: <span className="tabular-nums text-emerald-600 dark:text-emerald-400">{overall.passed}</span>
         </span>
         <span className="font-medium text-foreground">
-          Remaining:{" "}
-          <span className="tabular-nums text-amber-700 dark:text-amber-300">{overall.remaining}</span>
+          Gaps: <span className="tabular-nums text-amber-700 dark:text-amber-300">{overall.remaining}</span>
         </span>
       </div>
       <div className="mt-2 flex flex-wrap gap-1.5">
         <CategoryPill label="SEO" summary={summarizeChecks(seo)} />
         <CategoryPill label="GEO" summary={summarizeChecks(geo)} />
         <CategoryPill label="LLM" summary={summarizeChecks(llm)} />
+        <CategoryPill label="Quality" summary={summarizeChecks(contentQuality)} />
         <CategoryPill label="Read" summary={summarizeChecks(readability)} />
       </div>
+    </div>
+  );
+}
+
+const COUNT_STYLE: Record<IssueSeverity, string> = {
+  critical: "bg-rose-100 text-rose-800 dark:bg-rose-950/50 dark:text-rose-300",
+  high: "bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-300",
+  medium: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  low: "bg-zinc-50 text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400",
+};
+
+export function SeverityCounts({
+  critical,
+  high,
+  medium,
+  low,
+}: {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+}) {
+  const items: Array<{ key: IssueSeverity; count: number }> = [
+    { key: "critical", count: critical },
+    { key: "high", count: high },
+    { key: "medium", count: medium },
+    { key: "low", count: low },
+  ];
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {items.map((item) => (
+        <span
+          key={item.key}
+          className={cn(
+            "inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+            COUNT_STYLE[item.key],
+          )}
+        >
+          {SEVERITY_LABELS[item.key]}: <span className="tabular-nums">{item.count}</span>
+        </span>
+      ))}
     </div>
   );
 }
@@ -61,13 +119,30 @@ type AnalysisIssuesListProps = {
   className?: string;
 };
 
+const SEVERITY_STYLE: Record<IssueSeverity, string> = {
+  critical: "bg-rose-100 text-rose-800 dark:bg-rose-950/50 dark:text-rose-300",
+  high: "bg-amber-100 text-amber-800 dark:bg-amber-950/50 dark:text-amber-300",
+  medium: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  low: "bg-zinc-50 text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400",
+};
+
 function IssueRow({ check }: { check: ContentAnalysisCheck }) {
   return (
     <li className="flex items-start gap-2 rounded-lg border border-amber-100/80 bg-amber-50/40 px-2.5 py-2 text-[11px] dark:border-amber-900/30 dark:bg-amber-950/15">
       <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" strokeWidth={2.5} />
       <div className="min-w-0 flex-1">
-        <span className="font-medium text-foreground">{check.label}</span>
-        <p className="mt-0.5 leading-snug text-muted-foreground">{check.message}</p>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="font-medium text-foreground">{check.label}</span>
+          <span className={cn("rounded px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide", SEVERITY_STYLE[check.severity])}>
+            {SEVERITY_LABELS[check.severity]}
+          </span>
+        </div>
+        <p className="mt-0.5 leading-snug text-muted-foreground">{check.evidence || check.message}</p>
+        {check.recommendation ? (
+          <p className="mt-1 leading-snug text-zinc-600 dark:text-zinc-400">
+            <span className="font-medium text-foreground">Fix:</span> {check.recommendation}
+          </p>
+        ) : null}
       </div>
     </li>
   );
@@ -115,6 +190,44 @@ export function PrioritizedIssuesList({ groups, className }: AnalysisIssuesListP
           +{groups.totalRemaining - visibleCount} more lower-priority items not shown
         </p>
       ) : null}
+    </div>
+  );
+}
+
+export function SeverityIssuesList({
+  critical,
+  high,
+  medium,
+  low,
+  className,
+}: {
+  critical: ContentAnalysisCheck[];
+  high: ContentAnalysisCheck[];
+  medium: ContentAnalysisCheck[];
+  low: ContentAnalysisCheck[];
+  className?: string;
+}) {
+  const total = critical.length + high.length + medium.length + low.length;
+  if (total === 0) {
+    return (
+      <div
+        className={cn(
+          "flex items-center gap-2 rounded-lg border border-emerald-100 bg-emerald-50/60 px-3 py-2.5 text-xs text-emerald-800 dark:border-emerald-900/40 dark:bg-emerald-950/25 dark:text-emerald-200",
+          className,
+        )}
+      >
+        <Check className="h-4 w-4 shrink-0" strokeWidth={2.5} />
+        <span>No open issues — strong publish candidate on scored criteria.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className={cn("space-y-3", className)}>
+      <IssueSection title="Critical issues" checks={critical.slice(0, 4)} />
+      <IssueSection title="High priority" checks={high.slice(0, 5)} />
+      <IssueSection title="Medium priority" checks={medium.slice(0, 4)} />
+      <IssueSection title="Low priority" checks={low.slice(0, 3)} />
     </div>
   );
 }

@@ -22,6 +22,16 @@ from config import settings
 from database import SessionLocal
 from services.ai.ai_service import AIServiceError, ai_service
 from services.ai.prompt_builder import with_json_contract
+from services.blog_prompts import (
+    BLOG_TASK_TYPE,
+    body_requirements,
+    brand_name,
+    is_generic_topic,
+    metadata_requirements,
+    official_sources_block,
+    optimize_requirements,
+    product_destinations_block,
+)
 from services.media.cloudinary_service import (
     BLOG_IMAGE_MAX_BYTES,
     is_valid_featured_image_url,
@@ -52,11 +62,19 @@ BLOG_SUMMARY_COLUMNS = """
 DEFAULT_PAGE_SIZE = 10
 MAX_PAGE_SIZE = 100
 
-# Blog AI budgets — keep completion caps aligned with ~1500–2000 word articles.
+# Blog AI budgets — standard educational guides are 1200–2000 words.
 BLOG_DEFAULT_WORD_COUNT = 1500
 BLOG_MAX_WORD_COUNT = 2000
 BLOG_METADATA_MAX_TOKENS = 1024
-BLOG_BODY_MAX_TOKENS = 3000
+BLOG_BODY_MAX_TOKENS = 4096
+BLOG_BODY_MIN_TOKENS = 1024
+
+
+def _blog_body_max_tokens() -> int:
+    configured = int(getattr(settings, "blog_generation_max_tokens", BLOG_BODY_MAX_TOKENS) or BLOG_BODY_MAX_TOKENS)
+    return max(BLOG_BODY_MIN_TOKENS, min(configured, 8192))
+
+
 BLOG_AVOID_TITLE_LIMIT = 5
 BLOG_INTERNAL_LINK_CATALOG_LIMIT = 5
 
@@ -713,7 +731,10 @@ def resolve_featured_image_url(
 
 def _build_style_context(posts: list[dict[str, Any]]) -> str:
     if not posts:
-        return "No published posts yet — use a clear, professional blog style."
+        return (
+            "No published posts yet — write a clear, practical OfficeKit HR educational guide. "
+            "Help the reader first; mention the product only where it naturally solves the problem."
+        )
     titles = [str(p.get("title") or "").strip() for p in posts if str(p.get("title") or "").strip()]
     categories = [str(p.get("category_name") or "").strip() for p in posts if str(p.get("category_name") or "").strip()]
     top_categories = list(dict.fromkeys(categories))[:5]
@@ -817,17 +838,6 @@ def _extract_json_string_field(raw: str, field: str) -> str:
     return ""
 
 
-def _blog_body_requirements(*, internal_links_requirement: str) -> str:
-    return (
-        "Article HTML requirements:\n"
-        "- Semantic HTML only (p, h2, h3, ul, ol, li, table, strong, em, a). No markdown.\n"
-        f"{internal_links_requirement}"
-        "- Direct answer in the first paragraph; 3–4 H2 sections with H3s; lists, one table, "
-        "stats/examples, key takeaways, FAQ (h2 'Frequently Asked Questions').\n"
-        "- No author byline.\n"
-    )
-
-
 def _generate_blog_body_html(
     *,
     generated_title: str,
@@ -840,19 +850,25 @@ def _generate_blog_body_html(
     internal_links_requirement: str,
     preferred_model: str | None,
     target_words: int,
+    selected_category: str | None = None,
 ) -> tuple[str, str]:
+    brand = brand_name(website_name)
+    primary = keywords[0] if keywords else "(none)"
     keyword_text = ", ".join(keywords[:8]) if keywords else "(none)"
     prompt = with_json_contract(
         (
-            f"You are an expert content writer for {website_name or 'our company'}.\n"
             f"{style_context}\n"
-            f"{internal_links_block}\n\n"
+            f"{internal_links_block}\n"
+            f"{product_destinations_block(brand)}\n"
+            f"{official_sources_block()}\n\n"
             f"{user_prompt}\n\n"
             f'Article title: "{generated_title}"\n'
+            + (f'Selected category: "{selected_category.strip()}". Stay in this category.\n' if (selected_category or "").strip() else "")
+            + f"Primary keyword: {primary}\n"
+            f"Secondary keywords: {keyword_text}\n"
             f"Meta description: {meta_description}\n"
-            f"Keywords: {keyword_text}\n"
             f"Target length: ~{target_words} words.\n\n"
-            f"{_blog_body_requirements(internal_links_requirement=internal_links_requirement)}\n"
+            f"{body_requirements(brand=brand, internal_links_requirement=internal_links_requirement, target_words=target_words)}\n"
             "Return ONLY contentHtml — the full article body as one HTML string.\n"
         ),
         schema_hint={
@@ -864,11 +880,12 @@ def _generate_blog_body_html(
     result = ai_service.retry_request(
         prompt=prompt,
         preferred_model=preferred_model,
-        task_type="carousel",
+        task_type=BLOG_TASK_TYPE,
         response_format={"type": "json_object"},
         prefer_groq_first=True,
         prefer_gemini=True,
-        max_tokens=BLOG_BODY_MAX_TOKENS,
+        max_tokens=_blog_body_max_tokens(),
+        context={"category": selected_category or "", "title": generated_title, "mode": "full-blog"},
     )
     try:
         payload = _parse_ai_json_payload(result.text, context="Blog body generation")
@@ -896,6 +913,7 @@ def generate_blog_content(
     title: str | None = None,
     exclude_post_id: str | None = None,
     author_name: str = "",
+    selected_category: str | None = None,
 ) -> dict[str, Any]:
     style_context = _build_style_context(existing_posts)
     posts_for_links = linkable_posts if linkable_posts is not None else existing_posts
@@ -905,23 +923,42 @@ def generate_blog_content(
         if str(p.get("title") or "").strip() and (not exclude_post_id or str(p.get("id")) != exclude_post_id)
     ]
 
+    brand = brand_name(website_name)
+    default_industry = "HRMS / Human Resource Management"
+    default_audience = "HR managers, business owners, and payroll professionals"
+    default_tone = "Clear, practical, expert, and non-promotional"
+
     if mode == "title":
         if not (title or "").strip():
             raise AIServiceError("Title is required for title-based generation")
         user_prompt = (
-            f"Generate a complete blog post based on this title: \"{title.strip()}\".\n"
-            "Expand it into a full, publish-ready article."
+            f'Generate a complete, publish-ready blog post based on this title: "{title.strip()}".\n'
+            "Identify the primary audience, search intent, and topic cluster before writing.\n"
+            "Satisfy the dominant search intent. Help the reader before mentioning the product."
         )
+        if (selected_category or "").strip():
+            user_prompt += f'\nSelected category: "{selected_category.strip()}". Write for this category only.'
     else:
-        if not (topic or "").strip():
+        topic_text = (topic or "").strip()
+        if not topic_text:
             raise AIServiceError("Topic is required")
-        user_prompt = (
-            f"Topic: {topic.strip()}\n"
-            f"Industry: {(industry or 'Business').strip()}\n"
-            f"Audience: {(audience or 'Professionals and decision-makers').strip()}\n"
-            f"Tone: {(tone or 'Professional').strip()}\n"
-            f"Target length: ~{max(400, min(word_count, BLOG_MAX_WORD_COUNT))} words."
+        if is_generic_topic(topic_text):
+            user_prompt = (
+                "No specific topic was provided. Select ONE high-value, search-led HR/HRMS topic "
+                f"that helps {brand} build topical authority. Prefer Indian payroll, HRMS, attendance, "
+                "leave, recruitment, or compliance queries with clear search intent and evergreen value.\n"
+                "Do not choose a random or generic 'HR tips' topic.\n"
+            )
+        else:
+            user_prompt = f"Topic: {topic_text}\n"
+        user_prompt += (
+            f"Industry: {(industry or default_industry).strip()}\n"
+            f"Primary audience: {(audience or default_audience).strip()}\n"
+            f"Tone: {(tone or default_tone).strip()}\n"
+            f"Target length: ~{max(800, min(word_count, BLOG_MAX_WORD_COUNT))} words."
         )
+        if (selected_category or "").strip():
+            user_prompt += f'\nSelected category: "{selected_category.strip()}". Write for this category only. Do not switch to another category.'
 
     avoid_block = ""
     if avoid_titles:
@@ -935,23 +972,17 @@ def generate_blog_content(
             "- Include at least 2 natural in-body internal links to related posts using "
             '<a href="/blog/posts/{post-id}">descriptive anchor text</a> with the exact paths from the catalog.\n'
         )
-    target_words = max(400, min(word_count, BLOG_MAX_WORD_COUNT))
+    target_words = max(800, min(word_count, BLOG_MAX_WORD_COUNT))
 
     prompt = with_json_contract(
         (
-            f"You are an expert content writer for {website_name or 'our company'}.\n"
-            "Plan a professional, SEO-friendly blog article.\n"
             f"{style_context}\n"
             f"{internal_links_block}\n"
-            f"Available categories (pick exactly one name from this list): {category_list}\n"
+            f"{product_destinations_block(brand)}\n"
+            f"{official_sources_block()}\n"
             f"{avoid_block}\n\n"
             f"{user_prompt}\n\n"
-            "Return article metadata only — do NOT include the article body.\n"
-            "Requirements:\n"
-            "- Primary keyword in title and metaDescription (120-160 chars).\n"
-            "- keywords: 5-8 relevant phrases.\n"
-            "- Do not include a byline, author name, or writer attribution.\n"
-            "- imagePrompt: one sentence for a professional featured banner image (no text/logos).\n"
+            f"{metadata_requirements(brand=brand, category_list=category_list, required_category=selected_category or '')}\n"
         ),
         schema_hint={
             "type": "object",
@@ -969,11 +1000,12 @@ def generate_blog_content(
     result = ai_service.retry_request(
         prompt=prompt,
         preferred_model=preferred_model,
-        task_type="carousel",
+        task_type=BLOG_TASK_TYPE,
         response_format={"type": "json_object"},
         prefer_groq_first=True,
         prefer_gemini=True,
         max_tokens=BLOG_METADATA_MAX_TOKENS,
+        context={"category": selected_category or "", "title": (title or "").strip(), "mode": mode},
     )
 
     try:
@@ -1013,6 +1045,7 @@ def generate_blog_content(
             internal_links_requirement=internal_links_requirement,
             preferred_model=preferred_model,
             target_words=target_words,
+            selected_category=selected_category,
         )
         if body_model:
             model_used = body_model
@@ -1022,8 +1055,11 @@ def generate_blog_content(
 
     content_html = _ensure_internal_links(content_html, posts_for_links, exclude_post_id)
 
-    category_name = str(payload.get("category") or "").strip()
-    if categories and category_name and category_name not in categories:
+    required_category = (selected_category or "").strip()
+    category_name = required_category or str(payload.get("category") or "").strip()
+    if required_category:
+        category_name = required_category
+    elif categories and category_name and category_name not in categories:
         lowered = category_name.lower()
         match = next((c for c in categories if c.lower() == lowered), None)
         category_name = match or categories[0]
@@ -1103,7 +1139,7 @@ def run_blog_generation(
     except Exception:
         pass
 
-    author_name = str(getattr(body, "author", None) or user.get("name") or "Admin").strip()
+    author_name = str(getattr(body, "author", None) or "").strip()
 
     try:
         result = generate_blog_content(
@@ -1121,10 +1157,14 @@ def run_blog_generation(
             title=body.title,
             exclude_post_id=body.excludePostId,
             author_name=author_name,
+            selected_category=str(getattr(body, "categoryName", None) or getattr(body, "category", None) or "").strip() or None,
         )
     except AIServiceError as exc:
-        status = exc.status_code if exc.status_code in (400, 401, 402, 408, 429) else 502
-        raise HTTPException(status_code=status, detail=str(exc)) from exc
+        detail: Any = exc.public_payload if exc.public_payload else str(exc)
+        status = exc.status_code if exc.status_code in (400, 401, 402, 408, 429, 503) else 503
+        if exc.public_payload:
+            status = 503
+        raise HTTPException(status_code=status, detail=detail) from exc
 
     return {"success": True, "data": result}
 
@@ -1230,7 +1270,10 @@ def _format_failed_checks_for_prompt(failed_checks: list[dict[str, Any]], focus:
         lines.append(f"- [{category}] {label}{detail}")
     focus_note = ""
     if focus == "content":
-        focus_note = "Fix ALL content quality gaps first (FAQ, summary, takeaways, examples, stats, sources, tables, lists, definitions).\n"
+        focus_note = (
+            "Fix ALL content quality gaps first (FAQ, summary, takeaways, worked examples, "
+            "official sources, tables, lists, definitions). Do not invent statistics or case studies.\n"
+        )
     elif focus == "ai_visibility":
         focus_note = "Improve entity coverage, semantic keywords, trust signals, and citations.\n"
     elif focus == "seo":
@@ -1258,12 +1301,13 @@ def optimize_blog_content(
     internal_links_block = _build_internal_links_catalog(linkable_posts, exclude_post_id)
     issues_block = _format_failed_checks_for_prompt(failed_checks, focus=focus)
 
+    brand = brand_name(None)
     prompt = with_json_contract(
         (
-            "You are an expert blog editor. Fix the listed issues and reach a 100/100 content quality score.\n"
-            "Return ONLY new HTML blocks in additionsHtml — do NOT return the full article body.\n"
-            "We merge additionsHtml into the existing article before the FAQ (or at the end).\n"
-            f"{internal_links_block}\n\n"
+            f"{optimize_requirements(brand=brand)}\n"
+            f"{internal_links_block}\n"
+            f"{product_destinations_block(brand)}\n"
+            f"{official_sources_block()}\n\n"
             f"Primary keyword: {keyword or '(none)'}\n"
             f"Permalink slug: {(permalink or '').strip() or '(not set)'}\n"
             f"Author: {(author or '').strip() or '(not set)'}\n"
@@ -1272,12 +1316,8 @@ def optimize_blog_content(
             f"Current keywords: {', '.join(keywords)}\n\n"
             "Issues to fix:\n"
             f"{issues_block}\n\n"
-            "Requirements for additionsHtml:\n"
-            "- Add only missing sections: summary, takeaways, FAQ, lists, table, stats, examples, definitions, case study.\n"
-            "- Use semantic HTML only (p, h2, h3, ul, ol, li, table, strong, em, a, img). No markdown.\n"
-            "- Keep sentences short and words simple.\n"
-            "- Do not add or change author names or bylines.\n\n"
-            "Also return an improved title, metaDescription (120-160 chars), keywords, and permalink if needed.\n\n"
+            "Also return an improved title, metaDescription (120-160 chars), keywords, and permalink if needed.\n"
+            "Do not keyword-stuff the title. Do not invent facts to chase a score.\n\n"
             "Existing article HTML (for context — do not repeat in additionsHtml):\n"
             f"{content_html.strip()[:12000]}\n"
         ),
@@ -1297,7 +1337,7 @@ def optimize_blog_content(
     result = ai_service.retry_request(
         prompt=prompt,
         preferred_model=preferred_model,
-        task_type="carousel",
+        task_type=BLOG_TASK_TYPE,
         response_format={"type": "json_object"},
         prefer_groq_first=True,
         prefer_gemini=True,

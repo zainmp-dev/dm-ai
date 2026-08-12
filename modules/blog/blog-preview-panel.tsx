@@ -61,7 +61,7 @@ export function BlogEditorPreviewCard({ snapshot, className }: BlogEditorPreview
     160,
   );
   const displayTitle = snapshot.title.trim() || "Untitled post";
-  const displayAuthor = snapshot.author.trim() || "FlowPilot";
+  const displayAuthor = snapshot.author.trim() || "Author";
   const displayDate = formatBlogDate(snapshot.savedAt);
 
   return (
@@ -160,7 +160,7 @@ export function BlogEditorPreviewMenu({ buildSnapshot, canPreview }: BlogEditorP
         title={
           canPreview
             ? "Preview your blog post"
-            : "Fill title, author, category, and content to preview"
+            : "Add a title and content to preview"
         }
         className="inline-flex items-center gap-2 rounded-2xl border border-border px-4 py-2 text-sm font-semibold text-foreground shadow-sm transition hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50"
       >
@@ -232,7 +232,7 @@ export function BlogEditorPreviewPage() {
     day: "numeric",
   });
   const displayTitle = snapshot.title.trim() || "Untitled post";
-  const displayAuthor = snapshot.author.trim() || "FlowPilot";
+  const displayAuthor = snapshot.author.trim() || "Author";
   const plainContent = snapshot.content.replace(/<[^>]+>/g, "").trim();
 
   return (

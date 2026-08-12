@@ -10,20 +10,19 @@ import { cn } from "@/lib/utils";
 import {
   AnalysisSummary,
   FixCelebrationToast,
-  PrioritizedIssuesList,
+  SeverityCounts,
+  SeverityIssuesList,
   type FixCelebration,
 } from "./blog-content-analysis-checklist";
 import {
   analyzeBlogContent,
   formatCheckImpact,
   formatSuggestionImpact,
-  hasAnalysisInput,
   scoreColor,
   type ContentAnalysisCheck,
   type ContentAnalysisInput,
   type ContentAnalysisResult,
 } from "./blog-content-analysis";
-import { prioritizeRemainingIssues } from "./blog-content-analysis-presentation";
 
 const DEBOUNCE_MS = 750;
 const CELEBRATION_MS = 3200;
@@ -35,8 +34,9 @@ type BlogContentAnalysisPanelProps = ContentAnalysisInput & {
 const SCORE_LABELS = [
   { key: "seoScore" as const, trendKey: "seo" as const, label: "SEO", hint: "Search optimization" },
   { key: "geoScore" as const, trendKey: "geo" as const, label: "GEO", hint: "Generative engine optimization" },
-  { key: "llmScore" as const, trendKey: "llm" as const, label: "LLM", hint: "AI discoverability" },
-  { key: "readabilityScore" as const, trendKey: "readability" as const, label: "Readability", hint: "Reading ease" },
+  { key: "llmScore" as const, trendKey: "llm" as const, label: "LLM", hint: "AI citability" },
+  { key: "contentQualityScore" as const, trendKey: "contentQuality" as const, label: "Quality", hint: "Content quality" },
+  { key: "readabilityScore" as const, trendKey: "readability" as const, label: "Readability", hint: "Reading ease & UX" },
 ];
 
 function useDebouncedAnalysis(input: ContentAnalysisInput): ContentAnalysisResult {
@@ -207,13 +207,16 @@ function useScoreTrends(analysis: ContentAnalysisResult, active: boolean) {
   const previousRef = useRef<ContentAnalysisResult | null>(null);
 
   const trends = useMemo(() => {
-    if (!active) return { seo: 0, geo: 0, llm: 0, readability: 0, overall: 0 };
+    if (!active) return { seo: 0, geo: 0, llm: 0, contentQuality: 0, readability: 0, overall: 0 };
     const prev = previousRef.current;
-    if (!prev?.hasInput) return { seo: 0, geo: 0, llm: 0, readability: 0, overall: 0 };
+    if (!prev || prev.status !== "analyzable") {
+      return { seo: 0, geo: 0, llm: 0, contentQuality: 0, readability: 0, overall: 0 };
+    }
     return {
       seo: analysis.seoScore - prev.seoScore,
       geo: analysis.geoScore - prev.geoScore,
       llm: analysis.llmScore - prev.llmScore,
+      contentQuality: analysis.contentQualityScore - prev.contentQualityScore,
       readability: analysis.readabilityScore - prev.readabilityScore,
       overall: analysis.overallScore - prev.overallScore,
     };
@@ -281,27 +284,31 @@ export function BlogContentAnalysisPanel({
   permalink = "",
   author = "",
   featuredImageUrl = "",
+  categoryName = "",
+  subcategory = "",
   className,
 }: BlogContentAnalysisPanelProps) {
   const input = useMemo<ContentAnalysisInput>(
-    () => ({ title, keywords, metaDescription, contentHtml, permalink, author, featuredImageUrl }),
-    [title, keywords, metaDescription, contentHtml, permalink, author, featuredImageUrl],
+    () => ({
+      title,
+      keywords,
+      metaDescription,
+      contentHtml,
+      permalink,
+      author,
+      featuredImageUrl,
+      categoryName,
+      subcategory,
+    }),
+    [title, keywords, metaDescription, contentHtml, permalink, author, featuredImageUrl, categoryName, subcategory],
   );
 
-  const hasInput = hasAnalysisInput(input);
   const analysis = useDebouncedAnalysis(input);
-  const active = analysis.hasInput;
+  const active = analysis.status === "analyzable";
   const trends = useScoreTrends(analysis, active);
-
-  const remainingIssues = useMemo(() => analysis.checks.filter((c) => !c.passed), [analysis.checks]);
-  const prioritizedIssues = useMemo(() => prioritizeRemainingIssues(analysis.checks), [analysis.checks]);
   const celebrations = useFixCelebrations(analysis.checks, active);
 
-  const statusMessage = !hasInput
-    ? "Start writing to unlock live SEO, GEO, LLM, and readability analysis."
-    : remainingIssues.length === 0
-      ? "All checks passing — strong content."
-      : "Improve SEO first, then article content and AI visibility.";
+  const statusMessage = analysis.statusMessage;
 
   return (
     <aside className={cn("space-y-3 lg:flex lg:h-full lg:min-h-full lg:flex-col", className)}>
@@ -312,8 +319,8 @@ export function BlogContentAnalysisPanel({
               <Sparkles className="h-4 w-4" />
             </div>
             <div>
-              <h2 className="text-sm font-semibold text-foreground">Content Analysis</h2>
-              <p className="text-[11px] text-muted-foreground">Live scoring · issues only</p>
+              <h2 className="text-sm font-semibold text-foreground">Content Quality Score</h2>
+              <p className="text-[11px] text-muted-foreground">Officekit editorial score · live</p>
             </div>
           </div>
         </div>
@@ -331,11 +338,16 @@ export function BlogContentAnalysisPanel({
                 <span className="text-xs text-muted-foreground">/ 100</span>
                 {active ? <TrendBadge delta={trends.overall} /> : null}
               </div>
+              {active ? (
+                <p className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-[#1a56db]">
+                  {analysis.publishing.label}
+                </p>
+              ) : null}
               <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground">{statusMessage}</p>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2">
             {SCORE_LABELS.map(({ key, trendKey, label }) => (
               <ScoreBar
                 key={key}
@@ -353,24 +365,64 @@ export function BlogContentAnalysisPanel({
                 seo={analysis.seoChecks}
                 geo={analysis.geoChecks}
                 llm={analysis.llmChecks}
+                contentQuality={analysis.contentQualityChecks}
                 readability={analysis.readabilityChecks}
+              />
+
+              <SeverityCounts
+                critical={analysis.severityCounts.critical}
+                high={analysis.severityCounts.high}
+                medium={analysis.severityCounts.medium}
+                low={analysis.severityCounts.low}
               />
 
               <FixCelebrationToast items={celebrations} />
 
               <div>
                 <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  Issues remaining ({prioritizedIssues.totalRemaining})
+                  Why this score?
+                </h3>
+                <ul className="mt-2 space-y-1.5">
+                  {(
+                    [
+                      ["SEO", analysis.dimensions.seo],
+                      ["GEO", analysis.dimensions.geo],
+                      ["LLM", analysis.dimensions.llm],
+                      ["Quality", analysis.dimensions.quality],
+                      ["Readability", analysis.dimensions.readability],
+                    ] as const
+                  ).map(([label, dim]) => (
+                    <li
+                      key={label}
+                      className="rounded-lg border border-zinc-100 bg-zinc-50/80 px-2.5 py-2 dark:border-zinc-800 dark:bg-zinc-950/40"
+                    >
+                      <p className="text-[11px] font-semibold text-foreground">
+                        {label}: {dim.score}/100
+                      </p>
+                      <p className="mt-0.5 text-[11px] leading-snug text-muted-foreground">{dim.reason}</p>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div>
+                <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Issues
                 </h3>
                 <div className="mt-2">
-                  <PrioritizedIssuesList groups={prioritizedIssues} />
+                  <SeverityIssuesList
+                    critical={analysis.criticalIssues}
+                    high={analysis.highPriorityIssues}
+                    medium={analysis.mediumIssues}
+                    low={analysis.lowPriorityIssues}
+                  />
                 </div>
               </div>
 
               {analysis.suggestions.length > 0 ? (
                 <div>
                   <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    Top improvements
+                    Top 5 improvements
                   </h3>
                   <ul className="mt-2 space-y-1.5">
                     {analysis.suggestions.map((suggestion, index) => (

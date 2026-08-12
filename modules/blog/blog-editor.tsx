@@ -37,7 +37,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/toast";
-import { getAuthUser } from "@/lib/auth";
 import { useWorkspaceStore } from "@/lib/workspace-store";
 import {
   BLOG_AI_DEFAULT_FULL_PARAMS,
@@ -482,6 +481,15 @@ export function useBlogAIAssistant() {
     setError(null);
   }, []);
 
+  const clearGenerationResult = useCallback(() => {
+    cancelledRef.current = true;
+    setIsGenerating(false);
+    setActiveStep(null);
+    setCompletedSteps(new Set());
+    setError(null);
+    setLastResult(null);
+  }, []);
+
   const applyToForm = useCallback(
     (
       result: BlogAIGeneratedContent,
@@ -511,6 +519,7 @@ export function useBlogAIAssistant() {
     excludePostId?: string;
     author?: string;
     image?: string;
+    categoryName?: string;
   };
 
   const runWithProgress = useCallback(
@@ -574,6 +583,7 @@ export function useBlogAIAssistant() {
             aiModel,
             excludePostId: options.excludePostId,
             author: options.author,
+            categoryName: options.categoryName,
           }),
         handlers,
         categories,
@@ -602,6 +612,7 @@ export function useBlogAIAssistant() {
             aiModel,
             excludePostId: options.excludePostId,
             author: options.author,
+            categoryName: options.categoryName,
           }),
         handlers,
         categories,
@@ -619,6 +630,7 @@ export function useBlogAIAssistant() {
     lastResult,
     resetProgress,
     cancelGeneration,
+    clearGenerationResult,
     generateFromTitle,
     generateEntireBlog,
   };
@@ -774,7 +786,7 @@ export function BlogAIGenerationProgress({
         </div>
 
         {error ? (
-          <p className="mb-4 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
+          <p className="mb-4 whitespace-pre-wrap rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
             {error}
           </p>
         ) : (
@@ -943,22 +955,14 @@ export function BlogEditor({ postId }: { postId?: string }) {
   useEffect(() => {
     const hasPreviewDraft = Boolean(loadBlogEditorPreviewForPath(activeWorkspaceId, pathname));
 
-    const user = getAuthUser();
-    if (!hasPreviewDraft && user?.name) setAuthor(user.name);
-
     let cancelled = false;
     void Promise.all([fetchBlogCategories(), fetchBlogSettings()])
       .then(([cats, settings]) => {
         if (cancelled) return;
         setCategories(cats);
-        if (!hasPreviewDraft) {
-          if (settings.content.defaultAuthor) {
-            setAuthor((prev) => prev || settings.content.defaultAuthor);
-          }
-          if (settings.content.defaultCategory) {
-            const match = cats.find((c) => c.name === settings.content.defaultCategory);
-            if (match) setCategoryId(match.id);
-          }
+        if (!hasPreviewDraft && settings.content.defaultCategory) {
+          const match = cats.find((c) => c.name === settings.content.defaultCategory);
+          if (match) setCategoryId(match.id);
         }
       })
       .catch(() => undefined);
@@ -1056,7 +1060,6 @@ export function BlogEditor({ postId }: { postId?: string }) {
 
   const aiFormHandlers = {
     setTitle: handleTitleChange,
-    setAuthor,
     setMetaDescription,
     setTags,
     setImage,
@@ -1075,8 +1078,9 @@ export function BlogEditor({ postId }: { postId?: string }) {
   const buildGenerationOptions = () => ({
     permalink,
     excludePostId: postId,
-    author: author.trim() || getAuthUser()?.name || "",
+    author: author.trim(),
     image,
+    categoryName: selectedCategory?.name || "",
   });
 
   const openModelPicker = (event: React.MouseEvent<HTMLElement>, mode: "full" | "title") => {
@@ -1141,6 +1145,10 @@ export function BlogEditor({ postId }: { postId?: string }) {
       push("Please fill title and content.", { kind: "error" });
       return;
     }
+    if (!author.trim()) {
+      push("Please enter an author name.", { kind: "error" });
+      return;
+    }
     if (!categoryId) {
       push("Please select a category.", { kind: "error" });
       return;
@@ -1188,6 +1196,34 @@ export function BlogEditor({ postId }: { postId?: string }) {
     void handleSave("published");
   };
 
+  const handleCancel = () => {
+    if (isEdit) {
+      clearBlogEditorPreview(activeWorkspaceId);
+      router.push("/blog/posts");
+      return;
+    }
+
+    ai.clearGenerationResult();
+    clearBlogEditorPreview(activeWorkspaceId);
+    pendingEditorHtmlRef.current = null;
+    restoredFromPreviewRef.current = false;
+    permalinkTouched.current = false;
+
+    setTitle("");
+    setContent("");
+    setMetaDescription("");
+    setImage("");
+    setCategoryId("");
+    setTags("");
+    setPermalink("");
+    setStatus("draft");
+    setLastAiParams(BLOG_AI_DEFAULT_FULL_PARAMS);
+    setLastAiMode("full");
+    setLastAiModel(null);
+    editorRef.current?.setContents("");
+    setAuthor("");
+  };
+
   const buildPreviewSnapshot = () => {
     const editorHtml = editorRef.current?.getContents(true) ?? content;
     return {
@@ -1207,9 +1243,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
 
   const canPreview = isBlogEditorReadyForPreview({
     title,
-    author,
     content,
-    categoryId,
   });
 
   if (loading) {
@@ -1367,7 +1401,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
               <div className="flex justify-end gap-3 border-t border-border pt-4">
                 <button
                   type="button"
-                  onClick={() => router.push("/blog/posts")}
+                  onClick={handleCancel}
                   className="rounded-2xl border border-border px-4 py-2.5 text-sm font-medium text-foreground hover:bg-hover"
                 >
                   Cancel
@@ -1402,6 +1436,7 @@ export function BlogEditor({ postId }: { postId?: string }) {
                 permalink={permalink}
                 author={author}
                 featuredImageUrl={image}
+                categoryName={selectedCategory?.name || ""}
                 className="lg:sticky lg:top-6 lg:max-h-[calc(100vh-10rem)] lg:overscroll-y-contain"
               />
             </div>

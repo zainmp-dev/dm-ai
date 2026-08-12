@@ -35,7 +35,7 @@ def detect_task_type(*, prompt: str, explicit: str | None = None) -> str:
 
 def select_best_model(task_type: str, models: RouterModels) -> str:
     t = (task_type or "").strip().lower()
-    if t in {"coding", "long_reasoning", "carousel"}:
+    if t in {"coding", "long_reasoning", "carousel", "blog"}:
         return models.smart_model
     if t == "image_understanding":
         return models.vision_model
